@@ -1,0 +1,119 @@
+-- varka_alert.script — ПОТРЕБИТЕЛЬ №2 ядра LKP (v0.11-Палка1)
+--
+-- Затыкает дыру, из-за которой убивать было информационно БЕСПЛАТНО (фарм игрока
+-- «килл → прятки за соседний дом → ждём минуту → тревога спала → повтор»).
+-- Корень (разбор с14): облако кормилось ТОЛЬКО живой визуальной памятью best_enemy.
+-- Движок снимает флаг врага за 60с (xr_combat_ignore: memory_time > 60000 → не враг) →
+-- best_enemy=nil → varka_lkp.npc_update молчит → облако выцвело → NPC ушёл на job.
+-- Тихий килл (нож) вообще не порождал инфоповода: труп движок к игроку не привязывает.
+--
+-- Палка 1: САМИ УБИЙСТВА становятся инфоповодами в облако. Два канала:
+--   (1) СЛУХ — выстрел (WPN_shoot/WPN_hit) от врага → varka_lkp.notice в точку звука.
+--   (2) ТРУП — свидетель видит свежий труп союзника → читает killer_last_known_position
+--       (пишется xr_danger death_callback, наш v0.4/0.5) → notice в точку убийцы.
+-- Плюс ЗУБЫ: set_enemy на убийцу → возврат флага врага (цель — обнулить движковый
+-- 60с-таймер, чтобы тревога не спадала под тихий фарм).
+--
+-- ⚠️ ПОЛИГОН: подтвердить, что npc:set_enemy рестартит combat_ignore / re-combat —
+-- единственная непроверенная движковая оговорка (см. журнал с14).
+-- ⚠️ ПОЛИГОН: доставляет ли движок on_hear с s_type "WPN_shoot" (музл) — если нет,
+-- канал слуха держится на "WPN_hit" (пуля рядом со свидетелем), труп добивает тихий нож.
+--
+-- Ядро varka_lkp НЕ трогает — только публичный notice(). Поведение движка (ноги,
+-- огонь) не пишем: это звено 2, здесь только сенсорика + возврат флага.
+
+local DEBUG        = true
+local TICK_MS      = 500    -- частота опроса трупа-опасности
+local HEAR_DIST_SQR = 3600  -- 60м: выстрел слышно дальше, чем impact (ваниль брала 30м)
+local CORPSE_ONCE  = {}     -- [npc_id] = { [corpse_id]=true } — на труп реагируем ОДИН раз
+                            -- (иначе старый труп вечно пиннит тревогу — облако должно стареть)
+local last_tick    = {}     -- [npc_id] = время последнего среза
+
+-- Возврат флага врага: цель — рестарт движкового 60с-таймера забвения (⚠️ проверить).
+-- Держим в звене сенсорики только это; ноги/огонь — движку/звену 2.
+local function re_engage(npc, killer)
+	if killer and killer:alive() then
+		npc:set_enemy(killer)
+		if DEBUG then
+			printf("VARKA-ALERT: npc %s re-engaged enemy %s (flag restored)",
+				npc:id(), killer:id())
+		end
+	end
+end
+
+-- ===== КАНАЛ 1: СЛУХ (выстрел) =====
+local function on_hear(npc, who_id, s_type, dist, power, pos)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if not pos then return end
+	if s_type ~= "WPN_shoot" and s_type ~= "WPN_hit" then return end
+	if npc:best_enemy() then return end -- уже воюет: облако ведёт визуал, не мешаем
+	if character_community(npc) == "zombied" then return end
+
+	local who = who_id and db.storage[who_id] and db.storage[who_id].object
+	if not (who and (IsStalker(who) or IsMonster(who))) then return end
+	if not (who_id == AC_ID or npc:relation(who) >= game_object.enemy) then return end
+	if npc:position():distance_to_sqr(pos) > HEAR_DIST_SQR then return end
+
+	if varka_lkp.notice(npc, vector():set(pos.x, pos.y, pos.z)) then
+		if DEBUG then
+			printf("VARKA-ALERT: npc %s heard enemy shot %s (%s) -- seeding",
+				npc:id(), who_id, tostring(s_type))
+		end
+		re_engage(npc, who)
+	end
+end
+
+-- ===== КАНАЛ 2: ТРУП союзника =====
+local function on_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local now = time_global()
+	local id  = npc:id()
+	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
+	last_tick[id] = now
+
+	if npc:best_enemy() then return end -- уже воюет
+	if character_community(npc) == "zombied" then return end
+
+	local bd = npc:best_danger()
+	if not (bd and bd:type() == danger_object.entity_corpse) then return end
+	local corpse = bd:object()
+	if not corpse then return end
+	if npc:relation(corpse) >= game_object.enemy then return end -- труп врага — не наша тревога
+
+	local cid  = corpse:id()
+	local seen = CORPSE_ONCE[id]
+	if seen and seen[cid] then return end -- на этот труп уже реагировали
+	if not seen then seen = {} CORPSE_ONCE[id] = seen end
+	seen[cid] = true
+
+	local st  = db.storage[cid]
+	local lkp = st and st.killer_last_known_position -- пишет xr_danger death_callback (v0.4/0.5)
+	if not lkp then return end
+
+	if varka_lkp.notice(npc, vector():set(lkp.x, lkp.y, lkp.z)) then
+		if DEBUG then
+			printf("VARKA-ALERT: npc %s found ally corpse %s -- seeding killer pos", id, cid)
+		end
+		local killer_id = load_var(corpse, "death_by_id")
+		local killer = nil
+		if killer_id == AC_ID then
+			killer = db.actor
+		elseif killer_id and db.storage[killer_id] then
+			killer = db.storage[killer_id].object
+		end
+		re_engage(npc, killer)
+	end
+end
+
+local function npc_death(npc)
+	if not npc then return end
+	local id = npc:id()
+	CORPSE_ONCE[id] = nil
+	last_tick[id]   = nil
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_hear_callback", on_hear)
+	RegisterScriptCallback("npc_on_update", on_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

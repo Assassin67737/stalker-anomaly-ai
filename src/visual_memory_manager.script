@@ -1,0 +1,35 @@
+-- Visual Memory Manager exports
+-- by Alundaio
+
+-- called from engine
+-- This occurs during the visible check. If value >= visiblity_threshold then object is considered visible
+-- warning npc and who can be nil sometimes
+
+-- Ваниль = зона experienced/professional (0.90–1.10). Дельта novice→legend ×3.4
+local function rank_perception_mult(npc)
+	if not (npc and npc.character_rank) then return 1.0 end
+	local r = npc:character_rank()
+	if     r < 3500  then return 0.55  -- novice
+	elseif r < 6500  then return 0.70  -- trainee
+	elseif r < 9000  then return 0.90  -- experienced
+	elseif r < 12000 then return 1.10  -- professional
+	elseif r < 14500 then return 1.25  -- veteran
+	elseif r < 17500 then return 1.45  -- expert
+	elseif r < 27000 then return 1.65  -- master
+	else                   return 1.90  -- legend
+	end
+end
+
+function get_visible_value(npc,who,time_delta,time_quant,luminocity,velocity_factor,velocity,distance,object_distance,always_visible_distance)
+	distance = distance <= 0 and 0.00001 or distance
+	luminocity = luminocity <= 0 and 0.0001 or luminocity
+
+	if (level_weathers.bLevelUnderground) then
+		luminocity = luminocity + 0.35
+	end
+
+	-- unaltered formula
+	-- time_delta / time_quant * luminocity * (1 + velocity_factor*velocity) * (distance - object_distance) / (distance - always_visible_distance)
+
+	return  time_delta / time_quant * luminocity * (1 + velocity_factor*velocity) * (distance - object_distance) / distance * rank_perception_mult(npc)
+end

@@ -1,0 +1,453 @@
+-- varka_lkp.script — LKP-облако школы Б, ЯДРО (v0.10-вес)
+--
+-- Выросло из зонда v0.6-probe после двух прогонов полигона (журнал 03.07 с6):
+--   ✓ memory_time = миллисекунды time_global (raw == t в момент УВИДЕЛ)
+--   ✓ vertex_in_direction: упор в стену → возвращает исходную ноду;
+--     невалидная СТАРТОВАЯ нода → весь веер = 4294967295 (слепота)
+--   ✓ бюджет веера: лукап навмеша, игра не проседала
+--
+-- Ядро ЧИТАЕТ память движка и ведёт belief-облака по отрядам.
+-- Поведение NPC пока не меняет — потребители сядут на публичное API:
+--   varka_lkp.get_belief(npc)        → belief отряда этого NPC (или nil)
+--   varka_lkp.get_belief_by_key(key) → belief по ключу отряда
+--   varka_lkp.geometry(b)            → cone°, reach м (текущий раствор/глубина)
+--   varka_lkp.mass(b)                → масса веры 1→0 (вторая ось, §ВЕС; ранг гнёт
+--                                      порог у потребителя, не саму массу)
+--   varka_lkp.search_nodes(b,_,tp)   → достижимые ноды веера {{vid,pos,w},...};
+--     w = вес укрытия ноды от threat_pos tp (второй уровень конуса — с12)
+--     (стена = дырка в данных: заблокированные лучи в список не попадают,
+--      внимание само стекает в проёмы — эмерджент диффузии, см. §LKP)
+--   varka_lkp.notice(npc, pos)       → посев belief от ВНЕШНЕГО события (Палка 1):
+--     выстрел услышан / труп найден. Кормит облако не только визуалом best_enemy
+
+local DEBUG       = true       -- маркеры в мире + события в лог (полигонный режим)
+local VERBOSE     = false      -- построчный лог лучей веера (только для отладки семантики)
+local TICK_MS     = 500        -- как часто один NPC обновляет облако
+local MARK_MS     = 1000       -- как часто перерисовываются маркеры
+local BASE_ANGLE  = 20         -- начальный раствор конуса, градусы
+local SPREAD_RATE = 6          -- рост раствора, градусов в секунду
+local MAX_CONE    = 180        -- кап раствора: шире полукруга = «не знаю» = смерть belief, не круг
+local BASE_DIST   = 3          -- начальная глубина конуса, метры
+local CREEP_SPEED = 1.5        -- рост глубины, метров в секунду
+local MAX_REACH   = 50         -- ⚠️ костыль до облака-гипотез (§7.13): без кэпа reach уходит в 100+м
+local FAN_K       = 7          -- лучей в веере
+local LIFETIME_MS = 90000      -- полный распад массы веры 1→0; должно превышать combat_ignore (~60с)
+local REACH_SPEED = 4.5        -- м/с бега (кинематический предел волны, вторая сущность §7.13)
+local N_RADIUS    = 150        -- ⚠️ пока константа = eye_range; будет max(дист центр→член)+eye_range
+local COVER_FLOOR = 0.15       -- вес открытой ноды не в ноль: на голую землю тоже косимся, но реже
+local CONS_FALLOFF = 0.6       -- угловой спад: центр конуса тяжелее краёв (согласованность θ, §7.13)
+local REACH_FLOOR  = 0.25      -- радиальный пол: край волны не в ноль (дальняя гипотеза всё же валидна)
+local CHECKED_TTL = 15000      -- отметка «проверено» протухает через 15с (враг мог вернуться)
+local MAX_PAINTED = 3          -- рисуем не больше стольких отрядов разом
+local INVALID_VID = 4294967295 -- «нет ноды» (идиома из axr_stalker_panic)
+
+local beliefs   = {} -- [squad_key] = { pos, vid, bearing, stamp, mem_raw }
+local dead_raw  = {} -- [squad_key] = mem_raw умершего belief («надгробие»): движок помнит
+                     -- врага дольше (~60с combat_ignore), чем живёт облако (45с) — без этого
+                     -- истёкший belief воскресал из протухшей памяти свежим конусом (полигон 04.07)
+local last_tick = {} -- [npc_id] = время последнего среза
+local last_seen = {} -- [npc_id] = видел ли врага на прошлом срезе
+local marks     = {} -- [squad_key] = { particles_object, ... }
+local last_mark = 0
+
+-- ВТОРАЯ СУЩНОСТЬ — alert_echo (§7.14, архитектурный разделитель):
+-- Рождается одновременно с belief, живёт ДОЛЬШЕ (3×), не имеет конуса/волны.
+-- Просто точка + штамп: «здесь что-то было».
+-- Belief умер → боёвка кончилась. Echo жив → небоёвка: «разведай, что там случилось».
+-- Это чёткий разделитель двух режимов без продления жизни belief.
+local ECHO_TTL = 210000 -- 3.5 мин (belief живёт 90с → echo живёт втрое дольше)
+local echos    = {} -- [squad_key] = { pos, stamp }
+
+local function squad_key_of(npc)  -- внутренний псевдоним для читаемости
+    local squad = get_object_squad(npc)
+    return squad and squad.id or npc:id()
+end
+
+local function squad_key(npc)
+	local squad = get_object_squad(npc)
+	return squad and squad.id or npc:id()
+end
+
+-- Прижимка LKP к навмешу (закрывает слепоту с6: враг на ящике/трупе/высоте →
+-- vertex_id(LKP) невалиден → весь веер умирал). Если прямой лукап не дал ноды,
+-- шагаем от ноды самого NPC в сторону LKP: vertex_in_direction вернёт ближайшую
+-- ДОСТИЖИМУЮ ноду к LKP (упор в стену → нода NPC, тоже валидно — конус доживёт по возрасту).
+local function snap_to_mesh(npc, pos)
+	local vid = level.vertex_id(pos)
+	if vid and vid < INVALID_VID then
+		return vid, pos
+	end
+	local from = npc:level_vertex_id()
+	local dir  = vec_set(pos):sub(npc:position())
+	local dist = dir:magnitude()
+	if dist < 0.01 then
+		return from, vec_set(npc:position())
+	end
+	dir.y = 0
+	if dir:magnitude() < 0.01 then
+		return from, vec_set(npc:position())
+	end
+	dir:normalize()
+	vid = level.vertex_in_direction(from, dir, dist)
+	if vid and vid < INVALID_VID then
+		if DEBUG then
+			printf("VARKA-LKP: squad %s LKP off navmesh -- snapped to node %s",
+				squad_key(npc), vid)
+		end
+		return vid, level.vertex_position(vid)
+	end
+	return nil, pos
+end
+
+-- ============ ПУБЛИЧНОЕ API ============
+
+function get_belief(npc)
+	return beliefs[squad_key(npc)]
+end
+
+function get_belief_by_key(key)
+	return beliefs[key]
+end
+
+-- Публичный ключ отряда — нужен дирижёру чтобы читать echo по тому же ключу
+function get_squad_key(npc)
+	local squad = get_object_squad(npc)
+	return squad and squad.id or npc:id()
+end
+
+-- API alert_echo (вторая сущность, §7.14):
+function get_echo(npc)
+	local key = squad_key(npc)
+	local e = echos[key]
+	if not e then return nil end
+	if (time_global() - e.stamp) > ECHO_TTL then echos[key] = nil; return nil end
+	return e
+end
+
+function get_echo_by_key(key)
+	local e = echos[key]
+	if not e then return nil end
+	if (time_global() - e.stamp) > ECHO_TTL then echos[key] = nil; return nil end
+	return e
+end
+
+function kill_echo(npc)
+	echos[squad_key(npc)] = nil
+end
+
+-- Текущая геометрия облака: раствор (°) и глубина (м) как функция возраста
+function geometry(b, now)
+	local age_s = ((now or time_global()) - b.stamp) / 1000
+	local cone  = math.min(BASE_ANGLE + SPREAD_RATE * age_s, MAX_CONE)
+	local reach = math.min(BASE_DIST + CREEP_SPEED * age_s, MAX_REACH)
+	return cone, reach
+end
+
+-- ВЕС — вторая ось belief, ОРТОГОНАЛЬНА геометрии. Геометрия=ГДЕ, масса=НАСКОЛЬКО
+-- ВЕРИТЬ. Линейный распад 1→0 за LIFETIME_MS. Масса ОБЪЕКТИВНА (свойство возраста
+-- инфоповода, общее на отряд) — ранг гнёт не её, а ПОРОГ, на котором конкретный боец
+-- перестаёт действовать (это у потребителя). Так «Вес × ранг» из §ОЧЕРЕДЬ реализуется
+-- без per-NPC состояния в дешёвом ядре. Плотность (масса/площадь конуса) = произведение
+-- этой оси на геометрию, считается там, где читается, не хранится.
+function mass(b, now)
+	local m = 1 - ((now or time_global()) - b.stamp) / LIFETIME_MS
+	if m < 0 then m = 0 end
+	return m
+end
+
+-- Зона поиска: достижимые ноды веера. Заблокированные лучи (стена) и лучи,
+-- не ушедшие с базовой ноды, отбрасываются — «пустота фильтрует лучше преграды».
+-- Каждая нода несёт ВЕС УКРЫТИЯ w (второй уровень «двухуровневого конуса», с12):
+-- если дан threat_pos (позиция того, кто ищет = угроза для беглеца), w = насколько
+-- нода закрыта от его ствола (level.high_cover_in_direction, лукап, не рейкаст).
+-- Голая земля → COVER_FLOOR, укрытие → тяжелее. Потребитель метёт по укрытиям
+-- вперёд открытого поля — «вменяемый займёт укрытие», конус сам стекает туда,
+-- где враг залёг бы. Без threat_pos (рисовалка) w=1: рисуем всё поровну.
+function search_nodes(b, now, threat_pos)
+	local nodes = {}
+	if not (b and b.vid and b.vid < INVALID_VID) then return nodes end
+	local cone, reach = geometry(b, now)
+	for i = 1, FAN_K do
+		local off = -cone/2 + cone * (i-1)/(FAN_K-1)
+		local dir = vector_rotate_y(vec_set(b.bearing), off)
+		local vid = level.vertex_in_direction(b.vid, dir, reach)
+		local hit = vid and vid < INVALID_VID and vid ~= b.vid
+		if hit then
+			local pos  = level.vertex_position(vid)
+			local w    = 1.0
+			if threat_pos then
+				local tdir = vec_set(threat_pos):sub(pos)
+				tdir.y = 0
+				if tdir:magnitude() > 0.01 then
+					w = COVER_FLOOR + level.high_cover_in_direction(vid, tdir)
+				end
+			end
+			-- angular consistency (7.13): node on cone axis heavier than at edges.
+			-- eating cascades center->edge -> natural looking-around, not flat sweep.
+			w = w * (1 - CONS_FALLOFF * (math.abs(off) / (cone * 0.5)))
+			local chk    = b.checked and b.checked[vid]
+			local is_chk = chk and ((time_global() - chk) < CHECKED_TTL) or false
+			nodes[#nodes+1] = { vid = vid, pos = pos, w = w, checked = is_chk }
+		end
+		if VERBOSE then
+			printf("VARKA-LKP: fan ray %s off=%s reach=%s vid=%s%s",
+				string.format("%d/%d", i, FAN_K),
+				string.format("%.0f°", off),
+				string.format("%.1fм", reach),
+				tostring(vid),
+				hit and "" or " [упёрся]")
+		end
+	end
+	return nodes
+end
+
+-- ВТОРАЯ СУЩНОСТЬ — волна достижимости (§7.13, сессия 07.07).
+-- reach: кинематический предел «как далеко мог убежать» = speed × age, зажатый N_RADIUS.
+-- Абсолютна: изотропна, не режется навмешем (паркур). Ортогональна конусу (тот про θ, эта про r).
+-- Физически: та же запись belief + одна формула, ноль нового хранилища.
+function reach(b, now)
+	local age_s = ((now or time_global()) - b.stamp) / 1000
+	return math.min(REACH_SPEED * age_s, N_RADIUS)
+end
+
+-- wave_covers: укрытия ∈ (конус ∩ волна). Двухъярусность: конус (улика θ) ПРОЯВЛЯЕТ
+-- резервные укрытия волны (достижимость r) — в память отряда попадает только то, что
+-- одновременно возможно (волна дошла) И правдоподобно (конус накрыл).
+-- Евклид, не навмеш: пропуск за-стенных укрытий запрещён (паркур), одно distance_to_sqr.
+-- cover-snap через best_cover: нода веера → ближайшее реальное укрытие, прячущее от NPC.
+-- Если best_cover не нашёл ничего (пустое место) — нода тихо пропускается.
+function wave_covers(b, npc, now)
+	now = now or time_global()
+	if not (b and npc and npc:alive()) then return {} end
+	local r = reach(b, now)
+	if r < 1 then return {} end
+	local r_sqr = r * r
+	local nodes = search_nodes(b, now, npc:position())
+	local result, seen = {}, {}
+	for _, n in ipairs(nodes) do
+		if not seen[n.vid] then
+			local cover = npc:best_cover(n.pos, npc:position(), 8, 1, 150)
+			-- КЛЮЧ — n.vid (фановая нода), а не cover:level_vertex_id().
+			-- Единое пространство ключей с search_nodes/mark_checked: иначе varka_search
+			-- пишет n.vid в b.checked, а wave_covers читает cover-vid → никогда не совпадают
+			-- → третья смерть не срабатывает → NPC вечно ищет уже проверенное.
+			-- vec_set = копия, не ссылка: укрытие может умереть (граната),
+			-- тогда cover:position() станет висячим указателем → CTD в set_sight
+			local cpos = cover and vec_set(cover:position()) or vec_set(n.pos)
+			local d_sqr = b.pos:distance_to_sqr(cpos)
+			if d_sqr <= r_sqr then
+				seen[n.vid] = true
+				-- radial falloff (7.13 wave): heavy at LKP, light at reach edge, floored.
+				local radial = 1 - math.sqrt(d_sqr) / r
+				if radial < REACH_FLOOR then radial = REACH_FLOOR end
+				local chk    = b.checked and b.checked[n.vid]
+				local is_chk = chk and ((time_global() - chk) < CHECKED_TTL) or false
+				result[#result+1] = { vid = n.vid, pos = cpos, w = n.w * radial, checked = is_chk }
+			end
+		end
+	end
+	return result
+end
+
+-- ВНЕШНИЙ инфоповод в облако (Палка 1): не визуальный best_enemy, а прямое СОБЫТИЕ —
+-- услышан выстрел / найден труп союзника. Раньше облако кормилось ТОЛЬКО живой
+-- визуальной памятью и умирало вместе с ней (движок снимал флаг врага за 60с →
+-- best_enemy=nil → npc_update ничего не делал → фарм «килл-прятки-ждём-повтор»).
+-- Теперь любое событие сеет/освежает belief: масса=1, свежий stamp, пеленг «прочь от
+-- свидетеля». Снимает надгробие dead_raw (это НОВОЕ событие, не воскрешение протухшей
+-- памяти). mem_raw = now: свежий посев не перебивается устаревшим визуальным слиянием.
+function notice(npc, pos)
+	if not (npc and npc:alive() and pos) then return false end
+	local now = time_global()
+	local key = squad_key(npc)
+	local vid, snapped = snap_to_mesh(npc, pos)
+	if not vid then return false end
+	local dir = vec_set(snapped):sub(npc:position())
+	dir.y = 0
+	if dir:magnitude() < 0.01 then dir = vec_set(npc:direction()) end
+	local b = beliefs[key]
+	if b then
+		b.pos     = vec_set(snapped)
+		b.vid     = vid
+		b.bearing = dir:normalize()
+		b.stamp   = now
+		b.mem_raw = math.max(b.mem_raw or 0, now)
+		b.checked = {}  -- свежее событие: начинаем прочёс заново
+	else
+		beliefs[key] = { pos = vec_set(snapped), vid = vid,
+			bearing = dir:normalize(), stamp = now, mem_raw = now, checked = {} }
+	end
+	dead_raw[key] = nil
+	-- echo рождается вместе с belief но живёт дольше (§7.14: разделитель боёвка/небоёвка)
+	if not echos[key] then  -- первый посев; обновлять позицию не надо — echo = место первого контакта
+		echos[key] = { pos = vec_set(snapped), stamp = now }
+		if DEBUG then printf("VARKA-LKP: squad %s notice -- echo seeded (TTL=%ss)", key, string.format("%.0f", ECHO_TTL/1000)) end
+	end
+	if DEBUG then printf("VARKA-LKP: squad %s notice -- belief seeded by event", key) end
+	return true
+end
+
+-- Отъедание (negative update): вызывается потребителем после полного DWELL на ноде.
+-- Отметка протухает через CHECKED_TTL — враг мог вернуться.
+function mark_checked(b, vid)
+	if b and vid then
+		b.checked[vid] = time_global()
+	end
+end
+
+-- ============ ВНУТРЯНКА ============
+
+local function play_mark(mk, i, pos)
+	if not mk[i] then
+		mk[i] = particles_object("_samples_particles_\\flash_light")
+	end
+	mk[i]:play_at_pos(vector():set(pos.x, pos.y + 0.3, pos.z))
+end
+
+local function drop_marks(key)
+	local mk = marks[key]
+	if not mk then return end
+	for _,p in pairs(mk) do
+		if p:playing() then p:stop() end
+	end
+	marks[key] = nil
+end
+
+-- Досрочная смерть belief (третья смерть: «вымел всё — его нет»).
+-- Определена ПОСЛЕ drop_marks: local-функция видна только коду ниже её определения.
+function kill_belief(npc)
+	if not npc then return end
+	local key = squad_key(npc)
+	local b = beliefs[key]
+	if b then
+		dead_raw[key] = time_global() -- время убийства: блокирует воскрешение от любой памяти ≤ now
+		drop_marks(key)
+		beliefs[key] = nil
+		if DEBUG then printf("VARKA-LKP: squad %s belief killed early (fan swept)", key) end
+	end
+end
+
+-- Жнец: смерть belief по возрасту. Отдельно от paint — облака обязаны умирать
+-- и с выключенным DEBUG, рисовалка лишь потребитель.
+local function reap(now)
+	for key,b in pairs(beliefs) do
+		if mass(b, now) <= 0 then -- масса веры выцвела в ноль = биологическая смерть
+			dead_raw[key] = now -- время смерти: блокирует воскрешение от любой памяти ≤ now
+			drop_marks(key)
+			beliefs[key] = nil
+			if DEBUG then printf("VARKA-LKP: squad %s belief faded (mass 0)", key) end
+		end
+	end
+end
+
+local function paint(now)
+	if now - last_mark < MARK_MS then return end
+	last_mark = now
+	local painted = 0
+	for key,b in pairs(beliefs) do
+		if painted < MAX_PAINTED then
+			painted = painted + 1
+			local mk = marks[key]
+			if not mk then mk = {} marks[key] = mk end
+			play_mark(mk, 0, b.pos) -- сама LKP
+			-- конус: ноды веера на +0.3м (как прежде)
+			local nodes = search_nodes(b, now)
+			for i,n in ipairs(nodes) do
+				play_mark(mk, i, n.pos)
+			end
+			-- волна: проявленные укрытия на +1.2м (выше = легко отличить визуально)
+			local npc_here = nil
+			for id2,_ in pairs(last_tick) do
+				local o = level.object_by_id(id2)
+				if o and o:alive() and squad_key(o) == key then npc_here = o break end
+			end
+			if npc_here then
+				local covers = wave_covers(b, npc_here, now)
+				for j,c in ipairs(covers) do
+					mk["w"..j] = mk["w"..j] or particles_object("_samples_particles_\\flash_light")
+					mk["w"..j]:play_at_pos(vector():set(c.pos.x, c.pos.y + 1.2, c.pos.z))
+				end
+			end
+		end
+	end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive()) then return end
+	local now = time_global()
+	local id = npc:id()
+	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
+	last_tick[id] = now
+
+	reap(now)
+
+	local enemy = npc:best_enemy()
+	if enemy then
+		local key = squad_key(npc)
+		local mem_pos = npc:memory_position(enemy)
+		local mem_raw = npc:memory_time(enemy) -- мс time_global (подтверждено с6)
+		local sees = npc:see(enemy)
+
+		if DEBUG and last_seen[id] ~= sees then
+			printf("VARKA-LKP: npc %s %s enemy | t=%s | memory_time raw=%s",
+				id, sees and "SPOTTED" or "LOST", tostring(now), tostring(mem_raw))
+			last_seen[id] = sees
+		end
+
+		if mem_pos and mem_raw and mem_raw > 0 then
+			local b = beliefs[key]
+			if not b then
+				if dead_raw[key] and mem_raw <= dead_raw[key] then
+					-- этот инфоповод уже прожит и похоронен: не воскрешать belief
+					-- из памяти, которую облако честно исчерпало возрастом
+					return
+				end
+				-- первый инфоповод: пеленга ещё нет, берём «от меня к LKP»
+				local vid, pos = snap_to_mesh(npc, mem_pos)
+				if vid then
+					local dir = vec_set(pos):sub(npc:position())
+					dir.y = 0
+					if dir:magnitude() < 0.01 then dir = vec_set(npc:direction()) end
+					beliefs[key] = { pos = vec_set(pos), vid = vid,
+						bearing = dir:normalize(), stamp = now, mem_raw = mem_raw, checked = {} }
+					dead_raw[key] = nil
+				end
+			elseif mem_raw > b.mem_raw then
+				-- слияние отрядных памятей: только СВЕЖЕЕ бьёт старое,
+				-- иначе устаревшая память одного бойца дёргает ось конуса
+				local vid, pos = snap_to_mesh(npc, mem_pos)
+				if vid then
+					if pos:distance_to(b.pos) > 0.3 then
+						-- v0.9 ПЕЛЕНГ: уклонение, не инерция. Раньше здесь был вектор
+						-- ДВИЖЕНИЯ цели (pos - b.pos) — «он продолжит, как шёл». Но в момент
+						-- взаимного контакта вменяемый разворачивается ОТ ствола, и курс
+						-- подхода вёл конус НА самого стрелка (полигон v0.8, пустая земля под
+						-- ногами NPC). Теперь пеленг = «прочь от того, кто засёк» (NPC→LKP);
+						-- грубость дочищает навмеш — лучи в стену гаснут, живут пути отхода.
+						local dir = vec_set(pos):sub(npc:position())
+						dir.y = 0
+						if dir:magnitude() > 0.01 then b.bearing = dir:normalize() end
+						b.pos = vec_set(pos)
+						b.vid = vid
+					end
+					b.mem_raw = mem_raw
+					b.stamp = now -- свежий инфоповод — конус схлопывается заново
+				end
+			end
+		end
+	end
+
+	if DEBUG then paint(now) end
+end
+
+local function npc_death(npc)
+	if not npc then return end
+	local id = npc:id()
+	last_tick[id] = nil
+	last_seen[id] = nil
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

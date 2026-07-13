@@ -1,0 +1,48 @@
+-- varka_watchdog.script — err != nil: ловит тихий откат к ванили
+--
+-- Инвариант: если belief ИЛИ echo живы для отряда NPC → наш action должен рулить.
+-- Если не рулит (varka_active = nil) → тихий обрыв инфры. Кричим и замораживаем.
+--
+-- Это НЕ поведение. Это ассерт. Живёт вне GOAP — переживает закрытие любого планировщика.
+-- Аналог: if err != nil { log; freeze }
+
+local TICK_MS = 2000  -- раз в 2с на NPC (не каждый фрейм)
+local last_tick = {}
+
+local function watch(npc)
+    if not (npc and npc:alive() and IsStalker(npc)) then return end
+    local id  = npc:id()
+    local now = time_global()
+    if (now - (last_tick[id] or 0)) < TICK_MS then return end
+    last_tick[id] = now
+
+    -- инфра жива?
+    local b = varka_lkp.get_belief(npc)
+    local e = varka_lkp.get_echo(npc)
+    if not b and not e then return end  -- нет инфры — ваниль правит честно, молчим
+
+    -- наш action рулит?
+    local st = db.storage[id]
+    if st and st.varka_active then return end  -- всё ок
+
+    -- ИНФРА ЖИВА, НАШ ACTION НЕ АКТИВЕН → тихий обрыв
+    printf("VARKA-WATCH: npc %s — infra alive (belief=%s echo=%s) but control lost -- freezing",
+        tostring(id), tostring(b ~= nil), tostring(e ~= nil))
+
+    npc:set_mental_state(anim.danger)
+    npc:set_body_state(move.stand)
+    local look_pos = (e and e.pos) or (b and b.pos)
+    if look_pos then npc:set_sight(look.fire_point, look_pos) end
+    if actor_menu then
+        actor_menu.set_msg(1, "[VARKA-WATCH] infra lost: npc " .. tostring(id), 4)
+    end
+end
+
+local function npc_death(npc)
+    if npc then last_tick[npc:id()] = nil end
+end
+
+function on_game_start()
+    RegisterScriptCallback("npc_on_update",         watch)
+    RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

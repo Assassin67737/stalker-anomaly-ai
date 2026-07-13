@@ -1,0 +1,155 @@
+-- varka_search.script — ПОТРЕБИТЕЛЬ №1 ядра LKP (v0.8-search, +v0.10-вес, +v0.12-отъедание)
+--
+-- Ведёт взгляд NPC по нодам веера: сначала непроверенные укрытия (max w), потом открытое поле.
+-- После полного DWELL на ноде — отмечает её «проверено» (mark_checked).
+-- Когда все ноды проверены — belief умирает досрочно: «вымел всё, его нет» (третья смерть).
+--
+-- Работает в ОБА режима: в бою (best_enemy != nil, потеря контакта)
+-- И в пост-боевой паузе (best_enemy == nil, belief жив от notice/трупа).
+-- Раньше был взаимоисключён с varka_move — теперь они параллельны:
+-- search метёт взглядом и пишет отъедание, move читает его и обходит проверенное.
+
+local DEBUG    = true
+local TICK_MS  = 300
+local GRACE_MS = 1500  -- пауза после потери контакта (движок ещё «дожёвывает» память)
+local DWELL_MS = 1600  -- сколько взгляд держится на одной ноде
+
+local CLINICAL_ROOKIE = 0.08
+local CLINICAL_MASTER = 0.40
+
+local scans     = {} -- [npc_id] = { idx, next_ms, pos, vid }
+local last_tick = {} -- [npc_id] = время последнего среза
+
+local function clinical_threshold(npc)
+	local r = npc.character_rank and npc:character_rank() or 9000
+	local t = (r - 6500) / (27000 - 6500)
+	if t < 0 then t = 0 elseif t > 1 then t = 1 end
+	return CLINICAL_ROOKIE + t * (CLINICAL_MASTER - CLINICAL_ROOKIE)
+end
+
+local function stop_scan(id, reason)
+	if scans[id] then
+		scans[id] = nil
+		if DEBUG then
+			printf("VARKA-SEARCH: npc %s прекратил скан (%s)", id, reason)
+		end
+	end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive()) then return end
+	local now = time_global()
+	local id  = npc:id()
+	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
+	last_tick[id] = now
+
+	local enemy = npc:best_enemy()
+
+	-- видим врага в контакте → взгляд отдаём движку
+	if enemy and npc:see(enemy) then
+		stop_scan(id, "контакт восстановлен")
+		return
+	end
+
+	local b = varka_lkp.get_belief(npc)
+	if not b then
+		stop_scan(id, "belief умер")
+		return
+	end
+
+	-- grace только в боевом режиме: даём движку «дожевать» память после потери контакта
+	if enemy and now - b.stamp < GRACE_MS then return end
+
+	if varka_lkp.mass(b, now) < clinical_threshold(npc) then
+		stop_scan(id, "вера выцвела ниже порога (списал призрак)")
+		return
+	end
+
+	local s = scans[id]
+	if not s then
+		s = { idx = 0, next_ms = 0, pos = nil, vid = nil }
+		scans[id] = s
+		if DEBUG then
+			local cone, reach = varka_lkp.geometry(b, now)
+			printf("VARKA-SEARCH: npc %s начал скан | %s | масса=%s порог=%s",
+				id, string.format("раствор=%.0f° глубина=%.1fм", cone, reach),
+				string.format("%.2f", varka_lkp.mass(b, now)),
+				string.format("%.2f", clinical_threshold(npc)))
+		end
+	end
+
+	local goap_owns = db.storage[id] and db.storage[id].varka_search_st
+		and db.storage[id].varka_search_st.vs_active
+	if now >= s.next_ms then
+		-- ОТЪЕДАНИЕ: подавляем пока GOAP-action активен — он сам ест ноды физическим приходом
+		if s.vid and not goap_owns then
+			varka_lkp.mark_checked(b, s.vid)
+			if DEBUG then
+				printf("VARKA-SEARCH: npc %s отметил ноду %s проверено", id, s.vid)
+			end
+		end
+
+		-- threat_pos = позиция этого NPC: ищем укрытия ОТ него
+		local nodes = varka_lkp.search_nodes(b, now, npc:position())
+
+		if #nodes == 0 then
+			s.pos = vec_set(b.pos)
+			s.vid = nil
+		else
+			-- сортируем: непроверенные вперёд, внутри — по w (укрытость)
+			table.sort(nodes, function(x, y)
+				if x.checked ~= y.checked then return not x.checked end
+				return x.w > y.w
+			end)
+
+			-- ТРЕТЬЯ СМЕРТЬ: если все ноды проверены — вымели, его нет
+			-- НО: не убивать пока враг в активном бою или пока GOAP-action ведёт ноги
+			local goap_st = db.storage[id] and db.storage[id].varka_search_st
+			if nodes[1].checked then
+				if enemy or (goap_st and goap_st.vs_active) then
+					b.checked = {}
+					return
+				end
+				if DEBUG then
+					printf("VARKA-SEARCH: npc %s вымел всё — belief умирает досрочно", id)
+				end
+				stop_scan(id, "вымел все ноды")
+				varka_lkp.kill_belief(npc)
+				return
+			end
+
+			s.idx = s.idx % #nodes + 1
+			-- берём следующую НЕПРОВЕРЕННУЮ (в отсортированном списке они первые)
+			local target = nodes[s.idx]
+			-- если по индексу попали в проверенную — берём первую непроверенную
+			if target.checked then
+				target = nodes[1]
+			end
+			s.pos = vec_set(target.pos)
+			s.vid = target.vid
+		end
+
+		s.next_ms = now + DWELL_MS
+	end
+
+	-- подавляем sight и mark_checked когда GOAP-action активен (vs_active=true):
+	-- иначе sweep ест ноды раньше чем action до них дошёл → action сразу kill_belief
+	local goap_st2 = db.storage[id] and db.storage[id].varka_search_st
+	local goap_active = goap_st2 and goap_st2.vs_active
+	if s.pos and not goap_active then
+		npc:set_sight(look.fire_point, s.pos)
+	end
+end
+
+local function npc_death(npc)
+	if not npc then return end
+	local id = npc:id()
+	scans[id] = nil
+	last_tick[id] = nil
+end
+
+function on_game_start()
+	-- v0.15: выключен — логика взгляда и отъедания перенесена в varka_search_action (одна машина)
+	-- RegisterScriptCallback("npc_on_update", npc_update)
+	-- RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

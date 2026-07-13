@@ -1,0 +1,492 @@
+-- varka_search_action.script — v0.17: одна машина (взгляд + ноги + отъедание) + argmax + HOLD
+--
+-- v0.17 добавляет ХВОСТ поиска — команду «ДЕРЖАТЬ» (overwatch, первая косточка дирижёра):
+--   вымел веер → не уходит, а караулит угол HOLD_MS. Стоит на укрытии, смотрит в LKP,
+--   огонь при контакте ведёт ванильный combat. Это НЕ второй action — тот же станок (v0.15).
+--
+-- Принцип:
+--   Взгляд = проверка. Нода едится когда NPC ПОСМОТРЕЛ на неё достаточно (DWELL_MS).
+--   Ноги = репозиция. Идём к текущей ноде взгляда чтобы оказаться в нужном месте.
+--   Одна машина управляет обеими осями. varka_search.script выключен.
+--
+-- До v0.15 было две системы (varka_search = взгляд, этот action = ноги) которые
+-- конфликтовали: ели одни ноды по-разному, тянули взгляд в разные стороны.
+-- Флаг vs_active был светофором между ними — убран вместе с расчленёнкой.
+
+local DEBUG    = true
+local DWELL_MS = 1600  -- сколько взгляд держится на ноде → «проверено»
+local MOVE_RATE = 500  -- мс между переназначениями цели движения (не каждый фрейм)
+local HOLD_MS  = 15000 -- overwatch: сколько караулить угол после того как вымел веер
+
+local FLANK_RADIUS  = 12   -- радиус кольца укрытий вокруг LKP (дворовые/оконные дистанции)
+local FLANK_K       = 12   -- сколько пеленгов по кольцу пробуем
+local FLANK_REFRESH = 3000 -- мс между пересчётами цели фланга (масса движется, LKP освежается)
+
+local PROPERTY_BELIEF      = 997
+local ACTION_BELIEF_SEARCH = 996
+local ACTION_VARKA_FREEZE  = 995  -- глушилка: перехват когда belief нет
+
+local FREEZE_LOG_RATE = 3000  -- мс между логами в freeze-режиме
+
+local initialized = {}
+
+local CLINICAL_ROOKIE = 0.05
+local CLINICAL_MASTER = 0.25
+
+local function clinical_threshold(npc)
+	local r = npc.character_rank and npc:character_rank() or 9000
+	local t = (r - 6500) / (27000 - 6500)
+	if t < 0 then t = 0 elseif t > 1 then t = 1 end
+	return CLINICAL_ROOKIE + t * (CLINICAL_MASTER - CLINICAL_ROOKIE)
+end
+
+-- Лучшая непроверенная нода для взгляда (argmax: score = w / dist).
+-- v0.17: ставка по близости — боец берёт укрытие с наилучшим личным score,
+-- а не просто «самое тяжёлое свободное». Ближний к хорошему укрытию выигрывает аукцион.
+-- Три прохода (деградация мягкая):
+--   1) свободный лот, без skip          — норма: отряд размазывается по укрытиям
+--   2) свободный лот, можно skip         — все свежие свободные съедены, вернулся к своей зоне
+--   3) любой непроверенный (лоты кончились) — укрытий меньше чем бойцов: честно штабелимся
+local function pick_next(npc, b, skip_vid)
+	local nodes = varka_lkp.wave_covers(b, npc, time_global())
+	if #nodes == 0 then
+		nodes = varka_lkp.search_nodes(b, time_global(), npc:position())
+	end
+	local npc_pos = npc:position()
+	local function score(n)
+		return n.w / math.max(npc_pos:distance_to(n.pos), 0.5)
+	end
+	local function best_by_score(free_only, allow_skip)
+		local best = nil
+		for _, n in ipairs(nodes) do
+			local ok = not n.checked
+				and (allow_skip or n.vid ~= skip_vid)
+				and (not free_only or varka_lots.lot_free(npc, n.vid))
+			if ok and (not best or score(n) > score(best)) then best = n end
+		end
+		return best
+	end
+	return best_by_score(true, false) or best_by_score(true, true) or best_by_score(false, true)
+end
+
+-- Укрытие для КАРАУЛА (HOLD): веер вымет — берём самое тяжёлое укрытие (лот свободен
+-- если можно) и держим его. Тут «checked» уже не важно — проверять нечего, мы стоим на страже.
+local function pick_hold(npc, b)
+	local nodes = varka_lkp.wave_covers(b, npc, time_global())
+	if #nodes == 0 then
+		nodes = varka_lkp.search_nodes(b, time_global(), npc:position())
+	end
+	local function heaviest(free_only)
+		local best = nil
+		for _, n in ipairs(nodes) do
+			if (not free_only or varka_lots.lot_free(npc, n.vid))
+				and (not best or n.w > best.w) then best = n end
+		end
+		return best
+	end
+	return heaviest(true) or heaviest(false)
+end
+
+-- ===== ФЛАНГ (примитив роли «flank») =====
+--
+-- Флангер определён РЕЛЯЦИОННО: не место, а пеленг, свободный от массы (§флангер).
+-- Центроид массы = где стоят СВОИ (без себя). Флангер берёт укрытие вокруг угрозы,
+-- чей пеленг ОТ угрозы максимально расходится с пеленгом массы → заходит с торца.
+-- Это задача ВЫБОРА ЦЕЛИ, не навигации: ноги — движковые (send_to_vertex), мы лишь
+-- даём умную точку. Ноль рейкастов — чистые вектора на кольце best_cover.
+-- Деградирует красиво: в тесноте расхождения нет → берёт лучшее доступное → фронтал.
+
+local function mass_centroid(npc)
+	local squad = get_object_squad(npc)
+	if not squad then return npc:position() end
+	local sx, sz, cnt = 0, 0, 0
+	local myid = npc:id()
+	for k in squad:squad_members() do
+		if k.id ~= myid then
+			local o = level.object_by_id(k.id)
+			if o and o:alive() and IsStalker(o) then
+				local p = o:position()
+				sx = sx + p.x; sz = sz + p.z; cnt = cnt + 1
+			end
+		end
+	end
+	if cnt == 0 then return npc:position() end
+	return vector():set(sx / cnt, npc:position().y, sz / cnt)
+end
+
+local function pick_flank(npc, b)
+	local T = b.pos
+	local M = mass_centroid(npc)
+	local m_dir = vec_set(T):sub(M); m_dir.y = 0
+	if m_dir:magnitude() < 0.01 then m_dir = vec_set(b.bearing) end
+	m_dir:normalize()
+
+	local best, best_sep = nil, -1
+	for i = 0, FLANK_K - 1 do
+		-- пеленг по кольцу вокруг угрозы (0..360 от направления массы)
+		local dir = vector_rotate_y(vec_set(m_dir), (i / FLANK_K) * 360)
+		local rp  = vector():set(T.x + dir.x * FLANK_RADIUS, T.y, T.z + dir.z * FLANK_RADIUS)
+		local vid = level.vertex_id(rp)
+		if vid and vid < 4294967295 then
+			local npos  = level.vertex_position(vid)
+			local cover = npc:best_cover(npos, T, 6, 1, 150)
+			local cpos  = cover and vec_set(cover:position()) or vec_set(npos)
+			local cvid  = cover and cover:level_vertex_id() or vid
+			local c_dir = vec_set(cpos):sub(T); c_dir.y = 0
+			if c_dir:magnitude() > 0.01 and cvid < 4294967295 then
+				c_dir:normalize()
+				-- расхождение с пеленгом массы: 1 - dot ∈ [0..2], больше = «противоположнее»
+				local sep = 1 - m_dir:dotproduct(c_dir)
+				if sep > best_sep and varka_lots.lot_free(npc, cvid) then
+					best_sep = sep
+					best = { vid = cvid, pos = cpos, w = sep }
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- ВХОД В HOLD (первая команда «дирижёра» — ДЕРЖАТЬ): боец вымел веер и НЕ уходит,
+-- а караулит угол. Огонь при контакте ведёт ванильный combat — мы держим позу + взгляд.
+-- Один станок (v0.15): HOLD — это ХВОСТ поиска, не второй конкурирующий action.
+-- Возвращает true если встал на караул, false если держать нечего (отпустил belief).
+local function enter_hold(npc, b, st, now)
+	local h = pick_hold(npc, b)
+	if not h then
+		varka_lkp.kill_belief(npc)
+		if DEBUG then printf("VARKA-ACT: npc %s swept all, nothing to hold -- killed belief", npc:id()) end
+		return false
+	end
+	st.hold_node  = h
+	st.hold_until = now + HOLD_MS
+	st.sight_node = nil
+	varka_lots.claim_lot(npc, h.vid)
+	if DEBUG then
+		printf("VARKA-ACT: npc %s fan swept -- HOLDING corner %s (w=%s)",
+			npc:id(), h.vid, string.format("%.2f", h.w))
+	end
+	return true
+end
+
+-- ===== ГЛУШИЛКА: action_varka_freeze =====
+--
+-- Перехватывает управление когда belief отсутствует (post_combat_wait, patrol и т.д. не нужны).
+-- Precondition: enemy=true + PROPERTY_BELIEF=false + weight=0 → дешевле любой ванили.
+-- Эффект: enemy=false (та же цель что у search-action).
+-- Поведение: NPC встаёт как вкопанный, смотрит на echo-точку если есть.
+-- Диагностика: VARKA-FREEZE в логе каждые 3с + HUD-флаш "[VARKA] HOLD".
+-- Это делает поломку ВИДИМОЙ: ваниль = NPC ушёл; наша глушилка = NPC стоит с флашем.
+
+class "action_varka_freeze" (action_base)
+function action_varka_freeze:__init(npc, storage, name) super(nil, name)
+	self.st = storage
+end
+
+function action_varka_freeze:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	local bw = npc:best_weapon()
+	if bw and IsWeapon(bw) then npc:set_item(object.fire2, bw) end
+	npc:set_mental_state(anim.danger)
+	npc:set_body_state(move.stand)
+	self.st.freeze_log_next = 0
+	db.storage[npc:id()].varka_active = true
+	if DEBUG then printf("VARKA-FREEZE: npc %s frozen (no belief)", npc:id()) end
+	if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD -- no task", 3) end
+end
+
+function action_varka_freeze:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local now = time_global()
+	if DEBUG and now >= self.st.freeze_log_next then
+		self.st.freeze_log_next = now + FREEZE_LOG_RATE
+		printf("VARKA-FREEZE: npc %s holding position", npc:id())
+		if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD", 2) end
+	end
+	local e = varka_lkp.get_echo(npc)
+	if e then npc:set_sight(look.fire_point, e.pos) end
+end
+
+function action_varka_freeze:finalize()
+	db.storage[self.object:id()].varka_active = nil
+	action_base.finalize(self)
+	if DEBUG then printf("VARKA-FREEZE: npc %s exited freeze", self.object:id()) end
+end
+
+-- ===== EVALUATOR =====
+
+class "evaluator_belief_search" (property_evaluator)
+function evaluator_belief_search:__init(storage, name) super(nil, name)
+	self.st = storage
+end
+function evaluator_belief_search:evaluate()
+	local npc = self.object
+	if not npc:alive()  then return false end
+	if IsWounded(npc)   then return false end
+	local b = varka_lkp.get_belief(npc)
+	if not b then return false end
+	return varka_lkp.mass(b) >= clinical_threshold(npc)
+end
+
+-- ===== ACTION =====
+
+class "action_varka_search" (action_base)
+function action_varka_search:__init(npc, storage, name) super(nil, name)
+	self.st = storage
+end
+
+function action_varka_search:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	local bw = npc:best_weapon()
+	if bw and IsWeapon(bw) then
+		npc:set_item(object.fire2, bw)
+	end
+	npc:set_mental_state(anim.danger)
+	npc:set_body_state(move.stand)
+	self.st.sight_node   = nil
+	self.st.sight_until  = 0
+	self.st.move_next    = 0
+	self.st.hold_node    = nil
+	self.st.hold_until   = 0
+	self.st.flank_node   = nil
+	self.st.flank_refresh = 0
+	db.storage[npc:id()].varka_active = true
+	if DEBUG then printf("VARKA-ACT: npc %s started search (belief alive)", npc:id()) end
+end
+
+function action_varka_search:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local now = time_global()
+	local st  = self.st
+
+	local b = varka_lkp.get_belief(npc)
+	if not b then return end
+
+	-- ФЛАНГ (роль «flank» от дирижёра): рвётся к укрытию с торца, смотрит на угрозу.
+	-- Не метёт веер (это дело массы) — идёт на off-axis точку и там караулит.
+	if varka_director.get_role(npc) == "flank" then
+		if not st.flank_node or now >= st.flank_refresh then
+			local fn = pick_flank(npc, b)
+			if fn then
+				st.flank_node    = fn
+				st.flank_refresh = now + FLANK_REFRESH
+				printf("VARKA-FLANK: npc %s -> node %s (sep=%.2f)", tostring(npc:id()), tostring(fn.vid), fn.w)
+			else
+				printf("VARKA-FLANK: npc %s pick_flank=nil (no off-axis cover)", tostring(npc:id()))
+			end
+		end
+		local fn = st.flank_node
+		if fn then
+			varka_lots.claim_lot(npc, fn.vid)
+			local arrived = npc:position():distance_to_sqr(fn.pos) < 4
+			if arrived then
+				npc:set_sight(look.fire_point, b.pos)
+				if not st.flank_arrived then
+					st.flank_arrived = true
+					printf("VARKA-FLANK: npc %s ARRIVED at flank node %s", tostring(npc:id()), tostring(fn.vid))
+				end
+			else
+				st.flank_arrived = nil
+				npc:set_sight(look.path_dir, nil, 0)
+			end
+			if now >= st.move_next then
+				st.move_next = now + MOVE_RATE
+				if fn.vid and fn.vid < 4294967295 then
+					if npc:path_type() ~= game_object.level_path then
+						npc:set_path_type(game_object.level_path)
+					end
+					npc:set_movement_type(move.walk)  -- поднять до move.run для жёсткого рывка (проверить константу)
+					npc:set_detail_path_type(move.line)
+					utils_obj.send_to_nearest_accessible_vertex(npc, fn.vid)
+				end
+			end
+		end
+		return
+	end
+
+	-- HOLD-режим (команда «ДЕРЖАТЬ» или «РАЗВЕДАЙ» от дирижёра):
+	if st.hold_node then
+		if now >= st.hold_until then
+			if DEBUG then printf("VARKA-ACT: npc %s hold timer expired -- killed belief", npc:id()) end
+			varka_lkp.kill_belief(npc)
+			return
+		end
+
+		-- SCOUT: дирижёр назначил нас разведчиком → идём к echo вместо своего угла
+		if varka_director.is_scout(npc) then
+			local e = varka_lkp.get_echo(npc)
+			if e then
+				npc:set_sight(look.fire_point, e.pos)
+				if now >= st.move_next then
+					st.move_next = now + MOVE_RATE
+					local vid = level.vertex_id(e.pos)
+					if vid and vid < 4294967295 then
+						if npc:path_type() ~= game_object.level_path then
+							npc:set_path_type(game_object.level_path)
+						end
+						npc:set_movement_type(move.walk)
+						npc:set_detail_path_type(move.line)
+						utils_obj.send_to_nearest_accessible_vertex(npc, vid)
+					end
+				end
+				if DEBUG and now >= st.move_next - MOVE_RATE then
+					printf("VARKA-ACT: npc %s SCOUTING echo point", npc:id())
+				end
+				return
+			end
+		end
+
+		-- HOLD: face movement while repositioning, lock gaze to LKP only once posted.
+		-- Fixes "walking backward while gazing at the mass" -- look where you walk,
+		-- watch the threat's last direction after arriving at the corner.
+		if npc:position():distance_to_sqr(st.hold_node.pos) < 4 then
+			npc:set_sight(look.fire_point, b.pos)
+		else
+			npc:set_sight(look.path_dir, nil, 0)
+		end
+		if now >= st.move_next then
+			st.move_next = now + MOVE_RATE
+			local vid = st.hold_node.vid
+			if vid and vid < 4294967295 then
+				varka_lots.claim_lot(npc, vid)
+				if npc:path_type() ~= game_object.level_path then
+					npc:set_path_type(game_object.level_path)
+				end
+				npc:set_movement_type(move.walk)
+				npc:set_detail_path_type(move.line)
+				utils_obj.send_to_nearest_accessible_vertex(npc, vid)
+			end
+		end
+		return
+	end
+
+	-- ВЗГЛЯД: подобрать ноду если её нет
+	if not st.sight_node then
+		local node = pick_next(npc, b, nil)
+		if not node then
+			enter_hold(npc, b, st, now) -- вымел веер → встал на караул (или отпустил belief)
+			return
+		end
+		st.sight_node  = node
+		st.sight_until = now + DWELL_MS
+		varka_lots.claim_lot(npc, node.vid)
+		if DEBUG then
+			printf("VARKA-ACT: npc %s -> node %s (w=%s)",
+				npc:id(), node.vid, string.format("%.2f", node.w))
+		end
+	end
+
+	-- Смотрим на текущую ноду
+	npc:set_sight(look.fire_point, st.sight_node.pos)
+
+	-- DWELL истёк → нода проверена взглядом → берём следующую
+	if now >= st.sight_until then
+		varka_lkp.mark_checked(b, st.sight_node.vid)
+		if DEBUG then
+			printf("VARKA-ACT: npc %s checked node %s by sight", npc:id(), st.sight_node.vid)
+		end
+		local node = pick_next(npc, b, st.sight_node.vid)
+		if not node then
+			enter_hold(npc, b, st, now) -- вымел веер → встал на караул (или отпустил belief)
+			return
+		end
+		st.sight_node  = node
+		st.sight_until = now + DWELL_MS
+		varka_lots.claim_lot(npc, node.vid)
+		if DEBUG then
+			printf("VARKA-ACT: npc %s -> node %s (w=%s)",
+				npc:id(), node.vid, string.format("%.2f", node.w))
+		end
+	end
+
+	-- НОГИ: идём к ноде взгляда (репозиция)
+	if now >= st.move_next then
+		st.move_next = now + MOVE_RATE
+		local node = st.sight_node
+		if node and node.vid and node.vid < 4294967295 then
+			varka_lots.claim_lot(npc, node.vid) -- освежаем столб на ходу (< CLAIM_TTL)
+			if npc:path_type() ~= game_object.level_path then
+				npc:set_path_type(game_object.level_path)
+			end
+			npc:set_movement_type(move.walk)
+			npc:set_detail_path_type(move.line)
+			utils_obj.send_to_nearest_accessible_vertex(npc, node.vid)
+		end
+	end
+end
+
+function action_varka_search:finalize()
+	self.st.sight_node = nil
+	self.st.hold_node  = nil
+	self.st.flank_node = nil
+	db.storage[self.object:id()].varka_active = nil
+	varka_lots.release_lots(self.object)
+	action_base.finalize(self)
+	if DEBUG then printf("VARKA-ACT: npc %s search complete", self.object:id()) end
+end
+
+-- ===== РЕГИСТРАЦИЯ =====
+
+local function add_belief_search(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local combat_action = manager:action(stalker_ids.action_combat_planner)
+	local combat_planner = cast_planner(combat_action)
+	if not (combat_action and combat_planner) then return end
+
+	db.storage[npc:id()].varka_search_st = {}
+	local storage = db.storage[npc:id()].varka_search_st
+
+	combat_planner:add_evaluator(PROPERTY_BELIEF,
+		evaluator_belief_search(storage, "evaluator_belief_search"))
+
+	local action = action_varka_search(npc, storage, "action_varka_search")
+	action:add_precondition(world_property(stalker_ids.property_enemy,              true))
+	action:add_precondition(world_property(stalker_ids.property_pure_enemy,         false))
+	action:add_precondition(world_property(stalker_ids.property_critically_wounded, false))
+	action:add_precondition(world_property(PROPERTY_BELIEF,                         true))
+	action:add_effect(world_property(stalker_ids.property_enemy, false))
+	action:set_weight(0)
+	combat_planner:add_action(ACTION_BELIEF_SEARCH, action)
+
+	-- ГЛУШИЛКА: freeze-action — перехватывает когда belief нет (вместо ванили)
+	local freeze = action_varka_freeze(npc, storage, "action_varka_freeze")
+	freeze:add_precondition(world_property(stalker_ids.property_enemy,              true))
+	freeze:add_precondition(world_property(stalker_ids.property_pure_enemy,         false))
+	freeze:add_precondition(world_property(stalker_ids.property_critically_wounded, false))
+	freeze:add_precondition(world_property(PROPERTY_BELIEF,                         false))
+	freeze:add_effect(world_property(stalker_ids.property_enemy, false))
+	freeze:set_weight(0)
+	combat_planner:add_action(ACTION_VARKA_FREEZE, freeze)
+
+	if DEBUG then
+		printf("VARKA-ACT: npc %s — belief-search + freeze registered in GOAP", npc:id())
+	end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local id = npc:id()
+	if initialized[id] then return end
+	initialized[id] = true
+	add_belief_search(npc)
+end
+
+local function npc_death(npc)
+	if not npc then return end
+	local id = npc:id()
+	initialized[id] = nil
+	if db.storage[id] then
+		db.storage[id].varka_search_st = nil
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update",         npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

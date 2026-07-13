@@ -1,0 +1,211 @@
+-- varka_director.script — v0.3: ШТУРМ-пресет (масса держит + один флангер)
+--
+-- === РАЗВЯЗКА «ПУТАНИЦЫ УРОВНЕЙ» ===
+-- Нет фиксированной лестницы «примитив → пресет → мультисквад». Есть ОДНА рекурсивная
+-- единица — РАЗДАЧА: функция (контекст) -> назначения. Применяется на любой зернистости:
+--   • примитив — раздача внутри одного бойца («держи угол» / «зайди с фланга»). search_action.
+--   • пресет   — раздача РОЛЕЙ-примитивов бойцам отряда. Запись в PRESETS ниже.
+--   • мета (2+ сквада) — та же раздача, но «бойцы» = сквады, «роли» = пресеты.
+--     НЕ пишем сейчас. Но контракт assign() уже её форму принимает → масштаб бесплатен.
+-- Фрактал: пресет смотрит вниз (командует примитивами) и вверх (сам = примитив для меты).
+--
+-- === КОНТРАКТ ПРЕСЕТА ===
+--   preset.assign(ctx, prev) -> plan | nil
+--     ctx  = { squad, sample, belief, echo }      -- что отряд знает прямо сейчас
+--     prev = предыдущий plan этого отряда (стабильность: не перевыбирать флангера каждый тик)
+--     plan = { mode, roles = { [npc_id] = "<примитив>" }, scout_id?, flank_id? }
+--   Пресет НЕ двигает бойцов. Он только НАЗЫВАЕТ роль. Руки — примитивы в search_action.
+--
+-- === РЫЧАГ ВЫБОРА ПРЕСЕТА ===
+-- Пока пресетов мало — настоящий свитч по обстановке смысла не имеет.
+-- ACTIVE_PRESET — жёсткий костыль: директор всегда раздаёт пресет-в-разработке.
+-- Адекватный выбор пьесы (фракция/угроза/мораль) впаяем, когда пресетов станет 4+.
+
+local DEBUG      = true
+local SQUAD_RATE = 1000  -- обновляем отряд раз в секунду, не каждый фрейм
+
+-- Костыль-рычаг: имя пресета, который директор раздаёт всем отрядам. Меняется руками.
+local ACTIVE_PRESET = "shturm"
+
+-- ============================================================================
+-- ОБЩИЕ ХЕЛПЕРЫ (нейтральные к пресету)
+-- ============================================================================
+
+local function each_member(squad, fn)
+	for k in squad:squad_members() do
+		local obj = level.object_by_id(k.id)  -- db.storage[].object бывает nil в бою
+		if obj and obj:alive() and IsStalker(obj) then fn(k.id, obj) end
+	end
+end
+
+local function get_live_member(squad)
+	local found = nil
+	each_member(squad, function(_, obj) found = found or obj end)
+	return found
+end
+
+-- Ближайший к точке живой боец отряда. Универсально: скаут (к echo), флангер (к угрозе).
+local function nearest_member(squad, pos)
+	local best_id, best_dist = nil, math.huge
+	each_member(squad, function(id, obj)
+		local d = obj:position():distance_to(pos)
+		if d < best_dist then best_dist = d; best_id = id end
+	end)
+	return best_id
+end
+
+local function owner_alive(id)
+	local o = id and level.object_by_id(id)
+	return o and o:alive()
+end
+
+-- Небоёвка (echo жив, belief мёртв): ближайший к echo разведывает, остальные на посту.
+-- Общая пьеса пресетов, которые в echo-фазе ведут себя одинаково (greh, shturm).
+local function scout_plan(squad, echo_pos, prev)
+	local scout_id = prev and prev.scout_id
+	if not owner_alive(scout_id) then scout_id = nearest_member(squad, echo_pos) end
+	local roles = {}
+	each_member(squad, function(id)
+		roles[id] = (id == scout_id) and "scout" or "hold"
+	end)
+	return { mode = "scout", scout_id = scout_id, roles = roles }
+end
+
+-- ============================================================================
+-- РЕЕСТР ПРЕСЕТОВ
+-- ============================================================================
+local PRESETS = {}
+
+-- ----------------------------------------------------------------------------
+-- ПРЕСЕТ «ГРЕХ» — дисциплина: все держат углы (overwatch). Инфра v0.2, поведение v0.1.
+-- ЗАДУМАННЫЙ ГРЕХ (ещё не здесь): заходят в ЗДАНИЯ, сторожат входы в приседе, не лезут
+-- в окна (varka_windows.classify + find_firing_node). Сядет новыми ролями, скелет не тронет.
+-- ----------------------------------------------------------------------------
+PRESETS.greh = {
+	name = "greh",
+	assign = function(ctx, prev)
+		local squad, b, e = ctx.squad, ctx.belief, ctx.echo
+		if b then
+			local roles = {}
+			each_member(squad, function(id) roles[id] = "hold" end)
+			return { mode = "hold", roles = roles }
+		elseif e then
+			return scout_plan(squad, e.pos, prev)
+		end
+		return nil
+	end,
+}
+
+-- ----------------------------------------------------------------------------
+-- ПРЕСЕТ «ШТУРМ» — классика: масса прижимает в лоб, ОДИН заходит с фланга.
+-- Директор лишь НАЗЫВАЕТ флангера (ближайший к угрозе — он уже остриё). УГОЛ обхода
+-- считает примитив pick_flank в search_action (масса-относительный выбор цели, §флангер).
+-- Флангера держим стабильным: перевыбираем только если старый умер.
+-- ----------------------------------------------------------------------------
+PRESETS.shturm = {
+	name = "shturm",
+	assign = function(ctx, prev)
+		local squad, b, e = ctx.squad, ctx.belief, ctx.echo
+		if b then
+			local flank_id = prev and prev.flank_id
+			if not owner_alive(flank_id) then flank_id = nearest_member(squad, b.pos) end
+			local roles = {}
+			each_member(squad, function(id)
+				roles[id] = (id == flank_id) and "flank" or "hold"
+			end)
+			return { mode = "hold", flank_id = flank_id, roles = roles }
+		elseif e then
+			return scout_plan(squad, e.pos, prev)
+		end
+		return nil
+	end,
+}
+
+-- ============================================================================
+-- ДВИЖОК ДИРИЖЁРА
+-- ============================================================================
+
+-- states[squad_key] = plan (последняя раздача пресета) | nil
+local states     = {}
+local squad_tick = {}
+
+local HUD_LABELS = {
+	hold  = "[VARKA] SHTURM -- mass holds, one flanks",
+	scout = "[VARKA] SCOUT -- recon moving",
+	idle  = "[VARKA] IDLE -- director silent",
+}
+
+local function announce(key, plan, prev_mode)
+	local mode = plan and plan.mode
+	if mode == prev_mode then return end
+	if DEBUG then
+		printf("VARKA-DIR: squad %s -> %s (preset=%s) scout=%s flank=%s",
+			key, mode or "ПОКОЙ", ACTIVE_PRESET,
+			tostring(plan and plan.scout_id), tostring(plan and plan.flank_id))
+		local label = HUD_LABELS[mode or "idle"]
+		if label and actor_menu then actor_menu.set_msg(1, label, 4) end
+	end
+end
+
+local function update_squad(squad)
+	local key    = squad.id
+	local sample = get_live_member(squad)
+	if not sample then states[key] = nil; return end
+
+	local preset = PRESETS[ACTIVE_PRESET]
+	if not preset then
+		if DEBUG then printf("VARKA-DIR: НЕТ пресета '%s' — проверь ACTIVE_PRESET", ACTIVE_PRESET) end
+		states[key] = nil
+		return
+	end
+
+	local ctx = {
+		squad  = squad,
+		sample = sample,
+		belief = varka_lkp.get_belief(sample),
+		echo   = varka_lkp.get_echo(sample),
+	}
+
+	local prev_mode = states[key] and states[key].mode
+	local plan      = preset.assign(ctx, states[key])
+	states[key]     = plan
+	announce(key, plan, prev_mode)
+end
+
+-- ===== ПУБЛИЧНОЕ API =====
+
+function get_mode(npc)
+	local squad = get_object_squad(npc)
+	if not squad then return nil end
+	local st = states[squad.id]
+	return st and st.mode
+end
+
+-- Роль конкретного бойца («hold» / «scout» / «flank» / nil). Примитивы читают ЕЁ.
+function get_role(npc)
+	local squad = get_object_squad(npc)
+	if not squad then return nil end
+	local st = states[squad.id]
+	return st and st.roles and st.roles[npc:id()]
+end
+
+-- Совместимость: скаут = боец с ролью «scout». Единый источник правды — раздача ролей.
+function is_scout(npc)
+	return get_role(npc) == "scout"
+end
+
+-- ===== РЕГИСТРАЦИЯ =====
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local squad = get_object_squad(npc)
+	if not squad then return end
+	local now = time_global()
+	if (now - (squad_tick[squad.id] or 0)) < SQUAD_RATE then return end
+	squad_tick[squad.id] = now
+	update_squad(squad)
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+end

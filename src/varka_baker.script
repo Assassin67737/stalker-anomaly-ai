@@ -1,0 +1,254 @@
+-- varka_baker.script — ИССЛЕДОВАТЕЛЬСКИЙ ИНСТРУМЕНТ (не боевой путь)
+--
+-- Разведка геометрии уровня: сколько нод, процент interior, сколько firing-line пар.
+-- Боевой путь = varka_windows (on-demand, не требует предбейка).
+--
+-- ⚠️ Cordon: 624k нод → полный BFS убивает Lua VM (OOM). MAX_NODES ограничивает
+-- выборку до управляемого числа — для статистики этого достаточно.
+--
+-- F7: запустить/перезапустить бейк выборки.
+-- Вывод: varka_baker.window_pairs_by_level[level_name] = { {in_vid, ex_vid}, ... }
+
+local DEBUG = true
+
+local KEY         = DIK_keys.DIK_F7
+local RQT_STATIC  = 2       -- collide::rqtStatic (геометрия уровня)
+local UP_RANGE    = 15.0    -- м: есть потолок ≤ 15м → interior; промах → exterior
+local CHEST_H     = 1.4     -- м: высота выстрела для shot-ray
+local FLOOR_PROBE = 0.2     -- м: смещение вверх от навмеша для up-ray (не цеплять пол)
+local PAIR_RADIUS = 30.0    -- м: макс. расстояние пары interior↔exterior
+local BFS_DIST    = 2.0     -- м: шаг BFS-соседа по навмешу
+local INVALID_VID = 4294967295
+local MAX_NODES   = 50000   -- кап BFS: Cordon=624k → OOM без лимита; для статистики 50k достаточно
+
+-- Бюджет на тик. Bench: ~2.65 µs/ray.
+-- CLASSIFY: 4000 × 2.65µs ≈ 10.6ms
+-- PAIR:     80 интерьерных × ~50 соседей × 2.65µs ≈ 10.6ms
+local ENUM_CHUNK     = 150   -- нод BFS-фронта обработать за тик
+local CLASSIFY_CHUNK = 4000  -- up-ray в тике
+local PAIR_CHUNK     = 80    -- interior-нод в тике (каждая → N shot-ray к соседям)
+
+-- 12 горизонтальных направлений BFS
+local BFS_DIRS = {}
+for i = 0, 11 do
+    local a = i * math.pi * 2 / 12
+    BFS_DIRS[i+1] = vector():set(math.cos(a), 0, math.sin(a))
+end
+
+local UP = vector():set(0, 1, 0)
+
+-- ===== STATE =====
+
+local phase       = "IDLE"
+local visited     = {}
+local frontier    = {}
+local all_vids    = {}
+local interior    = {}      -- { {vid, pos}, ... }
+local exterior    = {}      -- { {vid, pos}, ... }
+local classify_i  = 1
+local pair_i      = 1
+local cur_pairs   = {}      -- пары текущего бейка
+
+local last_log    = 0
+local LOG_RATE    = 2000
+
+-- ===== PUBLIC =====
+
+window_pairs_by_level = {}  -- varka_baker.window_pairs_by_level[lvl] = { {in_vid, ex_vid} }
+
+function get_pairs()
+    return window_pairs_by_level[level.name()]
+end
+
+function bake_status()
+    return phase
+end
+
+-- ===== PHASES =====
+
+local function start_bake()
+    local actor = db.actor
+    if not (actor and actor:alive()) then
+        printf("VARKA-BAKER: actor not ready")
+        return
+    end
+    local seed = actor:level_vertex_id()
+    if not seed or seed >= INVALID_VID then
+        printf("VARKA-BAKER: invalid start vertex")
+        return
+    end
+    phase      = "ENUM"
+    visited    = { [seed] = true }
+    frontier   = { seed }
+    all_vids   = { seed }
+    interior   = {}
+    exterior   = {}
+    classify_i = 1
+    pair_i     = 1
+    cur_pairs  = {}
+    printf("VARKA-BAKER: bake started -- level=%s seed=%s", level.name(), seed)
+    if actor_menu then actor_menu.set_msg(1, "[BAKER] ENUM...", 3) end
+end
+
+-- PHASE 1 — BFS навмеша.
+-- Каждый тик: обрабатываем до ENUM_CHUNK нод из фронта,
+-- остаток несём в следующий тик.
+local function tick_enum()
+    local new_front = {}
+    local processed = 0
+    for _, base in ipairs(frontier) do
+        if processed >= ENUM_CHUNK then
+            -- перенести необработанное в следующий тик
+            new_front[#new_front+1] = base
+        else
+            processed = processed + 1
+            for _, dir in ipairs(BFS_DIRS) do
+                local vid = level.vertex_in_direction(base, dir, BFS_DIST)
+                if vid and vid < INVALID_VID and vid ~= base and not visited[vid] then
+                    visited[vid]           = true
+                    all_vids[#all_vids+1]  = vid
+                    new_front[#new_front+1] = vid
+                end
+            end
+        end
+    end
+    frontier = new_front
+
+    local capped = #all_vids >= MAX_NODES
+    if #frontier == 0 or capped then
+        phase      = "CLASSIFY"
+        classify_i = 1
+        local why = capped and string.format("(capped at %s)", MAX_NODES) or ""
+        printf("VARKA-BAKER: ENUM done -- %s nodes %s", #all_vids, why)
+        if actor_menu then
+            actor_menu.set_msg(1, string.format("[BAKER] CLASSIFY %s nodes...", #all_vids), 4)
+        end
+    end
+end
+
+-- PHASE 2 — up-ray классификация.
+-- 1 вертикальный луч на ноду: hit = interior, miss = exterior.
+local function tick_classify()
+    local rp = ray_pick()
+    rp:set_direction(UP)
+    rp:set_range(UP_RANGE)
+    rp:set_flags(RQT_STATIC)
+
+    local i_end = math.min(classify_i + CLASSIFY_CHUNK - 1, #all_vids)
+    for i = classify_i, i_end do
+        local vid = all_vids[i]
+        local pos = level.vertex_position(vid)
+        if pos then
+            local probe = vector():set(pos.x, pos.y + FLOOR_PROBE, pos.z)
+            rp:set_position(probe)
+            local snap = vec_set(pos)
+            if rp:query() then
+                interior[#interior+1] = { vid = vid, pos = snap }
+            else
+                exterior[#exterior+1] = { vid = vid, pos = snap }
+            end
+        end
+    end
+
+    classify_i = i_end + 1
+    if classify_i > #all_vids then
+        phase  = "PAIR"
+        pair_i = 1
+        printf("VARKA-BAKER: CLASSIFY done -- interior=%s exterior=%s", #interior, #exterior)
+        if actor_menu then
+            actor_menu.set_msg(1,
+                string.format("[BAKER] PAIR int=%s ext=%s...", #interior, #exterior), 5)
+        end
+    end
+end
+
+-- PHASE 3 — shot-ray валидация пар.
+-- Для каждой interior-ноды: перебрать exterior-ноды в PAIR_RADIUS,
+-- стрельнуть ray_pick на chest-height. Не заблокировано = пара.
+local r_sqr = PAIR_RADIUS * PAIR_RADIUS
+local function tick_pair()
+    local rp = ray_pick()
+    rp:set_flags(RQT_STATIC)
+
+    local i_end = math.min(pair_i + PAIR_CHUNK - 1, #interior)
+    for i = pair_i, i_end do
+        local inn = interior[i]
+        local src = vector():set(inn.pos.x, inn.pos.y + CHEST_H, inn.pos.z)
+        rp:set_position(src)
+        for _, ext in ipairs(exterior) do
+            if inn.pos:distance_to_sqr(ext.pos) <= r_sqr then
+                local dst  = vector():set(ext.pos.x, ext.pos.y + CHEST_H, ext.pos.z)
+                local diff = vec_set(dst):sub(src)
+                local dist = diff:magnitude()
+                if dist > 1.0 then
+                    diff:normalize()
+                    rp:set_direction(diff)
+                    rp:set_range(dist + 0.5)
+                    if not rp:query() then
+                        cur_pairs[#cur_pairs+1] = { in_vid = inn.vid, ex_vid = ext.vid }
+                    end
+                end
+            end
+        end
+    end
+
+    pair_i = i_end + 1
+    if pair_i > #interior then
+        local lvl = level.name()
+        window_pairs_by_level[lvl] = cur_pairs
+        phase = "DONE"
+        printf("VARKA-BAKER: DONE -- level=%s pairs=%s", lvl, #cur_pairs)
+        if actor_menu then
+            actor_menu.set_msg(1, string.format("[BAKER] DONE: %s pairs", #cur_pairs), 8)
+        end
+    end
+end
+
+-- ===== HEARTBEAT =====
+
+local function log_progress(now)
+    if now - last_log < LOG_RATE then return end
+    last_log = now
+    if phase == "ENUM" then
+        printf("VARKA-BAKER: ENUM nodes=%s frontier=%s", #all_vids, #frontier)
+    elseif phase == "CLASSIFY" then
+        printf("VARKA-BAKER: CLASSIFY %s/%s", classify_i - 1, #all_vids)
+    elseif phase == "PAIR" then
+        printf("VARKA-BAKER: PAIR %s/%s pairs=%s", pair_i - 1, #interior, #cur_pairs)
+    end
+end
+
+local function actor_update()
+    if phase == "IDLE" or phase == "DONE" then return end
+    local now = time_global()
+    if DEBUG then log_progress(now) end
+    local ok, err
+    if phase == "ENUM" then
+        ok, err = pcall(tick_enum)
+    elseif phase == "CLASSIFY" then
+        ok, err = pcall(tick_classify)
+    elseif phase == "PAIR" then
+        ok, err = pcall(tick_pair)
+    end
+    if not ok then
+        printf("VARKA-BAKER: ERROR in %s -- %s", phase, tostring(err))
+        phase = "IDLE"
+    end
+end
+
+local function on_key_press(key)
+    if key ~= KEY then return end
+    if phase ~= "IDLE" and phase ~= "DONE" then
+        printf("VARKA-BAKER: bake in progress (phase=%s) -- ignoring F7", phase)
+        if actor_menu then actor_menu.set_msg(1, "[BAKER] already running", 2) end
+        return
+    end
+    local ok, err = pcall(start_bake)
+    if not ok then printf("VARKA-BAKER: start error -- %s", tostring(err)) end
+end
+
+function on_game_start()
+    RegisterScriptCallback("actor_on_update", actor_update)
+    -- F7 отключён: baker = исследовательский инструмент, в мейн-лайне не нужен
+    -- RegisterScriptCallback("on_key_press",    on_key_press)
+end

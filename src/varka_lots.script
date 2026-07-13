@@ -1,0 +1,86 @@
+-- varka_lots.script — v0.16: lot book (простейший, claim-first)
+--
+-- Слой РЕШЕНИЯ поверх слоя ЗНАНИЯ (§АРХИТЕКТУРА ЯДРА):
+--   [ЗНАНИЕ]   varka_lkp  — одно belief-облако на отряд (сенсорика, звено 1).
+--   [РЕШЕНИЕ]  этот файл  — распределение укрытий-лотов между бойцами (поведение, звено 2).
+-- Граница сенсорика↔поведение (§ИНТЕРФЕЙС ЗВЕНЬЕВ) держится: varka_lkp ничего про лоты
+-- не знает, lot book только ЧИТАЕТ belief через потребителя.
+--
+-- Проблема, которую закрывает («масляная капля», §ПОВЕДЕНИЕ): все бойцы читают ОДИН
+-- belief и независимо (pick_next) хватают САМОЕ тяжёлое укрытие → сходятся в одну точку.
+-- Lot book: боец «столбит» укрытие в общей таблице отряда, сосед видит столб и берёт
+-- следующее по весу → отряд размазывается по укрытиям = угловое накрытие (§ЧИСЛЕННОСТЬ).
+--
+-- ПРОСТЕЙШАЯ форма (step 2 порядка MOD_STATUS): столб = «кто первый в тик, того и лот»
+-- (вырожденная ставка — первый пришёл, первый занял). Аукцион argmax по бойцу
+-- (геодезика + ранг + ствол + гистерезис, step 3) сядет ПОВЕРХ этой же таблицы:
+-- claim_lot станет исходом ставки, а не гонки тиков. Интерфейс потребителя не изменится.
+
+local DEBUG     = true
+local CLAIM_TTL = 3000  -- лот протухает, если владелец его не обновил (умер/телепорт/краш)
+
+-- lots[squad_key] = { [vid] = { id = npc_id, stamp = t } } — кто держит какое укрытие
+-- lot_by_npc[npc_id] = { key, vid } — текущий лот бойца (ровно один: один боец = один лот)
+local lots       = {}
+local lot_by_npc = {}
+
+local function squad_key(npc)
+	-- та же схема ключа, что beliefs в varka_lkp — иначе лот и облако разъедутся по отрядам
+	local squad = get_object_squad(npc)
+	return squad and squad.id or npc:id()
+end
+
+local function owner_alive(id)
+	local o = level.object_by_id(id)
+	return o and o:alive()
+end
+
+-- Свободен ли лот vid для этого NPC: ничей / мой / владелец протух / владелец мёртв.
+-- Протухание + проверка жизни = страховка от «висячих» столбов (боец умер, не освободив).
+function lot_free(npc, vid)
+	local book = lots[squad_key(npc)]
+	local e = book and book[vid]
+	if not e then return true end
+	if e.id == npc:id() then return true end
+	if (time_global() - e.stamp) > CLAIM_TTL then return true end
+	if not owner_alive(e.id) then return true end
+	return false
+end
+
+-- Застолбить лот vid за NPC. Освобождает прежний лот бойца — один боец держит один лот.
+-- Вызывается потребителем каждый раз, когда боец фиксирует ноду взгляда (обновляет stamp).
+function claim_lot(npc, vid)
+	local id  = npc:id()
+	local key = squad_key(npc)
+	local prev = lot_by_npc[id]
+	if prev and (prev.key ~= key or prev.vid ~= vid) then
+		local pb = lots[prev.key]
+		if pb and pb[prev.vid] and pb[prev.vid].id == id then
+			pb[prev.vid] = nil
+		end
+	end
+	lots[key] = lots[key] or {}
+	lots[key][vid] = { id = id, stamp = time_global() }
+	lot_by_npc[id] = { key = key, vid = vid }
+end
+
+-- Освободить лот бойца (finalize action / смерть). Чужой лот не трогаем.
+function release_lots(npc)
+	local id = npc:id()
+	local prev = lot_by_npc[id]
+	if prev then
+		local pb = lots[prev.key]
+		if pb and pb[prev.vid] and pb[prev.vid].id == id then
+			pb[prev.vid] = nil
+		end
+	end
+	lot_by_npc[id] = nil
+end
+
+local function npc_death(npc)
+	if npc then release_lots(npc) end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

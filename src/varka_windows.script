@@ -1,0 +1,135 @@
+-- varka_windows.script — on-demand firing-line примитивы (v1.0)
+--
+-- Замена тяжёлого varka_baker для боевого пути. Вместо «посчитать ВСЕ пары уровня
+-- заранее» — считаем ТОЛЬКО то, что спросил потребитель, в момент запроса. Bench:
+-- 2.65µs/луч → запрос «есть ли простреливаемое окно рядом» = ~10 лучей = 0.03мс. Даром.
+--
+-- Классификация ноды (interior/exterior) КЭШИРУЕТСЯ в RAM по level+vid. vid стабилен
+-- в пределах уровня → второй запрос той же ноды бесплатен. Кэш живёт до перезагрузки
+-- (умирает чисто — во время дева НЕ отравляет стойкими старыми данными).
+--
+-- Персистентность-на-диск (§ОКОННЫЕ ЛОТЫ, парковка) сядет ПОВЕРХ classify() как
+-- cache-miss path, ничего тут не переписывая — сначала зонд varka_io_probe (io доступен?).
+--
+-- API:
+--   varka_windows.classify(vid)              → "interior" | "exterior" (кэш)
+--   varka_windows.has_los(a_pos, b_pos)      → bool (чистая линия огня на chest-height)
+--   varka_windows.find_firing_node(npc, tgt) → {vid,pos} exterior-нода с LOS на tgt, или nil
+
+local DEBUG       = true
+
+local RQT_STATIC  = 2       -- collide::rqtStatic
+local UP_RANGE    = 15.0    -- м: потолок ≤ этого → interior
+local FLOOR_PROBE = 0.2     -- м: подъём от навмеша для up-ray (не цеплять пол)
+local CHEST_H     = 1.4     -- м: высота линии огня
+local FAN_K       = 12      -- направлений при поиске огневой позиции вокруг NPC
+local FAN_DIST    = 12.0    -- м: как далеко искать позицию
+local INVALID_VID = 4294967295
+
+local UP = vector():set(0, 1, 0)
+
+-- classify_cache[level_name][vid] = "interior"|"exterior"
+local classify_cache = {}
+
+-- ===== ПРИМИТИВЫ =====
+
+-- interior/exterior по одному вертикальному лучу. Промах (нет потолка ≤ UP_RANGE) =
+-- открытое небо = exterior. Попадание = потолок над головой = interior.
+-- Результат кэшируется: vid стабилен в пределах уровня, второй запрос бесплатен.
+function classify(vid)
+	if not (vid and vid < INVALID_VID) then return nil end
+	local lvl = level.name()
+	local lc  = classify_cache[lvl]
+	if not lc then lc = {}; classify_cache[lvl] = lc end
+	if lc[vid] then return lc[vid] end
+
+	local pos = level.vertex_position(vid)
+	if not pos then return nil end
+	local rp = ray_pick()
+	rp:set_position(vector():set(pos.x, pos.y + FLOOR_PROBE, pos.z))
+	rp:set_direction(UP)
+	rp:set_range(UP_RANGE)
+	rp:set_flags(RQT_STATIC)
+
+	local result = rp:query() and "interior" or "exterior"
+	lc[vid] = result
+	return result
+end
+
+-- Чистая ли линия огня между двумя точками (обе поднимаются на грудь).
+-- Не заблокировано геометрией = можно стрелять. Одна геометрия уровня (rqtStatic):
+-- стены/подоконники ловятся, живые NPC — нет (стреляем «сквозь» союзников на этом слое).
+function has_los(a_pos, b_pos)
+	if not (a_pos and b_pos) then return false end
+	local src  = vector():set(a_pos.x, a_pos.y + CHEST_H, a_pos.z)
+	local dst  = vector():set(b_pos.x, b_pos.y + CHEST_H, b_pos.z)
+	local diff = vec_set(dst):sub(src)
+	local dist = diff:magnitude()
+	if dist < 1.0 then return true end
+	diff:normalize()
+
+	local rp = ray_pick()
+	rp:set_position(src)
+	rp:set_direction(diff)
+	rp:set_range(dist - 0.3)  -- чуть не доводим до цели, чтобы не ловить стену ЗА ней
+	rp:set_flags(RQT_STATIC)
+	return not rp:query()
+end
+
+-- Огневая позиция: нода вокруг NPC, с которой ЕСТЬ чистая линия на цель (tgt_pos).
+-- Веер из FAN_K направлений по навмешу → каждая нода проверяется has_los к цели.
+-- Возвращает ближайшую подходящую (минимум перемещения). nil = позиции нет
+-- (цель полностью укрыта отсюда → потребитель ищет другой подход / не назначает лот).
+-- Это низовой примитив «оконного лота»: exterior-нода, простреливающая interior-LKP.
+function find_firing_node(npc, tgt_pos)
+	if not (npc and npc:alive() and tgt_pos) then return nil end
+	local base = npc:level_vertex_id()
+	if not base or base >= INVALID_VID then return nil end
+
+	local npc_pos = npc:position()
+	local best, best_d = nil, nil
+	for i = 1, FAN_K do
+		local a   = (i - 1) * math.pi * 2 / FAN_K
+		local dir = vector():set(math.cos(a), 0, math.sin(a))
+		local vid = level.vertex_in_direction(base, dir, FAN_DIST)
+		if vid and vid < INVALID_VID and vid ~= base then
+			local pos = level.vertex_position(vid)
+			if pos and has_los(pos, tgt_pos) then
+				local d = npc_pos:distance_to_sqr(pos)
+				if not best_d or d < best_d then
+					best, best_d = { vid = vid, pos = vec_set(pos) }, d
+				end
+			end
+		end
+	end
+	if DEBUG and best then
+		printf("VARKA-WIN: npc %s firing node %s (%s)",
+			npc:id(), best.vid, classify(best.vid) or "?")
+	end
+	return best
+end
+
+-- ===== ПОЛИГОННЫЙ ТЕСТ (шаг 2 плана: увидеть up-ray живым) =====
+-- Тест на F4 (F5/F9 = быстросейв/лоад): классифицировать ноду ПОД игроком + показать.
+-- Встань в дом → ожидаем interior. Выйди на улицу → exterior.
+
+local function test_here()
+	local actor = db.actor
+	if not (actor and actor:alive()) then return end
+	local vid = actor:level_vertex_id()
+	local cls = classify(vid)
+	printf("VARKA-WIN: node %s under actor = %s", tostring(vid), tostring(cls))
+	if actor_menu then
+		actor_menu.set_msg(1, string.format("[VARKA-WIN] node %s: %s", tostring(vid), tostring(cls)), 4)
+	end
+end
+
+local function on_key_press(key)
+	if key ~= DIK_keys.DIK_F4 then return end
+	local ok, err = pcall(test_here)
+	if not ok then printf("VARKA-WIN: ОШИБКА -- %s", tostring(err)) end
+end
+
+function on_game_start()
+	if DEBUG then RegisterScriptCallback("on_key_press", on_key_press) end
+end

@@ -24,6 +24,15 @@ local ACTION_VARKA_FREEZE  = 995  -- глушилка: перехват когд
 
 local FREEZE_LOG_RATE = 3000  -- мс между логами в freeze-режиме
 
+-- OVERWATCH (v0.18): пост выбирается глазами — откуда ВИДНО облако, а не где толще стена
+local OW_DIRS   = 12          -- направлений кольца кандидатов вокруг бойца
+local OW_RINGS  = { 5, 10, 15 } -- радиусы колец, м
+local OW_SPREAD = 4           -- м: пост ближе этого к посту соседа = тот же угол, штраф
+local OW_TARGETS = 3          -- сколько тяжёлых нод веера проверять глазами (+ сам LKP)
+local BARK_MS   = 8000        -- не чаще раза в столько мс на отряд (иначе хор)
+
+local last_bark = {}          -- [squad_key] = время последней реплики
+
 local initialized = {}
 
 local CLINICAL_ROOKIE = 0.05
@@ -83,29 +92,93 @@ local function pick_hold(npc, b)
 	return heaviest(true) or heaviest(false)
 end
 
--- ВХОД В HOLD (первая команда «дирижёра» — ДЕРЖАТЬ): боец вымел веер и НЕ уходит,
--- а караулит угол. Огонь при контакте ведёт ванильный combat — мы держим позу + взгляд.
--- Один станок (v0.15): HOLD — это ХВОСТ поиска, не второй конкурирующий action.
--- Возвращает true если встал на караул, false если держать нечего (отпустил belief).
-local function enter_hold(npc, b, st, now)
-	local h = pick_hold(npc, b)
-	if not h then
-		varka_lkp.kill_belief(npc)
-		if DEBUG then printf("VARKA-ACT: npc %s swept all, nothing to hold -- killed belief", npc:id()) end
-		return false
+-- ПОСТ НАБЛЮДЕНИЯ (v0.18): кольца нод вокруг бойца, каждая проверяется ГЛАЗАМИ —
+-- видно ли с неё облако (LKP + самые тяжёлые ноды веера). Счёт поста:
+--   доля видимых целей × (0.4 + укрытие в сторону LKP) / (1 + дистанция/15)
+-- Пост у соседа ближе OW_SPREAD → ×0.3: отряд расходится по РАЗНЫМ углам обзора.
+-- nil = ни с одной ноды облако не видно (тогда держим лучшее укрытие веера).
+local function pick_overwatch(npc, b)
+	local base = npc:level_vertex_id()
+	if not (base and base < 4294967295) then return nil end
+
+	local targets = { b.pos }
+	local fan = varka_lkp.search_nodes(b, time_global(), npc:position())
+	table.sort(fan, function(x, y) return x.w > y.w end)
+	for i = 1, math.min(OW_TARGETS, #fan) do targets[#targets+1] = fan[i].pos end
+
+	local others  = varka_lots.claimed_positions(npc)
+	local npc_pos = npc:position()
+	local spread_sqr = OW_SPREAD * OW_SPREAD
+	local best, best_s = nil, nil
+
+	local function try(vid)
+		if not (vid and vid < 4294967295) then return end
+		if not varka_lots.lot_free(npc, vid) then return end
+		local pos = level.vertex_position(vid)
+		local seen = 0
+		for _, t in ipairs(targets) do
+			if varka_eyes.has_los(pos, t) then seen = seen + 1 end
+		end
+		if seen == 0 then return end
+		local to = vec_set(b.pos):sub(pos)
+		to.y = 0
+		local cover = to:magnitude() > 0.01 and level.high_cover_in_direction(vid, to) or 0
+		local s = (seen / #targets) * (0.4 + cover) / (1 + npc_pos:distance_to(pos) / 15)
+		for _, o in ipairs(others) do
+			if o:distance_to_sqr(pos) < spread_sqr then s = s * 0.3 end
+		end
+		if not best_s or s > best_s then
+			best, best_s = { vid = vid, pos = vec_set(pos), w = s }, s
+		end
 	end
-	st.hold_node  = h
-	st.hold_until = now + HOLD_MS
-	st.sight_node = nil
-	varka_lots.claim_lot(npc, h.vid)
+
+	try(base)
+	for _, r in ipairs(OW_RINGS) do
+		for i = 1, OW_DIRS do
+			local a = (i - 1) * math.pi * 2 / OW_DIRS
+			try(level.vertex_in_direction(base, vector():set(math.cos(a), 0, math.sin(a)), r))
+		end
+	end
+	return best
+end
+
+-- Голос отряда: одна реплика на отряд не чаще BARK_MS. Тема — из ванильного
+-- script_sound_axr.ltx ([search] = fight\searching_enemy). pcall: нет темы — молчим.
+local function bark(npc, theme)
+	local key = varka_lkp.get_squad_key(npc)
+	local now = time_global()
+	if last_bark[key] and now - last_bark[key] < BARK_MS then return end
+	last_bark[key] = now
+	pcall(xr_sound.set_sound_play, npc:id(), theme)
+	if varka_trace then varka_trace.emit(key, npc:id(), "bark", {theme=theme}) end
+end
+
+-- ВХОД В HOLD (первая команда «дирижёра» — ДЕРЖАТЬ): боец вымел веер и НЕ уходит,
+-- а держит угол. Огонь при контакте ведёт ванильный combat — мы держим позу + взгляд.
+-- Один станок (v0.15): HOLD — это ХВОСТ поиска, не второй конкурирующий action.
+-- v0.18: пустой веер больше НЕ убивает belief всего отряда (полигон 19.07: 12 kill, 0 hold).
+-- Порядок: пост с обзором → лучшее укрытие веера → держать там, где стоишь.
+local function enter_hold(npc, b, st, now)
+	local h, mode = pick_overwatch(npc, b), "ow"
+	if not h then h, mode = pick_hold(npc, b), "cover" end
+	if not h then
+		h, mode = { vid = npc:level_vertex_id(), pos = vec_set(npc:position()), w = 0 }, "here"
+	end
+	st.hold_node   = h
+	st.hold_until  = now + HOLD_MS
+	st.hold_since  = b.stamp
+	st.hold_posted = false
+	st.sight_node  = nil
+	if h.vid and h.vid < 4294967295 then varka_lots.claim_lot(npc, h.vid) end
 	if varka_trace then
 		varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "hold_enter", {
-			vid=h.vid, w=h.w, hx=h.pos.x, hz=h.pos.z
+			vid=h.vid, w=h.w, hx=h.pos.x, hz=h.pos.z, mode=mode
 		})
 	end
 	if DEBUG then
-		printf("VARKA-ACT: npc %s fan swept -- HOLDING corner %s (w=%s)",
-			npc:id(), h.vid, string.format("%.2f", h.w))
+		printf("VARKA-ACT: npc %s fan swept -- HOLD %s at %s (w=%s)",
+			npc:id(), mode, h.vid, string.format("%.2f", h.w))
+		if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD " .. mode, 2) end
 	end
 	return true
 end
@@ -116,7 +189,7 @@ end
 -- Precondition: enemy=true + PROPERTY_BELIEF=false + weight=0 → дешевле любой ванили.
 -- Эффект: enemy=false (та же цель что у search-action).
 -- Поведение: NPC встаёт как вкопанный, смотрит на echo-точку если есть.
--- Диагностика: VARKA-FREEZE в логе каждые 3с + HUD-флаш "[VARKA] HOLD".
+-- Диагностика: VARKA-FREEZE в логе каждые 3с + HUD-флаш "[VARKA] FREEZE".
 -- Это делает поломку ВИДИМОЙ: ваниль = NPC ушёл; наша глушилка = NPC стоит с флашем.
 
 class "action_varka_freeze" (action_base)
@@ -135,7 +208,7 @@ function action_varka_freeze:initialize()
 	db.storage[npc:id()].varka_active = true
 	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "freeze_enter", {}) end
 	if DEBUG then printf("VARKA-FREEZE: npc %s frozen (no belief)", npc:id()) end
-	if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD -- no task", 3) end
+	if actor_menu then actor_menu.set_msg(1, "[VARKA] FREEZE -- no belief", 3) end
 end
 
 function action_varka_freeze:execute()
@@ -145,7 +218,7 @@ function action_varka_freeze:execute()
 	if DEBUG and now >= self.st.freeze_log_next then
 		self.st.freeze_log_next = now + FREEZE_LOG_RATE
 		printf("VARKA-FREEZE: npc %s holding position", npc:id())
-		if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD", 2) end
+		if actor_menu then actor_menu.set_msg(1, "[VARKA] FREEZE", 2) end
 	end
 	local e = varka_lkp.get_echo(npc)
 	if e then npc:set_sight(look.fire_point, e.pos) end
@@ -202,6 +275,7 @@ function action_varka_search:initialize()
 		})
 	end
 	if DEBUG then printf("VARKA-ACT: npc %s started search (belief alive)", npc:id()) end
+	bark(npc, "search") -- «ищем!» — одна реплика на отряд
 end
 
 function action_varka_search:execute()
@@ -216,7 +290,16 @@ function action_varka_search:execute()
 	-- HOLD-режим (боец вымел веер и караулит угол):
 	if st.hold_node then
 		if now >= st.hold_until then
-			if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "hold_expire", {}) end
+			local fresh = b.stamp > (st.hold_since or 0)
+			if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "hold_expire", {fresh=fresh}) end
+			-- v0.18: пока стоял на посту, пришли свежие вести (выстрел/труп) → не сдаёмся,
+			-- а снова метём новое облако. Тихо всё время поста → «ушёл», belief умирает.
+			if fresh then
+				if DEBUG then printf("VARKA-ACT: npc %s hold expired, fresh intel -- back to search", npc:id()) end
+				st.hold_node = nil
+				npc:set_body_state(move.stand)
+				return
+			end
 			if DEBUG then printf("VARKA-ACT: npc %s hold timer expired -- killed belief", npc:id()) end
 			varka_lkp.kill_belief(npc)
 			return
@@ -227,6 +310,10 @@ function action_varka_search:execute()
 		-- watch the threat's last direction after arriving at the corner.
 		if npc:position():distance_to_sqr(st.hold_node.pos) < 4 then
 			npc:set_sight(look.fire_point, b.pos)
+			if not st.hold_posted then
+				st.hold_posted = true
+				npc:set_body_state(move.crouch) -- занял пост: присел, ствол в облако
+			end
 		else
 			npc:set_sight(look.path_dir, nil, 0)
 		end
@@ -238,7 +325,7 @@ function action_varka_search:execute()
 				if npc:path_type() ~= game_object.level_path then
 					npc:set_path_type(game_object.level_path)
 				end
-				npc:set_movement_type(move.walk)
+				npc:set_movement_type(move.run) -- на пост бегом
 				npc:set_detail_path_type(move.line)
 				utils_obj.send_to_nearest_accessible_vertex(npc, vid)
 			end

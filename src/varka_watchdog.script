@@ -24,22 +24,19 @@ local function watch(npc)
     -- наш action рулит?
     local st = db.storage[id]
     if st and st.varka_active then return end  -- всё ок
+    -- ваниль рулит ЗАКОННО: ранен/сдаётся (схема раненого) — не обрыв
+    if IsWounded(npc) then return end
 
-    -- ИНФРА ЖИВА, НАШ ACTION НЕ АКТИВЕН → тихий обрыв
+    -- ИНФРА ЖИВА, НАШ ACTION НЕ АКТИВЕН → тихий обрыв (или ванильный бой: враг в глазах)
+    -- v0.18: ТОЛЬКО ассерт — лог + трейс. Раньше тут был set_body_state(stand) раз в 2с:
+    -- поднимал раненых, которых схема раненого тут же клала обратно («вставай-ложись»,
+    -- полигон 19.10: 1753 срабатывания + ~600 «error in stalker with visual»).
     if varka_trace then
         local sq = varka_lkp.get_squad_key(npc)
         varka_trace.emit(sq, id, "watch_lost", {bel=b ~= nil, echo=e ~= nil})
     end
-    printf("VARKA-WATCH: npc %s — infra alive (belief=%s echo=%s) but control lost -- freezing",
+    printf("VARKA-WATCH: npc %s — infra alive (belief=%s echo=%s) but control lost",
         tostring(id), tostring(b ~= nil), tostring(e ~= nil))
-
-    npc:set_mental_state(anim.danger)
-    npc:set_body_state(move.stand)
-    local look_pos = (e and e.pos) or (b and b.pos)
-    if look_pos then npc:set_sight(look.fire_point, look_pos) end
-    if actor_menu then
-        actor_menu.set_msg(1, "[VARKA-WATCH] infra lost: npc " .. tostring(id), 4)
-    end
 end
 
 local function npc_death(npc)

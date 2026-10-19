@@ -1,0 +1,42 @@
+-- varka_eyes.script — дешёвые глаза: линия видимости ПО ЗАПРОСУ (v0.1)
+--
+-- Не «вечные рейкасты». Луч пускается только в момент РЕШЕНИЯ («откуда держать угол?»),
+-- ~100 лучей на бойца раз в пост. Bench из varka_windows: 2.65µs/луч → ~0.3мс на решение.
+-- Знание местности = честно (солдат знает, где окна). Позиция врага сюда не входит —
+-- глаза смотрят на ГИПОТЕЗУ (belief), а не на игрока.
+--
+-- API:
+--   varka_eyes.has_los(a_pos, b_pos) → bool (чистая линия на высоте груди, статика уровня)
+
+local DEBUG      = true
+local RQT_STATIC = 2    -- collide::rqtStatic: стены/подоконники ловятся, живые NPC — нет
+local CHEST_H    = 1.4  -- м: высота линии глаз/ствола
+
+local broken = false    -- ray_pick упал один раз → больше не дёргаем (лог чистый, игра жива)
+
+local function ray_clear(a_pos, b_pos)
+	local src  = vector():set(a_pos.x, a_pos.y + CHEST_H, a_pos.z)
+	local dst  = vector():set(b_pos.x, b_pos.y + CHEST_H, b_pos.z)
+	local diff = vec_set(dst):sub(src)
+	local dist = diff:magnitude()
+	if dist < 1.0 then return true end
+	diff:normalize()
+
+	local rp = ray_pick()
+	rp:set_position(src)
+	rp:set_direction(diff)
+	rp:set_range(dist - 0.3)  -- не доводим до цели: стена ЗА ней не в счёт
+	rp:set_flags(RQT_STATIC)
+	return not rp:query()
+end
+
+function has_los(a_pos, b_pos)
+	if broken or not (a_pos and b_pos) then return false end
+	local ok, res = pcall(ray_clear, a_pos, b_pos)
+	if not ok then
+		broken = true
+		printf("VARKA-EYES: ray_pick failed, eyes off -- %s", tostring(res))
+		return false
+	end
+	return res
+end

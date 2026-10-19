@@ -71,6 +71,22 @@ function claim_lot(npc, vid)
 	end
 end
 
+-- Позиции живых чужих лотов отряда (кроме моего) — чтобы посты расходились по углам,
+-- а не вставали плечом к плечу на соседних нодах.
+function claimed_positions(npc)
+	local out  = {}
+	local book = lots[squad_key(npc)]
+	if not book then return out end
+	local now, me = time_global(), npc:id()
+	for vid, e in pairs(book) do
+		if e.id ~= me and (now - e.stamp) <= CLAIM_TTL and owner_alive(e.id) then
+			local p = level.vertex_position(vid)
+			if p then out[#out+1] = p end
+		end
+	end
+	return out
+end
+
 -- Освободить лот бойца (finalize action / смерть). Чужой лот не трогаем.
 function release_lots(npc)
 	local id = npc:id()

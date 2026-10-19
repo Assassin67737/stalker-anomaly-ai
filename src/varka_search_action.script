@@ -18,10 +18,6 @@ local DWELL_MS = 1600  -- сколько взгляд держится на но
 local MOVE_RATE = 500  -- мс между переназначениями цели движения (не каждый фрейм)
 local HOLD_MS  = 15000 -- overwatch: сколько караулить угол после того как вымел веер
 
-local FLANK_RADIUS  = 12   -- радиус кольца укрытий вокруг LKP (дворовые/оконные дистанции)
-local FLANK_K       = 12   -- сколько пеленгов по кольцу пробуем
-local FLANK_REFRESH = 3000 -- мс между пересчётами цели фланга (масса движется, LKP освежается)
-
 local PROPERTY_BELIEF      = 997
 local ACTION_BELIEF_SEARCH = 996
 local ACTION_VARKA_FREEZE  = 995  -- глушилка: перехват когда belief нет
@@ -87,66 +83,6 @@ local function pick_hold(npc, b)
 	return heaviest(true) or heaviest(false)
 end
 
--- ===== ФЛАНГ (примитив роли «flank») =====
---
--- Флангер определён РЕЛЯЦИОННО: не место, а пеленг, свободный от массы (§флангер).
--- Центроид массы = где стоят СВОИ (без себя). Флангер берёт укрытие вокруг угрозы,
--- чей пеленг ОТ угрозы максимально расходится с пеленгом массы → заходит с торца.
--- Это задача ВЫБОРА ЦЕЛИ, не навигации: ноги — движковые (send_to_vertex), мы лишь
--- даём умную точку. Ноль рейкастов — чистые вектора на кольце best_cover.
--- Деградирует красиво: в тесноте расхождения нет → берёт лучшее доступное → фронтал.
-
-local function mass_centroid(npc)
-	local squad = get_object_squad(npc)
-	if not squad then return npc:position() end
-	local sx, sz, cnt = 0, 0, 0
-	local myid = npc:id()
-	for k in squad:squad_members() do
-		if k.id ~= myid then
-			local o = level.object_by_id(k.id)
-			if o and o:alive() and IsStalker(o) then
-				local p = o:position()
-				sx = sx + p.x; sz = sz + p.z; cnt = cnt + 1
-			end
-		end
-	end
-	if cnt == 0 then return npc:position() end
-	return vector():set(sx / cnt, npc:position().y, sz / cnt)
-end
-
-local function pick_flank(npc, b)
-	local T = b.pos
-	local M = mass_centroid(npc)
-	local m_dir = vec_set(T):sub(M); m_dir.y = 0
-	if m_dir:magnitude() < 0.01 then m_dir = vec_set(b.bearing) end
-	m_dir:normalize()
-
-	local best, best_sep = nil, -1
-	for i = 0, FLANK_K - 1 do
-		-- пеленг по кольцу вокруг угрозы (0..360 от направления массы)
-		local dir = vector_rotate_y(vec_set(m_dir), (i / FLANK_K) * 360)
-		local rp  = vector():set(T.x + dir.x * FLANK_RADIUS, T.y, T.z + dir.z * FLANK_RADIUS)
-		local vid = level.vertex_id(rp)
-		if vid and vid < 4294967295 then
-			local npos  = level.vertex_position(vid)
-			local cover = npc:best_cover(npos, T, 6, 1, 150)
-			local cpos  = cover and vec_set(cover:position()) or vec_set(npos)
-			local cvid  = cover and cover:level_vertex_id() or vid
-			local c_dir = vec_set(cpos):sub(T); c_dir.y = 0
-			if c_dir:magnitude() > 0.01 and cvid < 4294967295 then
-				c_dir:normalize()
-				-- расхождение с пеленгом массы: 1 - dot ∈ [0..2], больше = «противоположнее»
-				local sep = 1 - m_dir:dotproduct(c_dir)
-				if sep > best_sep and varka_lots.lot_free(npc, cvid) then
-					best_sep = sep
-					best = { vid = cvid, pos = cpos, w = sep }
-				end
-			end
-		end
-	end
-	return best
-end
-
 -- ВХОД В HOLD (первая команда «дирижёра» — ДЕРЖАТЬ): боец вымел веер и НЕ уходит,
 -- а караулит угол. Огонь при контакте ведёт ванильный combat — мы держим позу + взгляд.
 -- Один станок (v0.15): HOLD — это ХВОСТ поиска, не второй конкурирующий action.
@@ -162,6 +98,11 @@ local function enter_hold(npc, b, st, now)
 	st.hold_until = now + HOLD_MS
 	st.sight_node = nil
 	varka_lots.claim_lot(npc, h.vid)
+	if varka_trace then
+		varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "hold_enter", {
+			vid=h.vid, w=h.w, hx=h.pos.x, hz=h.pos.z
+		})
+	end
 	if DEBUG then
 		printf("VARKA-ACT: npc %s fan swept -- HOLDING corner %s (w=%s)",
 			npc:id(), h.vid, string.format("%.2f", h.w))
@@ -192,6 +133,7 @@ function action_varka_freeze:initialize()
 	npc:set_body_state(move.stand)
 	self.st.freeze_log_next = 0
 	db.storage[npc:id()].varka_active = true
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "freeze_enter", {}) end
 	if DEBUG then printf("VARKA-FREEZE: npc %s frozen (no belief)", npc:id()) end
 	if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD -- no task", 3) end
 end
@@ -210,9 +152,11 @@ function action_varka_freeze:execute()
 end
 
 function action_varka_freeze:finalize()
-	db.storage[self.object:id()].varka_active = nil
+	local npc = self.object
+	db.storage[npc:id()].varka_active = nil
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "freeze_exit", {}) end
 	action_base.finalize(self)
-	if DEBUG then printf("VARKA-FREEZE: npc %s exited freeze", self.object:id()) end
+	if DEBUG then printf("VARKA-FREEZE: npc %s exited freeze", npc:id()) end
 end
 
 -- ===== EVALUATOR =====
@@ -251,9 +195,12 @@ function action_varka_search:initialize()
 	self.st.move_next    = 0
 	self.st.hold_node    = nil
 	self.st.hold_until   = 0
-	self.st.flank_node   = nil
-	self.st.flank_refresh = 0
 	db.storage[npc:id()].varka_active = true
+	if varka_trace then
+		varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_start", {
+			rank=npc.character_rank and npc:character_rank() or 0
+		})
+	end
 	if DEBUG then printf("VARKA-ACT: npc %s started search (belief alive)", npc:id()) end
 end
 
@@ -266,78 +213,13 @@ function action_varka_search:execute()
 	local b = varka_lkp.get_belief(npc)
 	if not b then return end
 
-	-- ФЛАНГ (роль «flank» от дирижёра): рвётся к укрытию с торца, смотрит на угрозу.
-	-- Не метёт веер (это дело массы) — идёт на off-axis точку и там караулит.
-	if varka_director.get_role(npc) == "flank" then
-		if not st.flank_node or now >= st.flank_refresh then
-			local fn = pick_flank(npc, b)
-			if fn then
-				st.flank_node    = fn
-				st.flank_refresh = now + FLANK_REFRESH
-				printf("VARKA-FLANK: npc %s -> node %s (sep=%.2f)", tostring(npc:id()), tostring(fn.vid), fn.w)
-			else
-				printf("VARKA-FLANK: npc %s pick_flank=nil (no off-axis cover)", tostring(npc:id()))
-			end
-		end
-		local fn = st.flank_node
-		if fn then
-			varka_lots.claim_lot(npc, fn.vid)
-			local arrived = npc:position():distance_to_sqr(fn.pos) < 4
-			if arrived then
-				npc:set_sight(look.fire_point, b.pos)
-				if not st.flank_arrived then
-					st.flank_arrived = true
-					printf("VARKA-FLANK: npc %s ARRIVED at flank node %s", tostring(npc:id()), tostring(fn.vid))
-				end
-			else
-				st.flank_arrived = nil
-				npc:set_sight(look.path_dir, nil, 0)
-			end
-			if now >= st.move_next then
-				st.move_next = now + MOVE_RATE
-				if fn.vid and fn.vid < 4294967295 then
-					if npc:path_type() ~= game_object.level_path then
-						npc:set_path_type(game_object.level_path)
-					end
-					npc:set_movement_type(move.walk)  -- поднять до move.run для жёсткого рывка (проверить константу)
-					npc:set_detail_path_type(move.line)
-					utils_obj.send_to_nearest_accessible_vertex(npc, fn.vid)
-				end
-			end
-		end
-		return
-	end
-
-	-- HOLD-режим (команда «ДЕРЖАТЬ» или «РАЗВЕДАЙ» от дирижёра):
+	-- HOLD-режим (боец вымел веер и караулит угол):
 	if st.hold_node then
 		if now >= st.hold_until then
+			if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "hold_expire", {}) end
 			if DEBUG then printf("VARKA-ACT: npc %s hold timer expired -- killed belief", npc:id()) end
 			varka_lkp.kill_belief(npc)
 			return
-		end
-
-		-- SCOUT: дирижёр назначил нас разведчиком → идём к echo вместо своего угла
-		if varka_director.is_scout(npc) then
-			local e = varka_lkp.get_echo(npc)
-			if e then
-				npc:set_sight(look.fire_point, e.pos)
-				if now >= st.move_next then
-					st.move_next = now + MOVE_RATE
-					local vid = level.vertex_id(e.pos)
-					if vid and vid < 4294967295 then
-						if npc:path_type() ~= game_object.level_path then
-							npc:set_path_type(game_object.level_path)
-						end
-						npc:set_movement_type(move.walk)
-						npc:set_detail_path_type(move.line)
-						utils_obj.send_to_nearest_accessible_vertex(npc, vid)
-					end
-				end
-				if DEBUG and now >= st.move_next - MOVE_RATE then
-					printf("VARKA-ACT: npc %s SCOUTING echo point", npc:id())
-				end
-				return
-			end
 		end
 
 		-- HOLD: face movement while repositioning, lock gaze to LKP only once posted.
@@ -374,6 +256,11 @@ function action_varka_search:execute()
 		st.sight_node  = node
 		st.sight_until = now + DWELL_MS
 		varka_lots.claim_lot(npc, node.vid)
+		if varka_trace then
+			varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_node", {
+				vid=node.vid, w=node.w, nx=node.pos.x, nz=node.pos.z
+			})
+		end
 		if DEBUG then
 			printf("VARKA-ACT: npc %s -> node %s (w=%s)",
 				npc:id(), node.vid, string.format("%.2f", node.w))
@@ -385,11 +272,15 @@ function action_varka_search:execute()
 
 	-- DWELL истёк → нода проверена взглядом → берём следующую
 	if now >= st.sight_until then
-		varka_lkp.mark_checked(b, st.sight_node.vid)
-		if DEBUG then
-			printf("VARKA-ACT: npc %s checked node %s by sight", npc:id(), st.sight_node.vid)
+		local checked_vid = st.sight_node.vid
+		varka_lkp.mark_checked(b, checked_vid)
+		if varka_trace then
+			varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "node_checked", {vid=checked_vid})
 		end
-		local node = pick_next(npc, b, st.sight_node.vid)
+		if DEBUG then
+			printf("VARKA-ACT: npc %s checked node %s by sight", npc:id(), checked_vid)
+		end
+		local node = pick_next(npc, b, checked_vid)
 		if not node then
 			enter_hold(npc, b, st, now) -- вымел веер → встал на караул (или отпустил belief)
 			return
@@ -397,6 +288,11 @@ function action_varka_search:execute()
 		st.sight_node  = node
 		st.sight_until = now + DWELL_MS
 		varka_lots.claim_lot(npc, node.vid)
+		if varka_trace then
+			varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_node", {
+				vid=node.vid, w=node.w, nx=node.pos.x, nz=node.pos.z
+			})
+		end
 		if DEBUG then
 			printf("VARKA-ACT: npc %s -> node %s (w=%s)",
 				npc:id(), node.vid, string.format("%.2f", node.w))
@@ -420,13 +316,14 @@ function action_varka_search:execute()
 end
 
 function action_varka_search:finalize()
+	local npc = self.object
 	self.st.sight_node = nil
 	self.st.hold_node  = nil
-	self.st.flank_node = nil
-	db.storage[self.object:id()].varka_active = nil
-	varka_lots.release_lots(self.object)
+	db.storage[npc:id()].varka_active = nil
+	varka_lots.release_lots(npc)
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_end", {}) end
 	action_base.finalize(self)
-	if DEBUG then printf("VARKA-ACT: npc %s search complete", self.object:id()) end
+	if DEBUG then printf("VARKA-ACT: npc %s search complete", npc:id()) end
 end
 
 -- ===== РЕГИСТРАЦИЯ =====

@@ -55,6 +55,11 @@ local function on_hear(npc, who_id, s_type, dist, power, pos)
 	if npc:position():distance_to_sqr(pos) > HEAR_DIST_SQR then return end
 
 	if varka_lkp.notice(npc, vector():set(pos.x, pos.y, pos.z)) then
+		if varka_trace then
+			varka_trace.emit(0, npc:id(), "alert_hear", {
+				who=who_id or 0, stype=tostring(s_type), px=pos.x, pz=pos.z
+			})
+		end
 		if DEBUG then
 			printf("VARKA-ALERT: npc %s heard enemy shot %s (%s) -- seeding",
 				npc:id(), who_id, tostring(s_type))
@@ -91,6 +96,9 @@ local function on_update(npc)
 	if not lkp then return end
 
 	if varka_lkp.notice(npc, vector():set(lkp.x, lkp.y, lkp.z)) then
+		if varka_trace then
+			varka_trace.emit(0, id, "alert_corpse", {cid=cid, px=lkp.x, pz=lkp.z})
+		end
 		if DEBUG then
 			printf("VARKA-ALERT: npc %s found ally corpse %s -- seeding killer pos", id, cid)
 		end

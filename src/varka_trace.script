@@ -1,0 +1,134 @@
+-- varka_trace.script — TC v1: структурный диктовщик трейса
+--
+-- Пишет JSON-lines в appdata/logs/varka_trace.jsonl.
+-- Все модули VARKA вызывают varka_trace.emit(sq, npc_id, ev, fields).
+-- Если этот файл удалить — guard-ы "if varka_trace then" в других модулях
+-- не сломаются: varka_trace будет nil, вызовы тихо пропускаются.
+--
+-- Формат строки: {"seq":N,"t":T,"sq":SQ,"npc":NPC,"ev":"EVENT",...поля...}
+--   seq  = монотонный счётчик (порядок внутри одного тика, time_global не двигается)
+--   t    = time_global() (мс игрового времени)
+--   sq   = squad_key (число; 0 для событий без отряда)
+--   npc  = npc:id()   (число; 0 для событий без конкретного NPC)
+--   ev   = имя события (строка)
+--   поля = числа / строки / bool (векторы разворачиваются до вызова: px,py,pz / bx,bz)
+--
+-- Путь: CWD движка = bin/, поэтому "../appdata/logs/"
+
+local TRACE_PATH     = "../appdata/logs/varka_trace.jsonl"
+local NAVMESH_PATH   = "../appdata/logs/varka_navmesh.json"
+local NAVMESH_RADIUS = 250   -- радиус сбора нод вокруг актёра, метры (с запасом под полигон)
+local NAVMESH_STEP   = 2     -- берём каждую 2-ю ноду (прореживание для размера файла)
+
+local _f   = nil
+local _seq = 0
+
+local function open_file()
+    _f = io.open(TRACE_PATH, "w")
+    if _f then
+        _seq = 0
+        _f:write('{"ev":"trace_start","t":' .. tostring(time_global()) .. '}\n')
+        _f:flush()
+        printf("VARKA-TC: trace open OK -> %s", TRACE_PATH)
+    else
+        printf("VARKA-TC: WARN -- io.open FAIL for %s", TRACE_PATH)
+    end
+end
+
+-- emit(sq, npc_id, ev_name, fields_table)
+-- fields = {key = number|string|bool}  — НЕ векторы, только скаляры
+function emit(sq, npc_id, ev_name, fields)
+    if not _f then return end
+    _seq = _seq + 1
+
+    local buf = {
+        '{"seq":',  tostring(_seq),
+        ',"t":',    tostring(time_global()),
+        ',"sq":',   tostring(sq   or 0),
+        ',"npc":',  tostring(npc_id or 0),
+        ',"ev":"',  tostring(ev_name), '"'
+    }
+
+    if fields then
+        for k, v in pairs(fields) do
+            buf[#buf+1] = ',"'
+            buf[#buf+1] = tostring(k)
+            buf[#buf+1] = '":'
+            local tv = type(v)
+            if tv == "number" then
+                -- целые пишем без дробной части (vid, rank, флаги…)
+                if v % 1 == 0 and math.abs(v) < 2147483647 then
+                    buf[#buf+1] = string.format("%.0f", v)
+                else
+                    buf[#buf+1] = string.format("%.4f", v)
+                end
+            elseif tv == "boolean" then
+                buf[#buf+1] = v and "true" or "false"
+            elseif tv == "string" then
+                buf[#buf+1] = '"'
+                buf[#buf+1] = v
+                buf[#buf+1] = '"'
+            else
+                buf[#buf+1] = "null"
+            end
+        end
+    end
+
+    buf[#buf+1] = '}\n'
+    _f:write(table.concat(buf))
+    _f:flush()
+end
+
+-- Дамп навмеша вокруг актёра. Вызывается на actor_on_first_update, когда уровень
+-- уже загружен (на on_game_start level-граф ещё не готов — "level API not ready").
+-- level.get_nearby_vertices(pos, R) → таблица {vid=true} всех нод в радиусе.
+-- Стены/пустоты = где нод нет = дырки в облаке точек на карте монитора.
+local function dump_navmesh()
+    if not (level and level.get_nearby_vertices and level.vertex_position) then
+        printf("VARKA-TC: navmesh dump skip (level API not ready)")
+        return
+    end
+    if not db or not db.actor then
+        printf("VARKA-TC: navmesh dump skip (no actor)")
+        return
+    end
+
+    local ok, verts = pcall(level.get_nearby_vertices, db.actor:position(), NAVMESH_RADIUS)
+    if not ok or not verts then
+        printf("VARKA-TC: navmesh dump FAIL (get_nearby_vertices error)")
+        return
+    end
+
+    local f = io.open(NAVMESH_PATH, "w")
+    if not f then
+        printf("VARKA-TC: navmesh dump FAIL (io.open %s)", NAVMESH_PATH)
+        return
+    end
+
+    f:write("[")
+    local first, i, written = true, 0, 0
+    for vid, _ in pairs(verts) do
+        if (i % NAVMESH_STEP) == 0 then
+            local pos = level.vertex_position(vid)
+            if pos then
+                if not first then f:write(",") end
+                f:write(string.format("[%.1f,%.1f]", pos.x, pos.z))
+                first = false
+                written = written + 1
+            end
+        end
+        i = i + 1
+    end
+    f:write("]\n")
+    f:close()
+    printf("VARKA-TC: navmesh dump OK -- %d nodes (R=%d step=%d)", written, NAVMESH_RADIUS, NAVMESH_STEP)
+end
+
+local function on_first_update()
+    dump_navmesh()
+end
+
+function on_game_start()
+    open_file()
+    RegisterScriptCallback("actor_on_first_update", on_first_update)
+end

@@ -26,6 +26,10 @@ local function watch(npc)
     if st and st.varka_active then return end  -- всё ок
 
     -- ИНФРА ЖИВА, НАШ ACTION НЕ АКТИВЕН → тихий обрыв
+    if varka_trace then
+        local sq = varka_lkp.get_squad_key(npc)
+        varka_trace.emit(sq, id, "watch_lost", {bel=b ~= nil, echo=e ~= nil})
+    end
     printf("VARKA-WATCH: npc %s — infra alive (belief=%s echo=%s) but control lost -- freezing",
         tostring(id), tostring(b ~= nil), tostring(e ~= nil))
 

@@ -41,6 +41,11 @@ local CHECKED_TTL = 15000      -- отметка «проверено» прот
 local MAX_PAINTED = 3          -- рисуем не больше стольких отрядов разом
 local INVALID_VID = 4294967295 -- «нет ноды» (идиома из axr_stalker_panic)
 
+-- TC: emit helper (guard: если varka_trace не загружен — молчим)
+local function tc(sq, npc_id, ev, fields)
+    if varka_trace then varka_trace.emit(sq, npc_id, ev, fields) end
+end
+
 local beliefs   = {} -- [squad_key] = { pos, vid, bearing, stamp, mem_raw }
 local dead_raw  = {} -- [squad_key] = mem_raw умершего belief («надгробие»): движок помнит
                      -- врага дольше (~60с combat_ignore), чем живёт облако (45с) — без этого
@@ -282,6 +287,15 @@ function notice(npc, pos)
 	if not echos[key] then  -- первый посев; обновлять позицию не надо — echo = место первого контакта
 		echos[key] = { pos = vec_set(snapped), stamp = now }
 		if DEBUG then printf("VARKA-LKP: squad %s notice -- echo seeded (TTL=%ss)", key, string.format("%.0f", ECHO_TTL/1000)) end
+		tc(key, npc:id(), "echo_born", {px=snapped.x, py=snapped.y, pz=snapped.z})
+	end
+	-- TC: trace belief seeded by external event
+	local nb = beliefs[key]
+	if nb then
+		tc(key, npc:id(), "belief_notice", {
+			px=nb.pos.x, py=nb.pos.y, pz=nb.pos.z,
+			vid=nb.vid, bx=nb.bearing.x, bz=nb.bearing.z
+		})
 	end
 	if DEBUG then printf("VARKA-LKP: squad %s notice -- belief seeded by event", key) end
 	return true
@@ -322,6 +336,7 @@ function kill_belief(npc)
 	if b then
 		dead_raw[key] = time_global() -- время убийства: блокирует воскрешение от любой памяти ≤ now
 		drop_marks(key)
+		tc(key, npc and npc:id() or 0, "belief_kill", {reason="fan_swept"})
 		beliefs[key] = nil
 		if DEBUG then printf("VARKA-LKP: squad %s belief killed early (fan swept)", key) end
 	end
@@ -329,11 +344,42 @@ end
 
 -- Жнец: смерть belief по возрасту. Отдельно от paint — облака обязаны умирать
 -- и с выключенным DEBUG, рисовалка лишь потребитель.
+-- TC: snapshot всех живых belief + echo (раз в MARK_MS = 1000мс)
+local function snapshot(now)
+	if not varka_trace then return end
+	for key, b in pairs(beliefs) do
+		local cone_v, reach_v = geometry(b, now)
+		local mass_v = mass(b, now)
+		varka_trace.emit(key, 0, "belief_snap", {
+			cone=cone_v, reach=reach_v, mass=mass_v,
+			px=b.pos.x, py=b.pos.y, pz=b.pos.z,
+			bx=b.bearing.x, bz=b.bearing.z
+		})
+	end
+	for key, e in pairs(echos) do
+		if (now - e.stamp) <= ECHO_TTL then
+			varka_trace.emit(key, 0, "echo_snap", {px=e.pos.x, py=e.pos.y, pz=e.pos.z})
+		end
+	end
+end
+
+-- TC: подбираем протухшие echo с диагностикой
+local function reap_echos(now)
+	for key, e in pairs(echos) do
+		if (now - e.stamp) > ECHO_TTL then
+			tc(key, 0, "echo_dead", {})
+			echos[key] = nil
+		end
+	end
+end
+
 local function reap(now)
+	reap_echos(now)
 	for key,b in pairs(beliefs) do
 		if mass(b, now) <= 0 then -- масса веры выцвела в ноль = биологическая смерть
 			dead_raw[key] = now -- время смерти: блокирует воскрешение от любой памяти ≤ now
 			drop_marks(key)
+			tc(key, 0, "belief_fade", {})
 			beliefs[key] = nil
 			if DEBUG then printf("VARKA-LKP: squad %s belief faded (mass 0)", key) end
 		end
@@ -343,6 +389,8 @@ end
 local function paint(now)
 	if now - last_mark < MARK_MS then return end
 	last_mark = now
+	snapshot(now)          -- TC: snapshot всегда, независимо от DEBUG
+	if not DEBUG then return end  -- визуальные маркеры только в DEBUG
 	local painted = 0
 	for key,b in pairs(beliefs) do
 		if painted < MAX_PAINTED then
@@ -379,6 +427,20 @@ local function npc_update(npc)
 	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
 	last_tick[id] = now
 
+	-- TC: позиция NPC каждые TICK_MS (500мс) — фундамент карты на вьювере
+	if varka_trace then
+		local pos = npc:position()
+		local dir = npc:direction()
+		local st_npc = db.storage[id]
+		varka_trace.emit(squad_key(npc), id, "npc_pos", {
+			px=pos.x, py=pos.y, pz=pos.z,
+			dx=dir.x, dz=dir.z,
+			rank=npc.character_rank and npc:character_rank() or 0,
+			comm=character_community(npc) or "unknown",
+			active=st_npc and st_npc.varka_active and 1 or 0
+		})
+	end
+
 	reap(now)
 
 	local enemy = npc:best_enemy()
@@ -408,9 +470,14 @@ local function npc_update(npc)
 					local dir = vec_set(pos):sub(npc:position())
 					dir.y = 0
 					if dir:magnitude() < 0.01 then dir = vec_set(npc:direction()) end
-					beliefs[key] = { pos = vec_set(pos), vid = vid,
+					local nb = { pos = vec_set(pos), vid = vid,
 						bearing = dir:normalize(), stamp = now, mem_raw = mem_raw, checked = {} }
+					beliefs[key] = nb
 					dead_raw[key] = nil
+					tc(key, id, "belief_born", {
+						px=nb.pos.x, py=nb.pos.y, pz=nb.pos.z,
+						vid=vid, bx=nb.bearing.x, bz=nb.bearing.z
+					})
 				end
 			elseif mem_raw > b.mem_raw then
 				-- слияние отрядных памятей: только СВЕЖЕЕ бьёт старое,
@@ -432,12 +499,16 @@ local function npc_update(npc)
 					end
 					b.mem_raw = mem_raw
 					b.stamp = now -- свежий инфоповод — конус схлопывается заново
+					tc(key, id, "belief_update", {
+						px=b.pos.x, py=b.pos.y, pz=b.pos.z,
+						vid=b.vid, bx=b.bearing.x, bz=b.bearing.z
+					})
 				end
 			end
 		end
 	end
 
-	if DEBUG then paint(now) end
+	paint(now)  -- snapshot внутри всегда; визуальные маркеры — только при DEBUG
 end
 
 local function npc_death(npc)

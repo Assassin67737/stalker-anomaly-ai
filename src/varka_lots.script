@@ -62,6 +62,13 @@ function claim_lot(npc, vid)
 	lots[key] = lots[key] or {}
 	lots[key][vid] = { id = id, stamp = time_global() }
 	lot_by_npc[id] = { key = key, vid = vid }
+	-- TC: позицию укрытия достаём из навмеша — нужна вьюверу для рисования линии
+	if varka_trace then
+		local cpos = level.vertex_position(vid)
+		if cpos then
+			varka_trace.emit(key, id, "lot_claim", {vid=vid, cx=cpos.x, cy=cpos.y, cz=cpos.z})
+		end
+	end
 end
 
 -- Освободить лот бойца (finalize action / смерть). Чужой лот не трогаем.
@@ -72,6 +79,9 @@ function release_lots(npc)
 		local pb = lots[prev.key]
 		if pb and pb[prev.vid] and pb[prev.vid].id == id then
 			pb[prev.vid] = nil
+		end
+		if varka_trace then
+			varka_trace.emit(prev.key, id, "lot_release", {vid=prev.vid})
 		end
 	end
 	lot_by_npc[id] = nil

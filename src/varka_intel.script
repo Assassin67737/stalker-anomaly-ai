@@ -1,0 +1,145 @@
+-- varka_intel.script — v0.1: что отряд знает об оружии врага (20.10.2026)
+--
+-- Знание не общее. Каждый боец узнаёт ствол врага сам — увидел в руках или услышал выстрел.
+-- Правило юзера: новичок (ранг < 6500: novice + trainee) узнаёт только «новичковые» стволы, все
+-- остальные — любые. Таблица «ствол → новичковый ли, класс для выкрика» печётся из конфигов игры:
+-- tools/twin/weapons/bake_weapon_intel.py → ../appdata/varka_vision/weapon_intel.txt
+-- (редкость = ранг первого появления в комплектах NPC, по звуковой группе snd_shoot).
+--
+-- Как знание расходится по отряду:
+--   «Снайпер!», «Пулемёт!», «Гранатомёт!» — кричат всем, кто бы ни узнал;
+--   остальное — общее, если кэп (старший по рангу) опытный и выше: он «понимает по звуку»;
+--   кэп-новичок — знание остаётся у того, кто узнал (личное), отряд его не видит.
+--
+-- Дирижёру пока не вшито (решение юзера). Потребитель сейчас один — мораль: известный отряду
+-- пулемёт или гранатомёт у врага чуть давит (heavy_threat, малый вес в varka_director).
+
+local DEBUG     = true
+local FILE      = "../appdata/varka_vision/weapon_intel.txt"
+local NOVICE_LT = 6500    -- ранг ниже — новичок (game_relations: trainee до 6499)
+local TICK_MS   = 1000    -- как часто боец «смотрит, чем вооружён враг»
+local TTL       = 120000  -- мс: знание о стволе протухает (сменил оружие, ушёл)
+local HEAR_SQR  = 120 * 120
+
+local SHOUT = { sniper = "Sniper!", mg = "Machine gun!", launcher = "Grenade launcher!" }
+
+local tbl = nil                 -- [секция] = { novice = bool, cls = "sniper"|"mg"|"launcher"|nil }
+local intel = {}                -- [squad_id] = { [enemy_id] = { sec, cls, t, by, shared } }
+local last_tick = {}
+
+local function load_table()
+	tbl = {}
+	local f = io.open(FILE, "r")
+	if not f then printf("VARKA-INTEL: нет %s — запусти bake_weapon_intel.py", FILE); return end
+	for line in f:lines() do
+		local sec, nov, cls = string.match(line, "^(%S+)%s+(%d)%s+(%S+)")
+		if sec then tbl[sec] = { novice = nov == "1", cls = cls ~= "-" and cls or nil } end
+	end
+	f:close()
+end
+
+local function row(sec)
+	if not tbl then load_table() end
+	return tbl[sec]
+end
+
+local function rank_of(o) return o.character_rank and o:character_rank() or 0 end
+
+-- Старший по рангу живой в отряде
+local function captain(squad)
+	local best, br = nil, -1
+	for k in squad:squad_members() do
+		local o = level.object_by_id(k.id)
+		if o and o:alive() then
+			local r = rank_of(o)
+			if r > br then best, br = o, r end
+		end
+	end
+	return best, br
+end
+
+-- Узнать ствол врага: боец npc, враг enemy, как (see / hear)
+local function recognize(npc, enemy, how)
+	if not (enemy and enemy:alive() and IsStalker(enemy)) then return end
+	local item = enemy:active_item()
+	if not (item and IsWeapon(item)) then return end
+	local sec = item:section()
+	local r = row(sec) or { novice = false }   -- ствола нет в таблице — экзотика, не новичковый
+	if rank_of(npc) < NOVICE_LT and not r.novice then return end   -- «что это за пукалка?..»
+
+	local squad = get_object_squad(npc)
+	if not squad then return end
+	local book = intel[squad.id] or {}
+	intel[squad.id] = book
+	local e, now = book[enemy:id()], time_global()
+	if e and e.sec == sec and now - e.t < TTL / 4 then e.t = now; return end  -- уже знаем, освежили
+
+	local cap, cap_r = captain(squad)
+	local shared = r.cls ~= nil or cap_r >= NOVICE_LT or (cap and cap:id() == npc:id())
+	book[enemy:id()] = { sec = sec, cls = r.cls, t = now, by = npc:id(), shared = shared }
+
+	if varka_trace then
+		varka_trace.emit(squad.id, npc:id(), "intel", { enemy = enemy:id(), sec = sec, cls = r.cls or "",
+			how = how, shared = shared and 1 or 0 })
+	end
+	-- выкрик: о снайпере, пулемёте, гранатомёте сообщают всем, и только когда узнали впервые
+	if r.cls and not (e and e.cls == r.cls) and varka_hud then
+		varka_hud.push(string.format("#%s %s: \"%s\" (%s)", string.sub(tostring(squad.id), -3),
+			tostring(squad.player_id or "?"), SHOUT[r.cls], sec))
+	end
+end
+
+-- ===== публичное API =====
+
+-- Что отряд знает о стволах врагов: { [enemy_id] = { sec, cls, t, by, shared } } (только общее и живое)
+function known(squad)
+	local book = squad and intel[squad.id]
+	local out, now = {}, time_global()
+	if not book then return out end
+	for id, e in pairs(book) do
+		local o = level.object_by_id(id)
+		if e.shared and now - e.t < TTL and o and o:alive() then out[id] = e end
+	end
+	return out
+end
+
+-- Давление тяжёлого оружия на мораль, 0..1: пулемёт 0.5, гранатомёт 0.7, оба — 1
+function heavy_threat(squad)
+	local mg, gl = false, false
+	for _, e in pairs(known(squad)) do
+		if e.cls == "mg" then mg = true elseif e.cls == "launcher" then gl = true end
+	end
+	return math.min(1, (mg and 0.5 or 0) + (gl and 0.7 or 0))
+end
+
+-- ===== источники знания =====
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local id, now = npc:id(), time_global()
+	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
+	last_tick[id] = now
+	local be = npc:best_enemy()
+	if be and be:alive() and npc:see(be) then recognize(npc, be, "see") end
+end
+
+local function on_hear(npc, who_id, s_type, dist, power, pos)
+	if s_type ~= "WPN_shoot" then return end
+	if not (npc and npc:alive() and IsStalker(npc) and pos) then return end
+	if npc:position():distance_to_sqr(pos) > HEAR_SQR then return end
+	local who = who_id and level.object_by_id(who_id)
+	if not (who and who:alive() and IsStalker(who)) then return end
+	if npc:relation(who) < game_object.enemy then return end
+	recognize(npc, who, "hear")
+end
+
+local function npc_death(npc)
+	if not npc then return end
+	last_tick[npc:id()] = nil
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_hear_callback", on_hear)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

@@ -1,4 +1,5 @@
 -- varka_lkp.script — LKP-облако школы Б, ЯДРО (v0.10-вес)
+--   v0.20: вера помнит свои источники (b.src) и гаснет, когда все они мертвы.
 --
 -- Выросло из зонда v0.6-probe после двух прогонов полигона (журнал 03.07 с6):
 --   ✓ memory_time = миллисекунды time_global (raw == t в момент УВИДЕЛ)
@@ -219,8 +220,9 @@ end
 -- резервные укрытия волны (достижимость r) — в память отряда попадает только то, что
 -- одновременно возможно (волна дошла) И правдоподобно (конус накрыл).
 -- Евклид, не навмеш: пропуск за-стенных укрытий запрещён (паркур), одно distance_to_sqr.
--- cover-snap через best_cover: нода веера → ближайшее реальное укрытие, прячущее от NPC.
--- Если best_cover не нашёл ничего (пустое место) — нода тихо пропускается.
+-- cover-snap: нода веера → ближайшая нода, спрятанная от NPC (varka_eyes.hidden_spot, свои лучи).
+-- v0.20: раньше npc:best_cover — движковый выбиратель с памятью на прошлый указатель; два краша
+-- полигона 20.10 случились сразу после него. Не нашлось укрытия — берём саму ноду веера.
 function wave_covers(b, npc, now)
 	now = now or time_global()
 	if not (b and npc and npc:alive()) then return {} end
@@ -231,14 +233,12 @@ function wave_covers(b, npc, now)
 	local result, seen = {}, {}
 	for _, n in ipairs(nodes) do
 		if not seen[n.vid] then
-			local cover = npc:best_cover(n.pos, npc:position(), 8, 1, 150)
+			local _, hpos = varka_eyes.hidden_spot(n.vid, npc:position(), 8)
 			-- КЛЮЧ — n.vid (фановая нода), а не cover:level_vertex_id().
 			-- Единое пространство ключей с search_nodes/mark_checked: иначе varka_search
 			-- пишет n.vid в b.checked, а wave_covers читает cover-vid → никогда не совпадают
 			-- → третья смерть не срабатывает → NPC вечно ищет уже проверенное.
-			-- vec_set = копия, не ссылка: укрытие может умереть (граната),
-			-- тогда cover:position() станет висячим указателем → CTD в set_sight
-			local cpos = cover and vec_set(cover:position()) or vec_set(n.pos)
+			local cpos = hpos and vec_set(hpos) or vec_set(n.pos)
 			local d_sqr = b.pos:distance_to_sqr(cpos)
 			if d_sqr <= r_sqr then
 				seen[n.vid] = true
@@ -435,6 +435,19 @@ local DANGER_NAMES = {
 	[danger_object.visual]          = "visual",
 }
 
+-- Что GOAP делает прямо сейчас: верхнее действие и, если это бой/опасность, действие внутри.
+-- Номера — stalker_ids / xr_actions_id / моды (188xxx); вьювер переводит их в слова.
+local function goap_ids(npc)
+	local m = npc:motivation_action_manager()
+	if not (m and m:initialized()) then return -1, -1 end
+	local a, sub = m:current_action_id(), -1
+	if a == stalker_ids.action_combat_planner or a == stalker_ids.action_danger_planner then
+		local p = cast_planner(m:action(a))
+		if p and p:initialized() then sub = p:current_action_id() end
+	end
+	return a, sub
+end
+
 local function npc_update(npc)
 	if not (npc and npc:alive()) then return end
 	local now = time_global()
@@ -450,6 +463,12 @@ local function npc_update(npc)
 		-- кто цель, видит ли он её, ранен ли сам, боится ли и добивает ли (разбор боя 20.10)
 		local be = npc:best_enemy()
 		local bd = npc:best_danger()
+		local ok, aid, aid2 = pcall(goap_ids, npc)
+		if not ok then aid, aid2 = -1, -1 end
+		-- оружие в руках: секция и класс (kind из ltx: w_pistol/w_smg/w_shotgun/w_rifle/w_sniper…)
+		local wi = npc:active_item()
+		local wsec = wi and wi:section() or ""
+		local wkind = (wi and IsWeapon(wi) and ini_sys:r_string_ex(wsec, "kind")) or ""
 		varka_trace.emit(squad_key(npc), id, "npc_pos", {
 			px=pos.x, py=pos.y, pz=pos.z,
 			dx=dir.x, dz=dir.z,
@@ -461,7 +480,9 @@ local function npc_update(npc)
 			wnd=npc:wounded() and 1 or 0,
 			dng=xr_danger.has_danger(npc) and 1 or 0,
 			dtype=bd and DANGER_NAMES[bd:type()] or "",
-			kw=xrs_kill_wounded and xrs_kill_wounded.is_under_kill_wounded(npc) and 1 or 0
+			kw=xrs_kill_wounded and xrs_kill_wounded.is_under_kill_wounded(npc) and 1 or 0,
+			aid=aid, aid2=aid2,                            -- действие GOAP: верхнее / внутри боя
+			hp=npc.health, wpn=wsec, wk=wkind
 		})
 	end
 
@@ -530,9 +551,37 @@ local function npc_update(npc)
 				end
 			end
 		end
+
+		-- v0.20: ЧЬЯ это вера. Отряд сливает в одно облако память о разных врагах, поэтому
+		-- копим набор источников. Умерли все — облако гасим (src_dead), см. source_died.
+		local cb = beliefs[key]
+		if cb then
+			cb.src = cb.src or {}
+			cb.src[enemy:id()] = true
+		end
 	end
 
 	paint(now)  -- snapshot внутри всегда; визуальные маркеры — только при DEBUG
+end
+
+-- v0.20: вера покойника. Раньше облако было анонимным: убили последнего врага — отряд
+-- 15 с прочёсывал веер мертвеца (полигон 20.10). Теперь смерть ВСЕХ источников = смерть веры.
+-- Эхо не трогаем: «здесь стреляли» — правда и после смерти стрелка.
+-- Вера, посеянная звуком (notice), источников не знает → этим путём не гаснет.
+local function source_died(victim)
+	local vid = victim:id()
+	for key, b in pairs(beliefs) do
+		if b.src and b.src[vid] then
+			b.src[vid] = nil
+			if next(b.src) == nil then
+				dead_raw[key] = time_global() -- память о покойнике ≤ now облако не воскресит
+				drop_marks(key)
+				tc(key, vid, "belief_kill", {reason="src_dead"})
+				beliefs[key] = nil
+				if DEBUG then printf("VARKA-LKP: squad %s belief killed (all sources dead, last=%s)", key, vid) end
+			end
+		end
+	end
 end
 
 local function npc_death(npc)
@@ -540,9 +589,15 @@ local function npc_death(npc)
 	local id = npc:id()
 	last_tick[id] = nil
 	last_seen[id] = nil
+	source_died(npc)
+end
+
+local function monster_death(monster)
+	if monster then source_died(monster) end
 end
 
 function on_game_start()
 	RegisterScriptCallback("npc_on_update", npc_update)
 	RegisterScriptCallback("npc_on_death_callback", npc_death)
+	RegisterScriptCallback("monster_on_death_callback", monster_death)
 end

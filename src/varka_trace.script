@@ -121,7 +121,7 @@ local function dump_navmesh()
     end
     f:write("]\n")
     f:close()
-    printf("VARKA-TC: navmesh dump OK -- %d nodes (R=%d step=%d)", written, NAVMESH_RADIUS, NAVMESH_STEP)
+    printf(string.format("VARKA-TC: navmesh dump OK -- %d nodes (R=%d step=%d)", written, NAVMESH_RADIUS, NAVMESH_STEP))
 end
 
 local function on_first_update()

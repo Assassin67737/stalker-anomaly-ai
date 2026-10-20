@@ -1,0 +1,28 @@
+-- varka_hud.script — v0.1: лента событий VARKA внизу экрана (20.10.2026)
+--
+-- Последние MAX_LINES событий одним сообщением actor_menu.set_msg (низ-центр экрана).
+-- Только латиница: кириллица в HUD Anomaly превращается в мусор.
+-- Перенос строки в UI X-Ray — два символа «\n» (UILines.cpp ищет "\\n"), не настоящий перевод строки.
+-- Старше LINE_TTL строки выпадают при следующей записи.
+
+local ENABLED   = true
+local MAX_LINES = 5
+local LINE_TTL  = 15000  -- мс
+local SHOW_S    = 6      -- с: сколько висит после последней записи
+
+local lines = {}  -- { {t, text} }
+
+function push(text)
+	if not (ENABLED and actor_menu and text) then return end
+	local now = time_global()
+	local keep = {}
+	for _, l in ipairs(lines) do
+		if now - l.t < LINE_TTL then keep[#keep+1] = l end
+	end
+	keep[#keep+1] = { t = now, text = "[VARKA] " .. text }
+	while #keep > MAX_LINES do table.remove(keep, 1) end
+	lines = keep
+	local out = {}
+	for i, l in ipairs(lines) do out[i] = l.text end
+	actor_menu.set_msg(1, table.concat(out, "\\n"), SHOW_S)
+end

@@ -1,0 +1,291 @@
+-- varka_plays.script — v0.1: пьесы активной фазы боя (20.10.2026)
+--
+-- До этого дирижёр молчал, пока бойцы видят врага: роли работали только в поиске (враг пропал).
+-- Здесь — пьесы на КОНТАКТЕ (кто-то из отряда видит врага). Руки — жёсткий приказ дирижёра
+-- (varka_cmd.set_dir_order): к точке бегом без огня, на месте — огонь по видимому, иначе смотреть
+-- в свой сектор. Гранате приказ уступает (ваниль отбегает, потом приказ продолжается).
+--
+--   ФРОНТ (пресет front)   — линия поперёк направления на врага, бойцы через SPACING, каждый на
+--                            огневой точке рядом со своим местом в линии, у каждого свой сектор.
+--   ПЕРЕКАТЫ (пресет bound) — две двойки: одна держит огнём, другая перебегает на STEP вперёд к
+--                            следующей огневой точке; дошли — меняются. Ближе CLOSE к врагу —
+--                            пьеса отдаёт бой ванили (дальше рукопашная дистанция, там она лучше).
+--   ОТХОД ПЕРЕКАТАМИ        — то же назад. Выбирает МОРАЛЬ, не пресет: отряд шаток/сломлен, а враг
+--                            далеко (близко — это «засесть» в дирижёре). Кончается, когда оторвались
+--                            или мораль встала.
+--
+-- Огневая точка: нода, откуда стоя (1.5 м) видно угрозу, а сидя (0.8 м) — нет: бруствер, угол,
+-- подоконник. Лучи свои (varka_eyes.los_h), движковый best_cover не трогаем (см. varka_eyes).
+--
+-- Это первые ручные пьесы: обучаемый дирижёр позже учится, КОГДА какую брать (doc/design/LEARNING.md).
+
+local DEBUG = true
+
+local SPACING   = 5      -- м между бойцами в линии
+local STEP      = 9      -- м одного переката
+local CLOSE     = 20     -- м до угрозы: ближе — перекаты кончились
+local FAR       = 70     -- м: отход оторвался
+local PHASE_MAX = 12000  -- мс на один перекат (не дошли — всё равно меняемся)
+local REPLAN    = 12000  -- мс: ФРОНТ пересобирает линию (враг сместился, кто-то выбыл)
+local LOST_MS   = 8000   -- мс без контакта — пьеса кончилась
+local COOL      = 20000  -- мс после конца пьесы не начинать её снова
+local UNSAFE    = 35     -- м: враг ближе — отходить нельзя (это «засесть»)
+local ARRIVE    = 2.0    -- м: дошёл до точки
+
+local INVALID = 4294967295
+
+local plays = {}  -- [squad_id] = { name, t0, phase_t, plan_t, contact_t, team, movers, slots, look, ids }
+local cool  = {}  -- [squad_id] = { [имя пьесы] = до какого времени не начинать }
+
+local function emit(key, ev, f)
+	if varka_trace then varka_trace.emit(key, 0, ev, f or {}) end
+end
+
+local function hud(key, text)
+	if not varka_hud then return end
+	local sq = alife_object(key)
+	varka_hud.push(string.format("#%s %s: %s", string.sub(tostring(key), -3), tostring(sq and sq.player_id or "?"), text))
+end
+
+local function members(squad)
+	local out = {}
+	for k in squad:squad_members() do
+		local o = level.object_by_id(k.id)
+		if o and o:alive() and IsStalker(o) then out[#out+1] = { id = k.id, obj = o } end
+	end
+	return out
+end
+
+-- Контакт: средняя точка врагов, которых видит хоть кто-то из отряда, и ближайшая дистанция до них
+local function contact(list)
+	local c, n, near = vector():set(0, 0, 0), 0, math.huge
+	for _, m in ipairs(list) do
+		local be = m.obj:best_enemy()
+		if be and be:alive() and m.obj:see(be) then
+			c:add(be:position()); n = n + 1
+			near = math.min(near, m.obj:position():distance_to(be:position()))
+		end
+	end
+	if n == 0 then return nil end
+	return c:div(n), near
+end
+
+local function centroid(list)
+	local c = vector():set(0, 0, 0)
+	for _, m in ipairs(list) do c:add(m.obj:position()) end
+	return c:div(#list)
+end
+
+-- Огневая точка рядом с base_vid: стоя видно угрозу, сидя спрятан; не теснее 2.5 м к занятым
+local function firing_spot(base_vid, threat, used)
+	if not (base_vid and base_vid < INVALID) then return base_vid end
+	local base_pos = level.vertex_position(base_vid)
+	local best, best_s = base_vid, -math.huge
+	local function try(vid)
+		if not (vid and vid < INVALID) then return end
+		local pos = level.vertex_position(vid)
+		local stand = varka_eyes.los_h(pos, 1.5, threat, 1.2)
+		if stand == nil then return end  -- глаза сломаны
+		local s = stand and 1 or 0
+		if stand and varka_eyes.los_h(pos, 0.8, threat, 1.2) == false then s = s + 0.6 end
+		s = s - pos:distance_to(base_pos) / 8
+		for _, u in ipairs(used) do
+			if u:distance_to_sqr(pos) < 6.25 then s = s - 1.5 end
+		end
+		if s > best_s then best, best_s = vid, s end
+	end
+	try(base_vid)
+	for _, r in ipairs({ 2, 4 }) do
+		for i = 0, 7 do
+			local a = i * math.pi / 4
+			try(level.vertex_in_direction(base_vid, vector():set(math.cos(a), 0, math.sin(a)), r))
+		end
+	end
+	return best
+end
+
+local function axes(list, threat)
+	local c = centroid(list)
+	local fwd = vec_set(threat):sub(c)
+	fwd.y = 0
+	if fwd:magnitude() < 0.1 then fwd = vector():set(1, 0, 0) end
+	fwd:normalize()
+	return c, fwd, vector():set(fwd.z, 0, -fwd.x)
+end
+
+local function lateral(pos, c, right)
+	return (pos.x - c.x) * right.x + (pos.z - c.z) * right.z
+end
+
+-- Шаг навмеша от ноды в направлении dir на dist (знак dist — сторона)
+local function step(vid, dir, dist)
+	if dist < 0 then dir = vector():set(-dir.x, 0, -dir.z); dist = -dist end
+	if dist < 0.5 then return vid end
+	local v = level.vertex_in_direction(vid, dir, dist)
+	return (v and v < INVALID) and v or vid
+end
+
+local function order(p, id, vid, look)
+	p.slots[id] = vid
+	p.look[id] = look
+	p.ids[id] = true
+	varka_cmd.set_dir_order(id, vid, look)
+end
+
+local function trace_slots(key, p, movers)
+	local parts = {}
+	for id, vid in pairs(p.slots) do
+		local pos = level.vertex_position(vid)
+		parts[#parts+1] = string.format("%d:%.1f:%.1f:%d", id, pos.x, pos.z, movers and movers[id] and 1 or 0)
+	end
+	emit(key, "play_slots", { play = p.name, slots = table.concat(parts, ";") })
+end
+
+-- ===== ФРОНТ =====
+
+local function plan_front(key, p, list, threat)
+	local c, fwd, right = axes(list, threat)
+	table.sort(list, function(a, b) return lateral(a.obj:position(), c, right) < lateral(b.obj:position(), c, right) end)
+	local cvid = level.vertex_id(c)
+	if not (cvid and cvid < INVALID) then cvid = list[1].obj:level_vertex_id() end
+	local used, n = {}, #list
+	for i, m in ipairs(list) do
+		local off = (i - (n + 1) / 2) * SPACING
+		local vid = firing_spot(step(cvid, right, off), threat, used)
+		used[#used+1] = level.vertex_position(vid)
+		local look = vec_set(threat):add(vector():set(right.x * off * 1.5, 0, right.z * off * 1.5))
+		order(p, m.id, vid, look)
+	end
+	p.plan_t = time_global()
+	trace_slots(key, p)
+end
+
+-- ===== ПЕРЕКАТЫ (вперёд sign=1, назад sign=−1) =====
+
+local function plan_bound(key, p, list, threat, sign)
+	local c, fwd, right = axes(list, threat)
+	if not p.team then  -- двойки один раз: по линии слева направо через одного
+		table.sort(list, function(a, b) return lateral(a.obj:position(), c, right) < lateral(b.obj:position(), c, right) end)
+		p.team = {}
+		for i, m in ipairs(list) do p.team[m.id] = (i % 2 == 1) and "a" or "b" end
+		p.movers = "a"
+	end
+	local used, movers = {}, {}
+	for _, m in ipairs(list) do
+		if p.team[m.id] ~= p.movers then  -- держащие: стоят, где стоят
+			local vid = p.slots[m.id] or m.obj:level_vertex_id()
+			used[#used+1] = level.vertex_position(vid)
+			order(p, m.id, vid, threat)
+		end
+	end
+	for _, m in ipairs(list) do
+		if p.team[m.id] == p.movers then
+			movers[m.id] = true
+			local target = step(m.obj:level_vertex_id(), fwd, sign * STEP)
+			local vid = firing_spot(target, threat, used)
+			used[#used+1] = level.vertex_position(vid)
+			order(p, m.id, vid, threat)
+		end
+	end
+	p.moving = movers
+	p.phase_t = time_global()
+	trace_slots(key, p, movers)
+end
+
+local function movers_arrived(p)
+	for id in pairs(p.moving or {}) do
+		local o = level.object_by_id(id)
+		if o and o:alive() and p.slots[id] and o:position():distance_to(level.vertex_position(p.slots[id])) > ARRIVE then
+			return false
+		end
+	end
+	return true
+end
+
+-- ===== общий цикл =====
+
+function stop(key, reason)
+	local p = plays[key]
+	if not p then return end
+	for id in pairs(p.ids) do varka_cmd.set_dir_order(id, nil) end
+	plays[key] = nil
+	cool[key] = cool[key] or {}
+	cool[key][p.name] = time_global() + COOL
+	emit(key, "play_end", { play = p.name, reason = reason })
+	hud(key, string.upper(p.name) .. " over (" .. reason .. ")")
+	if DEBUG then printf("VARKA-PLAY: squad %s %s end (%s)", key, p.name, reason) end
+end
+
+function active(key) return plays[key] and plays[key].name or nil end
+
+local function start(key, name, reason, n)
+	plays[key] = { name = name, t0 = time_global(), contact_t = time_global(), slots = {}, look = {}, ids = {} }
+	emit(key, "play_start", { play = name, reason = reason, n = n })
+	hud(key, string.upper(name) .. " (" .. reason .. ")")
+	if DEBUG then printf("VARKA-PLAY: squad %s %s start (%s)", key, name, reason) end
+	return plays[key]
+end
+
+local function cooling(key, name)
+	return cool[key] and cool[key][name] and time_global() < cool[key][name]
+end
+
+-- Вызывается дирижёром каждый тик отряда в бою. combat — пьеса пресета на контакте ("front" |
+-- "bound" | nil), ms — состояние морали. Возвращает план { mode, roles } или nil.
+function update(squad, key, threat_hint, ms, combat)
+	if not (varka_cmd and varka_cmd.set_dir_order and varka_eyes) then return nil end
+	local list = members(squad)
+	if #list == 0 then stop(key, "dead"); return nil end
+	local now = time_global()
+	local threat, near = contact(list)
+	local p = plays[key]
+
+	if p then
+		if threat then p.contact_t = now; p.threat = threat end
+		if now - p.contact_t > LOST_MS then stop(key, "contact_lost"); return nil end
+		threat = threat or p.threat
+	end
+	if not threat then return nil end
+
+	-- мораль выбирает отход: валится, а враг не вплотную (вплотную — «засесть» у дирижёра)
+	local falling = ms and (ms.state == "broken" or (ms.state == "shaken" and (ms.imp or 0) < -0.01))
+	local want = combat
+	if falling and (near or math.huge) > UNSAFE and #list >= 1 then want = "withdraw" end
+	-- сравниваем с ЗАПРОШЕННОЙ пьесой: перекаты вблизи стартуют ФРОНТОМ, и это не повод их рвать
+	if p and p.req ~= want and not (p.name == "withdraw" and falling) then
+		stop(key, "switch")
+		p = nil
+	end
+	if not want then return nil end
+
+	local c = centroid(list)
+	local dist = c:distance_to(threat)
+
+	if not p then
+		local name = want
+		if cooling(key, want) then return nil end
+		if want == "bound" and (dist < CLOSE or #list < 2) then name = "front" end
+		if cooling(key, name) then return nil end
+		p = start(key, name, want == "withdraw" and ("morale " .. ms.state) or "contact", #list)
+		p.req = want
+		if name == "front" then plan_front(key, p, list, threat)
+		else plan_bound(key, p, list, threat, name == "withdraw" and -1 or 1) end
+	elseif p.name == "front" then
+		if now - (p.plan_t or 0) > REPLAN then plan_front(key, p, list, threat) end
+	else
+		local sign = p.name == "withdraw" and -1 or 1
+		if sign > 0 and dist < CLOSE then stop(key, "closed_in"); return nil end
+		if sign < 0 and (dist > FAR or (ms and ms.state == "steady")) then stop(key, "broke_away"); return nil end
+		if movers_arrived(p) or now - p.phase_t > PHASE_MAX then
+			p.movers = (p.movers == "a") and "b" or "a"
+			plan_bound(key, p, list, threat, sign)
+		end
+	end
+
+	local roles = {}
+	for _, m in ipairs(list) do
+		if p.name == "front" then roles[m.id] = "front"
+		else roles[m.id] = p.name .. ((p.moving and p.moving[m.id]) and "_move" or "_cover") end
+	end
+	return { mode = p.name, roles = roles, threat = threat }
+end

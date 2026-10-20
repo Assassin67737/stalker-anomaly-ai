@@ -1,0 +1,208 @@
+-- varka_regroup.script — v0.1: руки перегруппировки после боя (20.10.2026)
+--
+-- Дирижёр (varka_director, фаза «после боя») называет роли, здесь их исполняют:
+--   regroup — бегом в ближайшее укрытие от точки угрозы, присесть, смотреть туда, ждать
+--   guard   — кэп дал отмашку, разведка ушла: остаться в своём укрытии, встать наготове
+--   scout   — шагом с оружием к точке угрозы, на месте осмотреться
+--
+-- Где живёт: своё действие в ГЛАВНОМ планировщике бойца (как мягкий приказ varka_cmd,
+-- паттерн axr_beh). Предусловия: нет врага, нет опасности. То есть это «вне боя»:
+-- появился враг — воюет как обычно; опасность (труп, граната) — ванильная реакция.
+-- Уступает ему только прогулка симуляции (alife) и state_mgr — то, что после боя
+-- уводило бойцов по постам.
+-- Пока движок ещё в бою (post_combat_wait: врага нет, а бой не отпустил), рулит
+-- глушилка в varka_search_action — она в этой фазе просто приседает и смотрит на угрозу.
+--
+-- УКРЫТИЕ: кольца нод вокруг бойца, счёт = закрытость сидя в сторону угрозы − даль.
+-- level.low_cover_in_direction отдаёт ОТКРЫТОСТЬ (0 закрыто, 1 голо: cover/15 в движке),
+-- поэтому закрытость = 1 − она. Соседи по отряду штрафуют ноду: не жмёмся в одну точку.
+
+local DEBUG = true
+
+local EVA_POST, ACT_POST = 188205, 188206  -- рядом с varka_cmd (188201..188204)
+
+local RINGS      = { 3, 6, 10 }  -- м: радиусы колец кандидатов
+local DIRS       = 8             -- направлений на кольце
+local ARRIVE_SQR = 1.2 * 1.2
+local SPREAD_SQR = 2.5 * 2.5     -- ближе этого к укрытию соседа — штраф
+local TOO_CLOSE  = 6             -- м: укрытие ближе к угрозе — штраф (не прячемся у неё под носом)
+local MOVE_RATE  = 500           -- мс между переотправками ног
+
+local INVALID = 4294967295
+
+local spot = {}   -- [npc_id] = vid выбранного укрытия (нужно соседям для штрафа)
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), ev, f or {}) end
+end
+
+-- Укрытие рядом с бойцом от точки угрозы (nil угрозы → стоим, где стоим)
+local function pick_spot(npc, threat)
+	local base = npc:level_vertex_id()
+	if not (base and base < INVALID) then return nil end
+	if not threat then return base, 1 end
+
+	local my_pos = npc:position()
+	local squad = get_object_squad(npc)
+	local sid = squad and squad.id
+	local others = {}
+	for id, v in pairs(spot) do
+		local o = id ~= npc:id() and level.object_by_id(id)
+		local osq = o and o:alive() and get_object_squad(o)
+		if osq and osq.id == sid then others[#others+1] = level.vertex_position(v) end
+	end
+
+	local best, best_s, best_open = nil, nil, 1
+	local function try(vid)
+		if not (vid and vid < INVALID) or not npc:accessible(vid) then return end
+		local pos = level.vertex_position(vid)
+		local to = vec_set(threat):sub(pos)
+		to.y = 0
+		local open = to:magnitude() > 0.01 and level.low_cover_in_direction(vid, to) or 1
+		-- движок интерполирует 4 стороны по углу и на отрицательном угле (getHP даёт −π..π)
+		-- уходит за край: полигон 20.10 видел открытость −0.17. Зажимаем в 0..1.
+		open = math.max(0, math.min(1, open))
+		local s = (1 - open) - my_pos:distance_to(pos) / 25
+		if pos:distance_to(threat) < TOO_CLOSE then s = s - 0.5 end
+		for _, o in ipairs(others) do
+			if o:distance_to_sqr(pos) < SPREAD_SQR then s = s - 0.4 end
+		end
+		if not best_s or s > best_s then best, best_s, best_open = vid, s, open end
+	end
+
+	try(base)
+	for _, r in ipairs(RINGS) do
+		for i = 1, DIRS do
+			local a = (i - 1) * math.pi * 2 / DIRS
+			try(level.vertex_in_direction(base, vector():set(math.cos(a), 0, math.sin(a)), r))
+		end
+	end
+	return best, best_open
+end
+
+-- ============================================================================
+-- GOAP
+-- ============================================================================
+
+class "eva_varka_post" (property_evaluator)
+function eva_varka_post:__init(name) super(nil, name)
+end
+function eva_varka_post:evaluate()
+	local npc = self.object
+	if not npc:alive() or IsWounded(npc) then return false end
+	if varka_cmd and varka_cmd.has_order(npc) then return false end  -- приказ игрока сильнее
+	return varka_director ~= nil and varka_director.get_post(npc) ~= nil
+end
+
+class "act_varka_post" (action_base)
+function act_varka_post:__init(name) super(nil, name)
+end
+
+function act_varka_post:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
+	npc:set_path_type(game_object.level_path)
+	self.phase, self.vid, self.move_next = nil, nil, 0
+	db.storage[npc:id()].varka_active = true
+	emit(npc, "post_act_start", {})
+end
+
+function act_varka_post:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
+	local p = varka_director.get_post(npc)
+	if not p then return end
+	local now = time_global()
+	local look = p.threat and { look_position = p.threat } or nil
+
+	-- разведка: шагом к точке угрозы, на месте — осмотреться
+	if p.role == "scout" and p.threat then
+		local vid = level.vertex_id(p.threat)
+		if npc:position():distance_to(p.threat) > 3 and vid and vid < INVALID then
+			state_mgr.set_state(npc, "raid", nil, nil, look)
+			if now >= self.move_next then
+				self.move_next = now + MOVE_RATE
+				utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_regroup")
+			end
+		else
+			state_mgr.set_state(npc, "threat", nil, nil, nil)
+		end
+		return
+	end
+
+	-- regroup / guard: одно укрытие на всю пьесу, выбирается при первом входе
+	if not self.vid then
+		local open
+		self.vid, open = pick_spot(npc, p.threat)
+		if not self.vid then return end
+		spot[npc:id()] = self.vid
+		local pos = level.vertex_position(self.vid)
+		emit(npc, "regroup_spot", { vid = self.vid, open = open, sx = pos.x, sz = pos.z })
+	end
+
+	local pos = level.vertex_position(self.vid)
+	if npc:position():distance_to_sqr(pos) > ARRIVE_SQR then
+		state_mgr.set_state(npc, "assault", nil, nil, look)  -- бегом, без стрельбы
+		if now >= self.move_next then
+			self.move_next = now + MOVE_RATE
+			utils_obj.send_to_nearest_accessible_vertex(npc, self.vid, "varka_regroup")
+		end
+		return
+	end
+
+	-- на месте: до отмашки сидим, после — стоим наготове
+	state_mgr.set_state(npc, p.role == "guard" and "threat" or "hide", nil, nil, look)
+	utils_obj.send_to_nearest_accessible_vertex(npc, self.vid, "varka_regroup")
+end
+
+function act_varka_post:finalize()
+	local npc = self.object
+	spot[npc:id()] = nil
+	if db.storage[npc:id()] then db.storage[npc:id()].varka_active = nil end
+	emit(npc, "post_act_end", {})
+	action_base.finalize(self)
+end
+
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+
+	manager:add_evaluator(EVA_POST, eva_varka_post("eva_varka_post"))
+
+	local act = act_varka_post("act_varka_post")
+	act:add_precondition(wp(stalker_ids.property_alive,  true))
+	act:add_precondition(wp(stalker_ids.property_enemy,  false))
+	act:add_precondition(wp(stalker_ids.property_danger, false))
+	act:add_precondition(wp(EVA_POST, true))
+	act:add_effect(wp(EVA_POST, false))
+	manager:add_action(ACT_POST, act)
+
+	-- Уступают: прогулка симуляции и state_mgr. Только id, которые у сталкера есть всегда
+	-- (manager:action ищет через lower_bound — на чужой id вернёт соседнее действие).
+	for _, id in ipairs({ xr_actions_id.alife, xr_actions_id.state_mgr + 2 }) do
+		manager:action(id):add_precondition(wp(EVA_POST, false))
+	end
+	if DEBUG then printf("VARKA-REGROUP: npc %s hooked", npc:id()) end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local id = npc:id()
+	local st = db.storage[id]
+	if not st or st.varka_regroup_hooked then return end
+	st.varka_regroup_hooked = true  -- add_evaluator с тем же id дважды роняет движок
+	hook_npc(npc)
+end
+
+local function npc_death(npc)
+	if npc then spot[npc:id()] = nil end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

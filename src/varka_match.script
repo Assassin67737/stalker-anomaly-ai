@@ -1,0 +1,272 @@
+-- varka_match.script — v0.1: матч в игре — граница, конец, итог (20.10.2026)
+--
+-- Матч целиком ведёт раннер tools/twin/match/run.py: спавнит отряды, стравливает, задаёт
+-- дирижёра и приказ «к точке». Здесь — только то, что должна знать сама игра:
+--   match_begin <id> <лимит, с> <vid точки> <радиус, м> <отряды A "sq,sq"> <отряды B>
+--   match_abort
+-- Раз в секунду: сколько живых у каждой стороны, кто держит точку (в радиусе только свои).
+-- Конец: одна сторона выбита (eliminated) или вышло время (timeout) → событие match_end.
+-- Оценку исхода считает tools/twin/match/score.py по trace — её формула меняется чаще игры.
+--
+-- Телеметрия всегда (и вне матча): death (кто кого) и hit (кто, кого, сколько, с какой дистанции,
+-- видел ли раненый стрелка) — это датасет для модели попаданий двойника.
+
+local TICK_MS = 1000
+
+local match = nil  -- { id, limit, t0, zone, r, sides = { A = {sq=true}, B = {...} }, ctrl = {A=0,B=0}, next }
+
+local function emit(sq, npc, ev, f)
+	if varka_trace then varka_trace.emit(sq or 0, npc or 0, ev, f) end
+end
+
+local function split_ids(s)
+	local t = {}
+	for x in string.gmatch(s or "", "%d+") do t[tonumber(x)] = true end
+	return t
+end
+
+-- Живые бойцы стороны: всего (включая офлайн) и онлайн-позиции
+local function side_members(sqs)
+	local alive, online = 0, {}
+	for sq in pairs(sqs) do
+		local squad = alife_object(sq)
+		if squad and squad.squad_members then
+			for k in squad:squad_members() do
+				local se = alife_object(k.id)
+				if se and se:alive() then
+					alive = alive + 1
+					local o = level.object_by_id(k.id)
+					if o and o:alive() then online[#online+1] = o end
+				end
+			end
+		end
+	end
+	return alive, online
+end
+
+-- v0.3 (20.10, поиск краша): убийство убрано. Полигон по шагам: без уборки, с чисткой площадки и
+-- с повторной чисткой — без крашей; с vanish (o:kill(o) живых + удаление) — краш тот же. Теперь
+-- выживших не убиваем, а сразу отдаём ванильному безопасному удалению (сначала офлайн, потом
+-- удалить): после конца матча врагов вокруг нет, и движку не за что держать бойца в онлайне.
+local RELEASE_DELAY = 10000
+local pending = {}  -- [id] = когда удалить (наследие v0.2; сейчас vanish ничего не откладывает)
+
+local function vanish(id)
+	local se = alife_object(id)
+	if not se then return false end
+	safe_release_manager.release(se)
+	return true
+end
+
+local function release_pending()
+	local now = time_global()
+	for id, at in pairs(pending) do
+		if now >= at then
+			pending[id] = nil
+			local se = alife_object(id)
+			if se then safe_release_manager.release(se) end
+		end
+	end
+end
+
+-- После конца матча — без мародёрства. В бою подобрать ствол убитого нормально (ваниль как есть),
+-- а после конца незачем: выживших скоро уберут. И опасно: ваниль при подборе бросает свой ствол того
+-- же класса и уничтожает лишние патроны (on_after_take → update_conflicted) — в дампах крашей 20.10
+-- цепочка шла через это событие, а наша уборка в те же секунды удаляет трупы и оружие.
+local NO_LOOT = nil
+local function no_loot(o)
+	NO_LOOT = NO_LOOT or xr_logic.parse_condlist(db.actor, "varka_match", "no_loot", "false")
+	o:take_items_enabled(false)
+	local st = db.storage[o:id()]
+	if not st then return end
+	if st.corpse_detection then
+		st.corpse_detection.corpse_detection_enabled = NO_LOOT
+		st.corpse_detection.mutant_corpse_analysis = NO_LOOT
+	end
+	if st.gather_items then
+		st.gather_items.gather_items_enabled = NO_LOOT
+		st.gather_items.gather_artefact_items_enabled = NO_LOOT
+	end
+end
+
+local function finish(reason)
+	if not match then return end
+	local now = time_global()
+	local a, on_a = side_members(match.sides.A)
+	local b, on_b = side_members(match.sides.B)
+	for _, o in ipairs(on_a) do no_loot(o) end   -- выжившие больше ничего не подбирают
+	for _, o in ipairs(on_b) do no_loot(o) end
+	emit(0, 0, "match_end", { id = match.id, reason = reason, dur = (now - match.t0) / 1000,
+		alive_a = a, alive_b = b, ctrl_a = match.ctrl.A, ctrl_b = match.ctrl.B })
+	if varka_hud then varka_hud.push(string.format("MATCH %s over: %s (alive %d vs %d)", match.id, reason, a, b)) end
+	match = nil
+end
+
+local function tick()
+	if next(pending) then release_pending() end
+	if not match then return end
+	local now = time_global()
+	if now < match.next then return end
+	local dt = (now - match.next + TICK_MS) / 1000
+	match.next = now + TICK_MS
+
+	local a, on_a = side_members(match.sides.A)
+	local b, on_b = side_members(match.sides.B)
+	if a == 0 or b == 0 then return finish("eliminated") end
+
+	-- точка: держит та сторона, чьи живые в радиусе, а чужих там нет
+	local r2 = match.r * match.r
+	local in_a, in_b = 0, 0
+	for _, o in ipairs(on_a) do if o:position():distance_to_sqr(match.zone) < r2 then in_a = in_a + 1 end end
+	for _, o in ipairs(on_b) do if o:position():distance_to_sqr(match.zone) < r2 then in_b = in_b + 1 end end
+	if in_a > 0 and in_b == 0 then match.ctrl.A = match.ctrl.A + dt end
+	if in_b > 0 and in_a == 0 then match.ctrl.B = match.ctrl.B + dt end
+
+	if now - match.t0 > match.limit then finish("timeout") end
+end
+
+local function cmd_begin(a)
+	if match then finish("replaced") end
+	local id, limit, vid, r = a[1], tonumber(a[2]), tonumber(a[3]), tonumber(a[4])
+	if not (id and limit and vid and r) then return false, "match_begin <id> <limit_s> <zone_vid> <r> <A> <B>" end
+	local sa, sb = split_ids(a[5]), split_ids(a[6])
+	if next(sa) == nil or next(sb) == nil then return false, "empty side" end
+	local now = time_global()
+	match = { id = id, limit = limit * 1000, t0 = now, next = now + TICK_MS,
+		zone = level.vertex_position(vid), r = r, sides = { A = sa, B = sb }, ctrl = { A = 0, B = 0 } }
+	emit(0, 0, "match_start", { id = id, limit = limit, zx = match.zone.x, zz = match.zone.z, zr = r,
+		a = a[5], b = a[6], level = level.name() })
+	if varka_hud then varka_hud.push("MATCH " .. id .. " started") end
+	return true, id
+end
+
+local function cmd_abort(a)
+	if not match then return false, "no match" end
+	finish("aborted")
+	return true, "aborted"
+end
+
+-- clear <vid> <радиус> — убрать с площадки чужих: отряды без сюжетных меток, трупы и брошенное
+-- на землю оружие/патроны/гранаты (иначе новички следующего матча подбирают стволы павших).
+-- Сюжетных (story_id у отряда или бойца — Лукаш, торговцы, квестовые) не трогаем.
+-- Только онлайн-окрестность: дальше радиуса сейв остаётся как был.
+-- Трупы и вещи — через ванильный safe_release_manager: alife_release для мёртвого бойца без
+-- отряда молча ничего не делает (полигон 20.10: трупов на площадке копилось 3 → 52).
+-- Убрать бойца насовсем. Живого в онлайне ванильный путь (alife_release → safe_release_manager)
+-- не берёт: в бою движок не отпускает его в офлайн, и он воюет дальше (полигон 20.10: пять
+-- отрядов сейва пережили чистку). Поэтому живого сначала убиваем, потом труп — в очередь удаления.
+
+-- vanish sq:<id> — отряд целиком (раннер убирает выживших после матча)
+local function cmd_vanish(a)
+	local id = tonumber(string.match(a[1] or "", "^sq:(%d+)$"))
+	local squad = id and alife_object(id)
+	if not (squad and squad.squad_members) then return true, "already gone" end
+	local n = 0
+	for k in squad:squad_members() do if vanish(k.id) then n = n + 1 end end
+	return true, n .. " npc"
+end
+
+local function cmd_clear(a)
+	local vid, r = tonumber(a[1]), tonumber(a[2]) or 150
+	if not (vid and vid < 4294967295) then return false, "bad vid" end
+	local keep = {}   -- a[3] = "sq,sq" — отряды матча, их не трогаем (повторная чистка перед стартом)
+	for x in string.gmatch(a[3] or "", "%d+") do keep[tonumber(x)] = true end
+	-- a[4] = "squads": только чужие отряды. Трупы и оружие не трогаем — рядом уже стоят бойцы матча,
+	-- удалять вещи у них под ногами (они могут их подбирать) — тот же путь к крашу
+	local squads_only = a[4] == "squads"
+	local center = level.vertex_position(vid)
+	local squads, corpses, items = {}, {}, {}
+	level.iterate_nearest(center, r, function(o)
+		if o:id() == AC_ID or get_object_story_id(o:id()) then return end
+		if IsStalker(o) or IsMonster(o) then
+			if not o:alive() then
+				corpses[#corpses+1] = o:id()
+			else
+				local sq = get_object_squad(o)
+				if sq and not keep[sq.id] then squads[sq.id] = sq end
+			end
+		elseif (IsWeapon(o) or IsAmmo(o) or IsGrenade(o)) and not o:parent() then
+			items[#items+1] = o:id()   -- лежит на земле, ничей
+		end
+	end)
+	local n_sq, n_c = 0, 0
+	for id, sq in pairs(squads) do
+		local story = get_object_story_id(id)
+		for k in sq:squad_members() do story = story or get_object_story_id(k.id) end
+		if not story then
+			for k in sq:squad_members() do vanish(k.id) end
+			n_sq = n_sq + 1
+		end
+	end
+	local n_i = 0
+	if squads_only then corpses, items = {}, {} end
+	for _, list in ipairs({ corpses, items }) do
+		for _, id in ipairs(list) do
+			local se = alife_object(id)
+			if se then
+				safe_release_manager.release(se)
+				if list == corpses then n_c = n_c + 1 else n_i = n_i + 1 end
+			end
+		end
+	end
+	emit(0, 0, "match_clear", { squads = n_sq, corpses = n_c, items = n_i, r = r })
+	return true, n_sq .. " squads, " .. n_c .. " corpses, " .. n_i .. " items"
+end
+
+-- smarts — выгрузить в trace все смарт-террейны текущего уровня (имя, x, z, vid):
+-- раннер берёт их как точки матчей — вся локация без ручного сбора координат
+local function cmd_smarts(a)
+	if not (SIMBOARD and SIMBOARD.smarts) then return false, "no SIMBOARD" end
+	local gg = game_graph()
+	local here = gg:vertex(db.actor:game_vertex_id()):level_id()
+	local n = 0
+	for _, v in pairs(SIMBOARD.smarts) do
+		local sm = v.smrt
+		if sm and gg:vertex(sm.m_game_vertex_id):level_id() == here then
+			emit(0, 0, "smart", { name = sm:name(), x = sm.position.x, y = sm.position.y, z = sm.position.z,
+				vid = sm.m_level_vertex_id, level = level.name() })
+			n = n + 1
+		end
+	end
+	return true, n .. " smarts"
+end
+
+-- ===== телеметрия =====
+
+local function on_death(victim, who)
+	if not victim then return end
+	local sq = get_object_squad(victim)
+	local ksq = who and get_object_squad(who)
+	emit(sq and sq.id or 0, victim:id(), "death", {
+		killer = who and who:id() or -1, ksq = ksq and ksq.id or -1,
+		rank = victim.character_rank and victim:character_rank() or 0,
+		comm = character_community(victim) or "?",
+	})
+end
+
+local function on_hit(npc, amount, dir, who, bone)
+	if not (npc and who and amount and amount > 0) then return end
+	local sq = get_object_squad(npc)
+	local wsq = who.id and get_object_squad(who)
+	emit(sq and sq.id or 0, npc:id(), "hit", {
+		who = who:id(), wsq = wsq and wsq.id or -1, amount = amount, bone = bone or -1,
+		d = npc:position():distance_to(who:position()),
+		dy = who:position().y - npc:position().y,     -- высота стрелка над целью (башни!)
+		saw = npc:see(who) and 1 or 0,
+	})
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", tick)
+	RegisterScriptCallback("npc_on_death_callback", on_death)
+	RegisterScriptCallback("npc_on_hit_callback", on_hit)
+	RegisterScriptCallback("actor_on_first_update", function()
+		if varka_cmd and varka_cmd.register then
+			varka_cmd.register("match_begin", cmd_begin)
+			varka_cmd.register("match_abort", cmd_abort)
+			varka_cmd.register("clear", cmd_clear)
+			varka_cmd.register("smarts", cmd_smarts)
+			varka_cmd.register("vanish", cmd_vanish)
+		end
+	end)
+end

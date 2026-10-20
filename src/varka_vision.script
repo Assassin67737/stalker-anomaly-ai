@@ -1,0 +1,49 @@
+-- varka_vision.script — v0.1: пространственное зрение в игре (20.10.2026)
+--
+-- Читает запечку tools/twin/vision/bake_vision.py: ../appdata/varka_vision/<уровень>.bin,
+-- 3 байта на ноду навмеша по порядку vid. Луч не пускается — это лукап, как level.ai.
+--   enclosure(vid) → 0..1  замкнутость: доля направлений, где стена ближе 3 м («спина к стене»)
+--   depth(vid)     → м     медиана дальности обзора стоя (до 150 м)
+--   half(vid)      → 0..1  полукрытие: доля направлений «сел — спрятан, встал — стреляешь»
+-- Нет файла для уровня → available() = false, потребители живут по-старому.
+
+local DIR   = "../appdata/varka_vision/"
+local RANGE = 150
+local INVALID = 4294967295
+
+local data, for_level = nil, nil
+
+local function ensure()
+	local name = level.name()
+	if for_level == name then return data ~= nil end
+	for_level, data = name, nil
+	local f = io.open(DIR .. name .. ".bin", "rb")
+	if f then
+		data = f:read("*a")
+		f:close()
+	end
+	printf("VARKA-VISION: %s -> %s", name, data and string.format("%d нод", #data / 3) or "запечки нет")
+	return data ~= nil
+end
+
+local function byte(vid, k)
+	if not (vid and vid < INVALID and ensure()) then return nil end
+	return string.byte(data, vid * 3 + k)
+end
+
+function available() return ensure() end
+
+function enclosure(vid)
+	local b = byte(vid, 1)
+	return b and b / 255
+end
+
+function depth(vid)
+	local b = byte(vid, 2)
+	return b and math.exp(b / 255 * math.log(1 + RANGE)) - 1
+end
+
+function half(vid)
+	local b = byte(vid, 3)
+	return b and b / 255
+end

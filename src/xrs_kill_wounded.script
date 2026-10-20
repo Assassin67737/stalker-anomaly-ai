@@ -25,6 +25,11 @@ local MinTriggerTimer = ini:r_float_ex("settings","min_timer","float") or 3000
 local MaxTriggerTimer = ini:r_float_ex("settings","max_timer","float") or 5000
 local SurrenderMinTriggerTimer = ini:r_float_ex("settings","surrender_min_timer") or 5000
 local SurrenderMaxTriggerTimer = ini:r_float_ex("settings","surrender_max_timer") or 5000
+-- VARKA: казнь чуть быстрее — палач слишком долго смотрит перед выстрелом (юзер 20.10). ×0.6
+local VARKA_TIMER_SCALE = 0.6
+MinTriggerTimer, MaxTriggerTimer = MinTriggerTimer * VARKA_TIMER_SCALE, MaxTriggerTimer * VARKA_TIMER_SCALE
+SurrenderMinTriggerTimer = SurrenderMinTriggerTimer * VARKA_TIMER_SCALE
+SurrenderMaxTriggerTimer = SurrenderMaxTriggerTimer * VARKA_TIMER_SCALE
 local KillWoundedSoundChance = ini:r_float_ex("settings","chance_to_play_sound") or 0.25
 local SurrenderChance = ini:r_float_ex("settings","chance_to_play_surrender") or 0.25
 local CauseSurrenderCommunities = parse_list(ini,"settings","cause_surrender_communities",true)

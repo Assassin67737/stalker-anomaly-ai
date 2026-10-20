@@ -1,0 +1,8 @@
+# пересобирается: python3 vision/bake_vision.py <уровень> <имя>; gcc собирает rays сам
+levels/*_pano.bin
+vision/rays
+# данные матчей — локально (tools/twin/match/runs*, results.jsonl)
+match/runs*/
+match/results.jsonl
+match/.runner.lock
+__pycache__/

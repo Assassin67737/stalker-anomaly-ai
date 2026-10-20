@@ -44,11 +44,41 @@ details[open]>summary::before{content:'▾ '}
 #hint{color:#666;font-size:10px;margin-top:4px;line-height:1.4}
 #cmdlog{max-height:110px;overflow-y:auto;font-size:10px;margin-top:6px;border-top:1px solid #1a1a1a;padding-top:4px}
 #cmdlog .ok{color:#66BB6A} #cmdlog .fail{color:#ef5350} #cmdlog .wait{color:#888}
+#roster{width:260px;background:#050505;border-right:1px solid #222;overflow-y:auto;font-size:11px;padding:6px 0}
+#roster.hidden{display:none}
+#sidebar.hidden{display:none}
+#panes{position:absolute;top:6px;left:6px;display:flex;gap:4px;z-index:2}
+#panes button{padding:2px 7px;background:rgba(10,10,10,0.8);font-size:12px}
+#roster .legend{color:#555;font-size:10px;padding:0 8px 6px;border-bottom:1px solid #161616;line-height:1.5}
+#roster .sq{padding:5px 8px 3px;border-top:1px solid #181818;cursor:pointer}
+#roster .sq:hover,#roster .m:hover{background:#111}
+#roster .sq.sel{background:#0c1d20}
+#roster .hd{display:flex;gap:6px;align-items:center;white-space:nowrap}
+#roster .stripe{width:4px;height:12px;border-radius:1px}
+#roster .mbar{position:relative;height:6px;background:#1b1b1b;border-radius:2px;margin:3px 0 2px}
+#roster .mbar i{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+#roster .mbar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:#fff8}
+#roster .axes{display:flex;gap:4px;color:#666;font-size:9px}
+#roster .axes span{display:flex;align-items:center;gap:2px}
+#roster .axes em{display:inline-block;width:14px;height:4px;background:#1b1b1b;position:relative}
+#roster .axes em i{position:absolute;left:0;top:0;bottom:0;background:#6a9}
+#roster .m{display:flex;gap:5px;padding:1px 8px 1px 18px;cursor:pointer;white-space:nowrap;color:#aaa}
+#roster .m.dead{color:#444;text-decoration:line-through}
+#roster .m.sel{background:#0c1d20}
+#roster .role{color:#00e5ff}
+#roster .fl{color:#ffee58}
 </style>
 </head>
 <body>
 <div id="top">
-  <div id="canvas-wrap"><canvas id="cv"></canvas></div>
+  <div id="roster"></div>
+  <div id="canvas-wrap"><canvas id="cv"></canvas>
+    <div id="panes">
+      <button onclick="toggleRoster()" title="панель состава слева">◧</button>
+      <button onclick="toggleField()" title="только поле боя (клавиша F)">⛶</button>
+      <button onclick="toggleSidebar()" title="панель справа">◨</button>
+    </div>
+  </div>
   <div id="sidebar">
     <div class="box">
       <b>Карта</b>
@@ -56,6 +86,15 @@ details[open]>summary::before{content:'▾ '}
         <select id="level" onchange="pickLevel(this.value)"><option value="auto">уровень: авто</option></select>
         <button onclick="fitFight()">к бою</button>
         <button onclick="fitLevel()">весь</button>
+        <button onclick="toggleRoster()" title="панель слева: отряды и каждый боец">состав</button>
+      </div>
+      <div class="row">
+        <select id="vmode" onchange="mapDirty=true; draw()" title="как красить слой «зрение»">
+          <option value="mix">зрение: всё сразу</option>
+          <option value="enc">замкнутость (стены рядом)</option>
+          <option value="deep">глубина обзора</option>
+          <option value="half">полукрытие (сел — спрятан)</option>
+        </select>
       </div>
     </div>
     <div class="box" id="creative">
@@ -88,7 +127,7 @@ details[open]>summary::before{content:'▾ '}
       <div class="row">
         <select id="sel-preset" title="пресет дирижёра для выбранного отряда">
           <option value="default">дирижёр: общий</option><option value="shturm">ШТУРМ</option>
-          <option value="greh">ГРЕХ</option><option value="off">выключен</option>
+          <option value="greh">ГРЕХ</option><option value="front">ФРОНТ</option><option value="bound">ПЕРЕКАТЫ</option><option value="off">выключен</option>
         </select>
         <button onclick="selCmd('preset')">задать</button>
         <button onclick="selCmd('free')" title="снять приказы — снова сами по себе">свобода</button>
@@ -101,6 +140,11 @@ details[open]>summary::before{content:'▾ '}
         <button onclick="send('time',['0.25'])">×¼</button>
         <button onclick="send('time',['1'])">×1</button>
         <button onclick="send('time',['3'])">×3</button>
+      </div>
+      <div class="row" style="margin-top:6px" title="сфера лучей вокруг тебя в игре — сверка запечки зрения (в игре — Scroll Lock)">
+        <button onclick="send('probe',['on'])" title="снимок каждые 1,5 с, пока идёшь">эхолот вкл</button>
+        <button onclick="send('probe',['off'])">выкл</button>
+        <button onclick="send('probe',['once'])" title="один снимок здесь и сейчас, даже если стоишь">1 снимок</button>
       </div>
       <div id="hint"></div>
       <div id="cmdlog"></div>
@@ -135,6 +179,8 @@ details[open]>summary::before{content:'▾ '}
 const LAYERS = [
   ['relief', 'навмеш (рельеф)',    '#555',    true ],
   ['cover',  'укрытия',            '#b07a3a', false],
+  ['vision', 'зрение (запечка cform)','#e04040', false],
+  ['pano',   'панорама под мышью (стоя ─, сидя ┄)','#7fffd4', false],
   ['trails', 'следы путей',        '#4a6a8a', false],
   ['npcs',   'бойцы',              '#2196F3', true ],
   ['gaze',   'взгляд',             '#888',    true ],
@@ -167,7 +213,8 @@ function setLayer(k, v){
   on[k] = v;
   document.getElementById('ly-'+k).checked = v;
   try{ localStorage.setItem('varka_layers', JSON.stringify(on)); }catch(_){}
-  if(k==='relief'||k==='cover') mapDirty = true;
+  if(k==='relief'||k==='cover'||k==='vision') mapDirty = true;
+  if(k==='pano' && v) loadPano();
   draw();
 }
 function preset(name){
@@ -205,7 +252,7 @@ function rankLetter(r){
 // при движении вперёд докатываем, при перемотке назад — заново с нуля.
 function freshState(){
   return { upto:0, npcs:{}, trails:{}, beliefs:{}, echos:{}, nodes:{}, lots:{}, holds:{},
-           shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{} };
+           shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{}, posts:{}, rspots:{}, probe:null, probeN:0, holdouts:{}, match:null, plays:{}, intel:{} };
 }
 let S = freshState();
 
@@ -215,7 +262,8 @@ function applyEvent(s, ev){
   if(t==='npc_pos'){
     s.npcs[ev.npc] = {px:ev.px,py:ev.py,pz:ev.pz,dx:ev.dx,dz:ev.dz,
                       rank:ev.rank,comm:ev.comm,active:ev.active,sq:ev.sq,_t:ev.t,
-                      be:ev.be, bsee:ev.bsee, wnd:ev.wnd, dng:ev.dng, dtype:ev.dtype, kw:ev.kw};
+                      be:ev.be, bsee:ev.bsee, wnd:ev.wnd, dng:ev.dng, dtype:ev.dtype, kw:ev.kw,
+                      aid:ev.aid, aid2:ev.aid2, hp:ev.hp, wpn:ev.wpn, wk:ev.wk};
     (s.trails[ev.npc] ||= []).push(ev.px, ev.pz);
 
   } else if(t==='belief_born'||t==='belief_notice'||t==='belief_update'){
@@ -275,7 +323,66 @@ function applyEvent(s, ev){
     for(const id of Object.keys(s.flanks)) if(!(id in roles) || roles[id]!=='flank') delete s.flanks[id];
 
   } else if(t==='dir_moral'){
-    s.moral[ev.sq] = ev.moral;
+    // v0.5: мораль с осями (старые trace несут только moral)
+    s.moral[ev.sq] = {v:ev.moral, target:ev.target, imp:ev.imp, st:ev.st, res:ev.res,
+                      coh:ev.coh, inf:ev.inf, cap:ev.cap, fog:ev.fog, near:ev.near, wall:ev.wall, heavy:ev.heavy};
+
+  } else if(t==='holdout_start'){
+    const slots = {};
+    for(const part of String(ev.slots||'').split(';')){
+      const [id,x,z] = part.split(':'); if(id) slots[id] = {px:+x, pz:+z};
+    }
+    s.holdouts[ev.sq] = {ax:ev.ax, az:ev.az, enc:ev.enc, slots, _t:ev.t};
+
+  } else if(t==='match_start' || t==='match_clear'){
+    // новый бой — метки прошлого (засели, перегруппировка, роли, флангеры) больше не про него
+    for(const k of ['holdouts','posts','rspots','flanks','scouts','roles','plans','lots','holds','nodes','beliefs','echos','plays']) s[k] = {};
+    if(t==='match_clear') return;
+    s.match = {id:ev.id, zx:ev.zx, zz:ev.zz, zr:ev.zr, limit:ev.limit, t0:ev.t,
+               a:String(ev.a).split(',').map(Number), b:String(ev.b).split(',').map(Number), end:null};
+
+  } else if(t==='match_end'){
+    if(s.match && s.match.id===ev.id) s.match.end = ev;
+
+  } else if(t==='intel'){
+    // что отряд узнал о стволе врага (varka_intel): общее — видно всем, личное — только узнавшему
+    (s.intel[ev.sq] ||= {})[ev.enemy] = {sec:ev.wpn_sec||ev.sec, cls:ev.cls, shared:ev.shared, by:ev.npc, _t:ev.t};
+
+  } else if(t==='play_start'){
+    s.plays[ev.sq] = {play:ev.play, slots:{}, _t:ev.t};
+
+  } else if(t==='play_slots'){
+    const pl = s.plays[ev.sq] ||= {play:ev.play, slots:{}};
+    pl.slots = {};
+    for(const part of String(ev.slots||'').split(';')){
+      const [id,x,z,m] = part.split(':'); if(id) pl.slots[id] = {px:+x, pz:+z, mover:m==='1'};
+    }
+
+  } else if(t==='play_end'){
+    delete s.plays[ev.sq];
+
+  } else if(t==='holdout_end'){
+    delete s.holdouts[ev.sq];
+
+  } else if(t==='regroup_start'){
+    s.posts[ev.sq] = {phase:'regroup', cap:ev.cap, till:ev.t+ev.dur, mstate:ev.mstate,
+                      tx:ev.has_t ? ev.tx : null, tz:ev.tz};
+
+  } else if(t==='all_clear'){
+    if(s.posts[ev.sq]){ s.posts[ev.sq].phase='scout'; s.posts[ev.sq].scoutsTxt=ev.scouts; }
+
+  } else if(t==='post_end'){
+    delete s.posts[ev.sq];
+
+  } else if(t==='probe'){
+    // эхолот: храним только последний снимок (лучи с наклоном 0 — кольцо как у панорамы)
+    s.probe = ev; s.probeN++;
+
+  } else if(t==='regroup_spot'){
+    s.rspots[ev.npc] = {px:ev.sx, pz:ev.sz, open:ev.open};
+
+  } else if(t==='post_act_end'){
+    delete s.rspots[ev.npc];
 
   } else if(t==='flank_pick'){
     s.flanks[ev.npc] = {px:ev.fx, pz:ev.fz, w:ev.w, arrived:false};
@@ -287,7 +394,7 @@ function applyEvent(s, ev){
     s.scouts[ev.npc] = {px:ev.sx, pz:ev.sz, _t:ev.t};
   }
 
-  if(t!=='npc_pos' && t!=='belief_snap' && t!=='echo_snap' && t!=='dir_moral'){
+  if(t!=='npc_pos' && t!=='belief_snap' && t!=='echo_snap' && t!=='dir_moral' && t!=='hit' && t!=='play_slots'){
     s.evLog.push(ev);
     if(s.evLog.length > 80) s.evLog.shift();
   }
@@ -317,7 +424,8 @@ function fightBounds(){
 // ─────────────────────────────────────────────
 let levels = {};        // имя → meta
 let levelChoice = 'auto';
-let L = null;           // текущий уровень: {meta, info: ImageData, vid: ImageData}
+let L = null;           // текущий уровень: {meta, info: ImageData, vid: ImageData, vis?: ImageData, pano?: Uint16Array}
+let hoverW = null;      // мир под мышью — для панорамы
 let mapCv = null, mapDirty = true;
 
 async function loadIndex(){
@@ -359,7 +467,22 @@ async function pickLevel(choice){
   };
   const [info, vid] = await Promise.all([grab(`levels/${name}.png`), grab(`levels/${name}_vid.png`)]);
   L = {meta:levels[name], info, vid};
+  if(L.meta.vision){   // запечка зрения есть (vision/bake_vision.py)
+    L.vis = await grab(`levels/${name}_vision.png`);
+    if(on.pano) loadPano();
+  }
   if(!view) fitFight();
+  draw();
+}
+
+// Панорама — 50 МБ, грузим только когда слой включён
+async function loadPano(){
+  if(!L || !L.meta.vision || L.pano || L.panoLoading) return;
+  L.panoLoading = true;
+  setStatus('гружу панораму...');
+  const buf = await (await fetch(`levels/${L.meta.name}_pano.bin`)).arrayBuffer();
+  L.pano = new Uint16Array(buf);
+  L.panoLoading = false;
   draw();
 }
 
@@ -372,8 +495,21 @@ function buildMap(){
   mapCv.width = w; mapCv.height = h;
   const mx = mapCv.getContext('2d');
   const out = mx.createImageData(w,h), d = out.data;
+  const vis = on.vision && L.vis ? L.vis.data : null, vmode = document.getElementById('vmode').value;
   for(let i=0;i<src.length;i+=4){
-    if(!src[i+3] || (!on.relief && !on.cover)) continue;
+    if(!src[i+3] || (!on.relief && !on.cover && !vis)) continue;
+    if(vis){
+      // R = замкнутость, G = глубина обзора (лог), B = полукрытие — см. bake_vision.py
+      const e = vis[i], dp = vis[i+1], hf = vis[i+2];
+      let r, g, b;
+      if(vmode==='enc'){ r = 30+e*0.9; g = 30+e*0.25; b = 30; }
+      else if(vmode==='deep'){ r = 20+dp*0.3; g = 20+dp*0.75; b = 30+dp*0.5; }
+      else if(vmode==='half'){ const h = Math.min(255, hf*4); r = 30; g = 40+h*0.4; b = 40+h*0.85; }
+      else { r = e; g = dp*0.8; b = Math.min(255, hf*4); }
+      if(on.relief){ const k = 0.75 + src[i]/255*0.4; r*=k; g*=k; b*=k; }
+      d[i]=r; d[i+1]=g; d[i+2]=b; d[i+3]=255;
+      continue;
+    }
     let g = on.relief ? 34 + src[i]*0.42 : 46;
     let r = g, b = g;
     if(on.cover){
@@ -442,6 +578,7 @@ cv.addEventListener('mousemove', e=>{
     draw();
   }
   showHover(e.offsetX, e.offsetY);
+  if(on.pano && L && L.pano){ hoverW = view ? s2w(e.offsetX, e.offsetY) : null; draw(); }
 });
 
 function nodeAt(x, z){
@@ -453,8 +590,11 @@ function nodeAt(x, z){
   const k = (j*m.w+i)*4, v = L.vid.data, f = L.info.data;
   const vid = (v[k]<<16 | v[k+1]<<8 | v[k+2]) - 1;
   if(vid < 0) return null;
-  return {vid, y: m.box[1] + f[k]/255*(m.box[4]-m.box[1]),
-          high: Math.round(f[k+1]/17), low: Math.round(f[k+2]/17)};
+  const out = {vid, y: m.box[1] + f[k]/255*(m.box[4]-m.box[1]),
+          high: Math.round(f[k+1]/17), low: Math.round(f[k+2]/17),
+          x: m.box[0] + i*m.cell, z: m.box[2] + (m.h-1-j)*m.cell};
+  if(L.vis){ const q = L.vis.data; out.enc = q[k]/255; out.deep = Math.expm1(q[k+1]/255*Math.log1p(m.vision.range)); out.half = q[k+2]/255; }
+  return out;
 }
 
 function showHover(px, py){
@@ -462,7 +602,9 @@ function showHover(px, py){
   if(!view){ el.textContent=''; return; }
   const p = s2w(px, py), n = nodeAt(p.x, p.z);
   el.textContent = `x=${p.x.toFixed(1)} z=${p.z.toFixed(1)}  ` +
-    (n ? `vid ${n.vid}  y=${n.y.toFixed(1)}  открыто: выс ${n.high}/15 низ ${n.low}/15 (0 = закрыто)` : 'нет ноды (стена / край)');
+    (n ? `vid ${n.vid}  y=${n.y.toFixed(1)}  открыто: выс ${n.high}/15 низ ${n.low}/15 (0 = закрыто)` +
+         (n.enc!=null ? `  ·  стены ${Math.round(n.enc*100)}%  обзор ${n.deep.toFixed(0)} м  полукрытие ${Math.round(n.half*100)}%` : '')
+       : 'нет ноды (стена / край)');
 }
 
 // ─────────────────────────────────────────────
@@ -478,7 +620,7 @@ function draw(){
   }
 
   // подложка: клетка 0,7 м = пиксель картинки, растягиваем без сглаживания
-  if(L && (on.relief || on.cover)){
+  if(L && (on.relief || on.cover || on.vision)){
     if(mapDirty) buildMap();
     const m = L.meta, tl = w2s(m.box[0]-m.cell/2, m.box[5]+m.cell/2);
     ctx.imageSmoothingEnabled = false;
@@ -519,8 +661,11 @@ function draw(){
   }
 
   // ── эхо ───────────────────────────────────────
+  // вера и эхо выбитых/убранных отрядов в игре доживают по возрасту — рисовать незачем
+  const liveSq = new Set(Object.values(s.npcs).filter(alive).map(n=>String(n.sq)));
   if(on.echo){
     for(const [sq,e] of Object.entries(s.echos)){
+      if(!liveSq.has(String(sq))) continue;
       const p = w2s(e.px, e.pz);
       ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI*2);
       ctx.strokeStyle='rgba(180,160,255,0.35)'; ctx.lineWidth=2; ctx.stroke();
@@ -532,6 +677,7 @@ function draw(){
   // ── вера: конус «куда враг делся» ─────────────
   if(on.belief){
     for(const [sq,b] of Object.entries(s.beliefs)){
+      if(!liveSq.has(String(sq))) continue;
       const p = w2s(b.px, b.pz);
       const mass = Math.max(0, Math.min(1, b.mass||0));
       const half = ((b.cone||45)/2) * Math.PI/180;
@@ -622,25 +768,97 @@ function draw(){
       ctx.setLineDash([2,4]); ctx.strokeStyle='#b4a0ff'; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
     }
-    // подпись отряда над его центром: пресет · режим · мораль
-    const groups = {};
-    for(const [id,npc] of Object.entries(s.npcs)){
-      if(!alive(npc) || !s.plans[npc.sq]) continue;
-      const g = groups[npc.sq] ||= {x:0, z:0, n:0, zmax:-1e9};
-      g.x += npc.px; g.z += npc.pz; g.n++; g.zmax = Math.max(g.zmax, npc.pz);
-    }
+    // значок отряда над его верхним бойцом: [полоса фракции] #id глиф режима ▮мораль▮ ↑↓
+    // клик по значку — выделить отряд; подробности — в панели «состав» слева
+    badgeHits = [];
+    const groups = squadGroups(s, alive);
     for(const [sq,g] of Object.entries(groups)){
-      const pl = s.plans[sq], m = s.moral[sq];
+      if(!s.plans[sq] && !s.moral[sq]) continue;
+      const pl = s.plans[sq], m = s.moral[sq], po = s.posts[sq];
       const p = w2s(g.x/g.n, g.zmax);
-      const txt = `${pl.preset} · ${pl.mode}` + (m!=null ? ` · мораль ${m.toFixed(2)}` : '');
-      ctx.font='bold 11px monospace';
-      const w = ctx.measureText(txt).width;
-      ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(p.x-w/2-4, p.y-34, w+8, 15);
-      ctx.fillStyle='#00e5ff'; ctx.fillText(txt, p.x-w/2, p.y-23);
+      const x0 = p.x - 34, y0 = p.y - 30, w = 68, h = 15;
+      const isSel = sel && sel.kind==='sq' && sel.id===+sq;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(x0, y0, w, h);
+      ctx.fillStyle = fcolor(g.comm); ctx.fillRect(x0, y0, 3, h);
+      ctx.font = 'bold 10px monospace'; ctx.fillStyle = '#ccc';
+      ctx.fillText(sqShort(sq), x0+5, y0+11);
+      ctx.fillStyle = '#00e5ff'; ctx.fillText(MODE_GLYPH[pl && pl.mode] || '·', x0+31, y0+11);
+      const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
+      if(mv){
+        ctx.fillStyle = '#222'; ctx.fillRect(x0+41, y0+4, 18, 7);
+        ctx.fillStyle = MSTATE_COL[mv.st] || '#00e5ff'; ctx.fillRect(x0+41, y0+4, 18*mv.v, 7);
+        const imp = mv.imp||0;
+        if(Math.abs(imp) > 0.003){ ctx.fillStyle = imp<0 ? '#ff5252' : '#69f0ae'; ctx.fillText(imp<0?'▾':'▴', x0+60, y0+11); }
+      }
+      if(po && po.phase==='regroup'){
+        ctx.font='9px monospace'; ctx.fillStyle='#a5d6a7';
+        ctx.fillText(`⏱${Math.max(0,(po.till-playT)/1000).toFixed(0)}`, x0+w+2, y0+11);
+      }
+      ctx.strokeStyle = isSel ? '#4dd0e1' : '#333'; ctx.lineWidth = isSel ? 2 : 1; ctx.strokeRect(x0, y0, w, h);
+      if(isSel){   // от значка к бойцам — видно, чей он
+        ctx.strokeStyle='rgba(77,208,225,0.35)'; ctx.lineWidth=1;
+        for(const n of g.members){ const q = w2s(n.px,n.pz); ctx.beginPath(); ctx.moveTo(p.x, y0+h); ctx.lineTo(q.x,q.y); ctx.stroke(); }
+      }
+      badgeHits.push({sq:+sq, x0, y0, x1:x0+w, y1:y0+h});
+    }
+    // пьесы контакта: огневые точки, линии от бойцов (перебегающие — сплошной, держащие — пунктир)
+    for(const [sq,pl] of Object.entries(s.plays)){
+      if(!groups[sq]) continue;
+      const col = PLAY_COL[pl.play] || '#fff';
+      const pts = [];
+      for(const [id,sl] of Object.entries(pl.slots)){
+        const c = w2s(sl.px, sl.pz), npc = s.npcs[id];
+        pts.push([sl, c]);
+        ctx.strokeStyle=col; ctx.lineWidth=2; ctx.strokeRect(c.x-4,c.y-4,8,8);
+        if(npc && alive(npc)){
+          const q = w2s(npc.px,npc.pz);
+          ctx.setLineDash(sl.mover ? [] : [3,3]); ctx.strokeStyle=col; ctx.lineWidth=1.2;
+          ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+      if(pl.play==='front' && pts.length > 1){   // ФРОНТ — соединить точки линией
+        ctx.strokeStyle=col+'88'; ctx.lineWidth=1; ctx.beginPath();
+        pts.forEach(([,c],i)=> i ? ctx.lineTo(c.x,c.y) : ctx.moveTo(c.x,c.y)); ctx.stroke();
+      }
+    }
+    // засесть: убежище (домик) и места бойцов
+    for(const [sq,ho] of Object.entries(s.holdouts)){
+      if(!groups[sq]) continue;   // отряд выбит — убежище больше не рисуем
+      const a = w2s(ho.ax, ho.az);
+      ctx.strokeStyle='#ff7043'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(a.x-8,a.y+7); ctx.lineTo(a.x-8,a.y-2); ctx.lineTo(a.x,a.y-9); ctx.lineTo(a.x+8,a.y-2); ctx.lineTo(a.x+8,a.y+7); ctx.closePath(); ctx.stroke();
+      for(const [id,sl] of Object.entries(ho.slots)){
+        const c = w2s(sl.px, sl.pz), npc = s.npcs[id];
+        ctx.fillStyle='#ff7043'; ctx.fillRect(c.x-2,c.y-2,4,4);
+        if(npc && alive(npc)){
+          const q = w2s(npc.px,npc.pz);
+          ctx.setLineDash([3,3]); ctx.strokeStyle='rgba(255,112,67,0.6)'; ctx.lineWidth=1;
+          ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+    }
+    // после боя: точка угрозы и укрытия перегруппировки
+    for(const [sq,po] of Object.entries(s.posts)){
+      if(po.tx==null) continue;
+      const c = w2s(po.tx, po.tz);
+      ctx.strokeStyle='#ff5252'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(c.x-7,c.y-7); ctx.lineTo(c.x+7,c.y+7); ctx.moveTo(c.x+7,c.y-7); ctx.lineTo(c.x-7,c.y+7); ctx.stroke();
+      ctx.fillStyle='#ff8a80'; ctx.font='bold 10px monospace';
+      ctx.fillText(`угроза sq${sq}`, c.x+9, c.y-6);
+    }
+    for(const [id,sp] of Object.entries(s.rspots)){
+      const npc = s.npcs[id]; if(!npc || !alive(npc)) continue;
+      const a = w2s(npc.px,npc.pz), c = w2s(sp.px,sp.pz);
+      ctx.setLineDash([3,3]); ctx.strokeStyle='#a5d6a7'; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle='#a5d6a7'; ctx.fillRect(c.x-3,c.y-3,6,6);
     }
   }
 
   drawCreative(s, alive);
+  drawPano();
+  drawProbe(s);
+  drawMatch(s);
 
   // ── бойцы и взгляд ────────────────────────────
   for(const [id,npc] of Object.entries(s.npcs)){
@@ -658,6 +876,11 @@ function draw(){
       ctx.strokeStyle = npc.active ? '#fff' : '#222'; ctx.lineWidth = npc.active ? 2 : 1; ctx.stroke();
       ctx.fillStyle='#bbb'; ctx.font='10px monospace';
       ctx.fillText(`${id}(${rankLetter(npc.rank||0)})`, p.x+r+2, p.y-r);
+      if(npc.hp!=null){
+        const hp = Math.max(0, Math.min(1, npc.hp));
+        ctx.fillStyle='#222'; ctx.fillRect(p.x-8, p.y+r+3, 16, 3);
+        ctx.fillStyle=hpColor(hp); ctx.fillRect(p.x-8, p.y+r+3, 16*hp, 3);
+      }
     }
     if(on.status){
       if(npc.wnd){   // ранен: белый крест на бойце
@@ -675,8 +898,11 @@ function draw(){
     }
     const role = s.roles[id];
     if(on.director && role && role!=='hold'){   // hold — норма, подписываем только особые роли
-      ctx.fillStyle = role==='flank' ? '#00e5ff' : '#b4a0ff'; ctx.font='bold 10px monospace';
-      ctx.fillText(role==='flank' ? 'ФЛАНГ' : role==='scout' ? 'РАЗВЕДКА' : role.toUpperCase(), p.x-r-2, p.y+r+22);
+      const po = s.posts[npc.sq];
+      const cap = po && String(po.cap)===String(id) ? 'КЭП · ' : '';
+      ctx.fillStyle = role==='flank' ? '#00e5ff' : role==='regroup' || role==='guard' ? '#a5d6a7' : '#b4a0ff';
+      ctx.font='bold 10px monospace';
+      ctx.fillText(cap + (ROLE_NAMES[role] || role.toUpperCase()), p.x-r-2, p.y+r+22);
     }
     const bk = s.barks[id];
     if(on.barks && bk && playT-bk._t < 2500){
@@ -686,9 +912,113 @@ function draw(){
   }
 }
 
+// Панорама ноды под мышью: лучи до упора, стоя — сплошной контур, сидя — пунктир.
+// Это та самая «эхолокация»: что видно с этой точки, без хождения — из геометрии уровня.
+function drawPano(){
+  if(!on.pano || !L || !L.pano || !hoverW) return;
+  const n = nodeAt(hoverW.x, hoverW.z);
+  if(!n) return;
+  const v = L.meta.vision, nd = v.ndirs, base = L.meta.count*nd;
+  const c = w2s(n.x, n.z);
+  const ring = (off, stroke, fill, dash)=>{
+    ctx.beginPath();
+    for(let i=0;i<=nd;i++){
+      const k = i % nd, raw = L.pano[off + n.vid*nd + k];
+      const d = raw===65535 ? v.range : raw/100, a = 2*Math.PI*k/nd;
+      const p = w2s(n.x + Math.cos(a)*d, n.z + Math.sin(a)*d);
+      i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y);
+    }
+    ctx.setLineDash(dash);
+    if(fill){ ctx.fillStyle = fill; ctx.fill(); }
+    ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  ring(0, '#7fffd4', 'rgba(127,255,212,0.10)', []);
+  ring(base, '#ffb74d', null, [4,4]);
+  ctx.fillStyle='#7fffd4'; ctx.beginPath(); ctx.arc(c.x,c.y,3,0,Math.PI*2); ctx.fill();
+}
+
+// Матч: точка-задача (держит тот, у кого в радиусе только свои) и табло
+function drawMatch(s){
+  const m = s.match;
+  if(!m || (m.end && playT - m.end.t > 20000)) return;
+  const c = w2s(m.zx, m.zz), r = m.zr * view.sc;
+  ctx.setLineDash([8,6]); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+  const el = ((m.end ? m.end.t : playT) - m.t0) / 1000;
+  const txt = `МАТЧ ${m.id} · A ${m.a.map(sqShort).join(' ')} против B ${m.b.map(sqShort).join(' ')} · `+
+              (m.end ? `конец: ${m.end.reason}, живых ${m.end.alive_a}:${m.end.alive_b}` : `${el.toFixed(0)} / ${m.limit} с`);
+  ctx.font='bold 11px monospace';
+  const w = ctx.measureText(txt).width;
+  ctx.fillStyle='rgba(0,0,0,0.75)'; ctx.fillRect(c.x - w/2 - 5, c.y - r - 22, w + 10, 16);
+  ctx.fillStyle='#fff'; ctx.fillText(txt, c.x - w/2, c.y - r - 10);
+}
+
+// Последний снимок эхолота: горизонтальные лучи (наклон 0) — точки упора, и сколько снимков всего
+function drawProbe(s){
+  const e = s.probe;
+  if(!on.pano || !e || playT - e.t > 60000) return;
+  const naz = e.naz, elev = String(e.elev).split(',').map(Number), row = elev.indexOf(0);
+  if(row < 0) return;
+  const hits = e.hits.split(',').slice(row*naz, (row+1)*naz);
+  const c = w2s(e.ox, e.oz);
+  ctx.strokeStyle='rgba(255,64,129,0.5)'; ctx.fillStyle='#ff4081'; ctx.lineWidth=1;
+  hits.forEach((h,i)=>{
+    const d = +h.split(':')[0], a = 2*Math.PI*i/naz, dd = d < 0 ? 150 : d;
+    const p = w2s(e.ox + Math.cos(a)*dd, e.oz + Math.sin(a)*dd);
+    ctx.beginPath(); ctx.moveTo(c.x,c.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+    if(d >= 0){ ctx.fillRect(p.x-2,p.y-2,4,4); }
+  });
+  ctx.font='bold 10px monospace';
+  ctx.fillText(`эхолот: снимков ${s.probeN}`, c.x+6, c.y-6);
+}
+
 // ─────────────────────────────────────────────
 // ЖУРНАЛ СОБЫТИЙ
 // ─────────────────────────────────────────────
+const ROLE_NAMES = { flank:'ФЛАНГ', scout:'РАЗВЕДКА', regroup:'ПЕРЕГРУППА', guard:'ДЕРЖИТ', holdout:'ЗАСЕЛ',
+  front:'ФРОНТ', bound_move:'ПЕРЕБЕГАЕТ', bound_cover:'ПРИКРЫВАЕТ', withdraw_move:'ОТХОДИТ', withdraw_cover:'ПРИКРЫВАЕТ ОТХОД' };
+const MODE_GLYPH = { hold:'▣', scout:'➚', regroup:'⟲', guard:'⟲', holdout:'⌂', front:'═', bound:'»', withdraw:'«', idle:'·' };
+const MODE_NAMES = { hold:'держат', scout:'разведка', regroup:'перегруппировка', holdout:'засели',
+  front:'фронт', bound:'перекаты', withdraw:'отход перекатами', idle:'покой' };
+const PLAY_COL = { front:'#4fc3f7', bound:'#aed581', withdraw:'#ffb74d' };
+const MSTATE_COL = { steady:'#00e5ff', shaken:'#ffb74d', broken:'#ff5252' };
+// класс оружия (kind из ltx) → коротко
+const WEAPON_KIND = { w_pistol:'пист', w_smg:'ПП', w_shotgun:'дробь', w_rifle:'автомат', w_sniper:'снайп', w_launcher:'гранатомёт', w_rpg:'РПГ', w_knife:'нож' };
+function hpColor(h){ return h > 0.6 ? '#66bb6a' : h > 0.3 ? '#ffb74d' : '#ef5350'; }
+let badgeHits = [];
+// Действия GOAP по номеру (stalker_ids, xr_actions_id, моды 188xxx, наши 99x/1882xx)
+const ACTION_NAMES = {
+  88:'симуляция', 89:'бой', 90:'аномалия', 91:'опасность', 87:'смерть', 2:'подбирает', 3:'без симуляции',
+  142:'труп рядом', 147:'помогает раненому', 192:'state_mgr', 194:'state_mgr', 307:'смарт-укрытие', 442:'после боя', 452:'анимточка',
+  188111:'компаньон', 188112:'добивает', 188113:'опасность (скрипт)', 188114:'костёр', 188115:'ПАНИКА', 188116:'рация', 188117:'вертолёт',
+  188118:'бой из укрытия', 188120:'ящик', 188202:'приказ', 188204:'приказ сквозь бой', 188206:'перегруппировка',
+  // внутри боя / опасности
+  996:'поиск по вере', 995:'глушилка', 16:'целится', 17:'готовится', 19:'стреляет', 20:'отходит', 21:'в укрытие', 22:'выглядывает',
+  23:'держит позицию', 24:'сближается', 25:'обходит', 26:'ищет врага', 28:'внезапная атака', 29:'стреляет вслепую',
+  30:'к раненому', 32:'над раненым', 33:'добивает', 34:'ждёт после боя', 36:'тяжело ранен',
+  70:'неясная опасность', 71:'опасность с направления', 72:'граната', 73:'звук', 74:'в укрытие (опасн.)', 75:'озирается',
+  76:'ищет (опасн.)', 77:'в укрытие', 78:'выглядывает', 79:'держит', 80:'обходит', 81:'ищет', 82:'от гранаты', 83:'ждёт взрыва', 84:'после взрыва', 85:'озирается', 86:'ищет',
+};
+function actName(n){
+  if(n.aid==null || n.aid<0) return '';
+  const top = ACTION_NAMES[n.aid] || ('#'+n.aid);
+  return n.aid2!=null && n.aid2>=0 ? `${top}: ${ACTION_NAMES[n.aid2] || '#'+n.aid2}` : top;
+}
+function sqShort(sq){ return '#' + String(sq).slice(-3); }
+
+// Отряды на карте: центр, верхний боец, фракция, живые бойцы
+function squadGroups(s, alive){
+  const groups = {};
+  for(const [id,npc] of Object.entries(s.npcs)){
+    if(!alive(npc)) continue;
+    const g = groups[npc.sq] ||= {x:0, z:0, n:0, zmax:-1e9, comm:npc.comm, members:[]};
+    g.x += npc.px; g.z += npc.pz; g.n++; g.zmax = Math.max(g.zmax, npc.pz); g.members.push(npc);
+  }
+  return groups;
+}
+const MSTATE = { steady:'твёрд', shaken:'шаток', broken:'сломлен' };
+
 const EV_COLORS = {
   belief_born:'#FFD700', belief_notice:'#FFEB3B', belief_update:'#FFC107',
   belief_fade:'#666',    belief_kill:'#FF7043',
@@ -700,6 +1030,8 @@ const EV_COLORS = {
   alert_hear:'#FF7043',  alert_corpse:'#FF5722',
   watch_lost:'#F44336',  trace_start:'#555',  bark:'#ddd',  kw_fire:'#ff5252',
   cmd_ok:'#66BB6A', cmd_fail:'#ef5350', spawned:'#4dd0e1', order_start:'#4dd0e1', order_arrive:'#26c6da', order_end:'#557',
+  probe:'#ff4081', probe_mode:'#ff4081', intel:'#998', play_start:'#aed581', play_end:'#8d6e63', wpn_switch:'#998', match_start:'#fff', match_end:'#fff', death:'#9e9e9e', holdout_start:'#ff7043', holdout_end:'#8d6e63',
+  regroup_start:'#a5d6a7', all_clear:'#69f0ae', post_end:'#557', scout_arrive:'#b4a0ff', regroup_spot:'#81c784',
   dir_plan:'#00e5ff',    flank_pick:'#00e5ff',  flank_arrive:'#00bcd4', flank_none:'#557',  scout_go:'#b4a0ff',
 };
 
@@ -722,6 +1054,21 @@ function fmtEv(e){
   else if(e.ev==='cmd_ok'||e.ev==='cmd_fail') d=` #${e.seq} ${e.cmd} ${e.info||''}`;
   else if(e.ev==='spawned')      d=` sq${e.sq} ${e.section} ×${e.n}`;
   else if(e.ev==='flank_pick')   d=` vid=${e.vid} sep=${(e.w||0).toFixed(2)}`;
+  else if(e.ev==='regroup_start') d=` ${((e.dur||0)/1000).toFixed(0)} с, кэп n${e.cap}, мораль ${(e.moral||0).toFixed(2)} ${MSTATE[e.mstate]||''}`;
+  else if(e.ev==='all_clear')    d=` разведка: ${e.scouts||'—'}`;
+  else if(e.ev==='post_end')     d=` ${e.reason||''}`;
+  else if(e.ev==='holdout_start') d=` убежище x=${(+e.ax).toFixed(0)} z=${(+e.az).toFixed(0)} стены ${((e.enc||0)*100).toFixed(0)}%, мораль ${(e.moral||0).toFixed(2)} ${MSTATE[e.mstate]||''}`;
+  else if(e.ev==='holdout_end')  d=` ${e.reason||''}`;
+  else if(e.ev==='intel')        d=` узнал у n${e.enemy}: ${e.sec}${e.cls?' — '+e.cls+'!':''} (${e.how}${e.shared?', всем':', лично'})`;
+  else if(e.ev==='play_start')   d=` ${MODE_NAMES[e.play]||e.play} (${e.reason||''}), бойцов ${e.n}`;
+  else if(e.ev==='play_end')     d=` ${MODE_NAMES[e.play]||e.play}: ${e.reason||''}`;
+  else if(e.ev==='wpn_switch')   d=` ${e.from||'—'} → ${e.to} на ${(+e.d).toFixed(0)} м`;
+  else if(e.ev==='match_start')  d=` ${e.id} A ${e.a} против B ${e.b}, ${e.limit} с`;
+  else if(e.ev==='match_end')    d=` ${e.id} ${e.reason}, живых ${e.alive_a}:${e.alive_b}, точка ${(+e.ctrl_a).toFixed(0)}:${(+e.ctrl_b).toFixed(0)} с`;
+  else if(e.ev==='death')        d=` убил n${e.killer}`;
+  else if(e.ev==='probe')        d=` ${e.level||''} vid=${e.vid} x=${(+e.ox).toFixed(1)} z=${(+e.oz).toFixed(1)}`;
+  else if(e.ev==='probe_mode')   d=e.on ? ' вкл' : ' выкл';
+  else if(e.ev==='regroup_spot') d=` vid=${e.vid} открыт ${(e.open||0).toFixed(2)}`;
   return `<div class="ev"><span style="color:#333">${ts} </span>${nstr}${sqstr}`+
          `<span style="color:${col}">${e.ev}</span><span style="color:#555">${d}</span></div>`;
 }
@@ -737,6 +1084,7 @@ function refresh(){
   document.getElementById('scrub-label').textContent =
     `${(playT/1000).toFixed(1)} / ${(tMax/1000).toFixed(1)} с`;
   draw();
+  renderRoster();
   const el = document.getElementById('eventlog');
   el.innerHTML = S.evLog.map(fmtEv).join('');
   el.scrollTop = el.scrollHeight;
@@ -894,10 +1242,15 @@ function updateSelInfo(){
   const members = Object.entries(S.npcs).filter(([id,n])=> playT-n._t<=3000 && (sel.kind==='sq' ? n.sq===sel.id : +id===sel.id));
   const comm = members[0] ? members[0][1].comm : '?';
   el.textContent = sel.kind==='sq' ? `отряд sq:${sel.id} · ${comm} · бойцов ${members.length}` : `боец npc:${sel.id} · ${comm}`;
+  renderRoster(true);
 }
 
 function mapClick(e, right){
   if(!view) return;
+  if(!right){
+    const b = badgeHits.find(b=>e.offsetX>=b.x0 && e.offsetX<=b.x1 && e.offsetY>=b.y0 && e.offsetY<=b.y1);
+    if(b){ sel = {kind:'sq', id:b.sq}; updateSelInfo(); renderRoster(true); draw(); return; }
+  }
   const w = s2w(e.offsetX, e.offsetY), node = nodeAt(w.x, w.z), hit = npcAtScreen(e.offsetX, e.offsetY);
   const t = right ? 'move' : tool;
   const hard = document.getElementById('ord-hard').checked ? '1' : '0';
@@ -952,6 +1305,128 @@ function drawCreative(s, alive){
 }
 
 setInterval(()=>{ if(sent.length) renderCmdLog(); }, 1000);
+
+// ─────────────────────────────────────────────
+// СОСТАВ: панель слева — отряды и каждый боец. Клик — выделить и показать на карте.
+// ─────────────────────────────────────────────
+let rosterOn = true, rosterAt = 0;
+try{ rosterOn = localStorage.getItem('varka_roster') !== '0'; }catch(_){}
+function toggleRoster(){
+  rosterOn = !rosterOn;
+  try{ localStorage.setItem('varka_roster', rosterOn ? '1' : '0'); }catch(_){}
+  document.getElementById('roster').classList.toggle('hidden', !rosterOn);
+  resize(); renderRoster(true);
+}
+document.getElementById('roster').classList.toggle('hidden', !rosterOn);
+
+// Панель справа и «только поле»: обе боковые убираются, карта на весь экран (F)
+let sideOn = true;
+try{ sideOn = localStorage.getItem('varka_side') !== '0'; }catch(_){}
+function toggleSidebar(force){
+  sideOn = force!==undefined ? force : !sideOn;
+  try{ localStorage.setItem('varka_side', sideOn ? '1' : '0'); }catch(_){}
+  document.getElementById('sidebar').classList.toggle('hidden', !sideOn);
+  resize();
+}
+function toggleField(){
+  const show = !(rosterOn || sideOn);       // обе скрыты → вернуть обе; иначе спрятать обе
+  if(rosterOn !== show) toggleRoster();
+  toggleSidebar(show);
+}
+document.getElementById('sidebar').classList.toggle('hidden', !sideOn);
+window.addEventListener('keydown', e=>{
+  if(e.target.closest && e.target.closest('input,select,textarea')) return;
+  if(e.key==='f' || e.key==='F' || e.key==='а' || e.key==='А') toggleField();
+});
+
+const AXES = [['coh','спл','сплочённость: вес живых / вес в начале'], ['inf','влн','влияние: доля бойцов, кто может ответить'],
+              ['cap','кэп','вертикаль: жив ли старший'], ['fog','тум','туман: огонь от невидимого (больше — хуже)'],
+              ['res','зап','запас храбрости (Моран)'], ['wall','стн','стены вокруг бойцов (запечка зрения)'],
+              ['heavy','тяж','у врага известный отряду пулемёт/гранатомёт (давит на мораль)']];
+
+function renderRoster(force){
+  if(!rosterOn) return;
+  const now = performance.now();
+  if(!force && now - rosterAt < 250) return;
+  rosterAt = now;
+  const s = S, alive = n => playT - n._t <= 3000;
+  const bySq = {};
+  for(const [id,n] of Object.entries(s.npcs)){
+    if(playT - n._t > 60000) continue;   // давно пропавших не держим
+    (bySq[n.sq] ||= []).push([id,n]);
+  }
+  const html = [`<div class="legend">▣ держат · ➚ разведка · ⟲ перегруппировка · ⌂ засели<br>`+
+    `полоса — мораль: <span style="color:${MSTATE_COL.steady}">твёрд</span> / <span style="color:${MSTATE_COL.shaken}">шаток</span> / <span style="color:${MSTATE_COL.broken}">сломлен</span>, белая черта — куда тянет<br>`+
+    `✚ ранен · ! опасность · ⚔ добивает · ◎ видит цель · ○ помнит</div>`];
+  for(const sq of Object.keys(bySq).sort()){
+    const ms = bySq[sq], pl = s.plans[sq], m = s.moral[sq];
+    const live = ms.filter(([,n])=>alive(n)).length;
+    const comm = ms[0][1].comm, isSel = sel && sel.kind==='sq' && sel.id===+sq;
+    const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
+    let h = `<div class="sq${isSel?' sel':''}" data-sq="${sq}"><div class="hd">`+
+      `<span class="stripe" style="background:${fcolor(comm)}"></span><b style="color:#ddd">${sqShort(sq)}</b>`+
+      `<span style="color:#777">${comm}</span><span style="color:#00e5ff">${MODE_GLYPH[pl&&pl.mode]||'·'} ${pl ? (MODE_NAMES[pl.mode]||pl.mode) : ''}</span>`+
+      `<span style="color:#666;margin-left:auto">${live}/${ms.length}</span></div>`;
+    if(mv){
+      const col = MSTATE_COL[mv.st] || '#00e5ff', imp = mv.imp||0;
+      h += `<div class="hd" style="color:${col}">мораль ${mv.v.toFixed(2)} ${mv.st?MSTATE[mv.st]:''}`+
+           (Math.abs(imp)>0.003 ? ` <span style="color:${imp<0?'#ff5252':'#69f0ae'}">${imp<0?'▾':'▴'}${Math.abs(imp*60).toFixed(2)}/мин</span>` : '')+
+           (mv.near ? ' <span style="color:#ff7043">прижат</span>' : '') + `</div>`+
+           `<div class="mbar"><i style="width:${mv.v*100}%;background:${col}"></i>`+
+           (mv.target!=null ? `<b style="left:${Math.min(99,mv.target*100)}%"></b>` : '') + `</div>`;
+      if(mv.coh!=null){
+        h += `<div class="axes">` + AXES.map(([k,lab,tip])=>{
+          const v = mv[k]==null ? 0 : mv[k];
+          return `<span title="${tip}: ${(+v).toFixed(2)}">${lab}<em><i style="width:${Math.min(100,v*100)}%;${k==='fog'?'background:#c66':''}"></i></em></span>`;
+        }).join('') + `</div>`;
+      }
+    }
+    // знание об оружии врага: общее (кэп опытный+ или выкрик) и личное (кэп-новичок)
+    const intel = Object.entries(s.intel[sq] || {}).filter(([eid])=>{ const e = s.npcs[eid]; return e && alive(e); });
+    if(intel.length){
+      const name = e => (e.cls==='mg' ? 'пулемёт ' : e.cls==='launcher' ? 'гранатомёт ' : e.cls==='sniper' ? 'снайпер ' : '') + String(e.sec||'').replace('wpn_','');
+      const sh = intel.filter(([,e])=>e.shared).map(([,e])=>name(e));
+      const pr = intel.filter(([,e])=>!e.shared).map(([,e])=>name(e));
+      h += `<div style="color:#998;font-size:10px;margin-top:2px;white-space:normal">знают о враге: ${sh.join(', ')||'—'}`+
+           (pr.length ? ` <span style="color:#555">(лично: ${pr.join(', ')})</span>` : '') + `</div>`;
+    }
+    h += `</div>`;
+    for(const [id,n] of ms.sort((a,b)=>(b[1].rank||0)-(a[1].rank||0))){
+      const dead = !alive(n), isSelN = sel && sel.kind==='npc' && sel.id===+id;
+      const role = s.roles[id], fl = [];
+      if(n.wnd) fl.push('✚');
+      if(n.dng) fl.push('!'+(n.dtype||''));
+      if(n.kw) fl.push('⚔');
+      if(n.be!=null && n.be>=0) fl.push((n.bsee?'◎':'○') + n.be);
+      const hp = n.hp==null ? null : Math.max(0, Math.min(1, n.hp));
+      h += `<div class="m${dead?' dead':''}${isSelN?' sel':''}" data-npc="${id}">`+
+           `<span style="color:${fcolor(n.comm)}">●</span>${id}<span style="color:#777">${rankLetter(n.rank||0)}</span>`+
+           (hp==null || dead ? '' : `<span title="здоровье ${Math.round(hp*100)}%" style="display:inline-block;width:22px;height:5px;background:#222;align-self:center"><i style="display:block;height:100%;width:${hp*100}%;background:${hpColor(hp)}"></i></span>`)+
+           (n.wk && !dead ? `<span style="color:#998" title="${n.wpn||''}">${WEAPON_KIND[n.wk]||n.wk}</span>` : '')+
+           (role && role!=='hold' ? `<span class="role">${ROLE_NAMES[role]||role}</span>` : '')+
+           `<span class="fl">${fl.join(' ')}</span>`+
+           (dead ? '' : `<span style="color:#567;margin-left:auto">${actName(n)}</span>`) + `</div>`;
+    }
+    html.push(h);
+  }
+  document.getElementById('roster').innerHTML = html.join('');
+}
+
+document.getElementById('roster').addEventListener('click', e=>{
+  const m = e.target.closest('[data-npc]'), q = e.target.closest('[data-sq]');
+  let pts = [];
+  if(m){
+    sel = {kind:'npc', id:+m.dataset.npc};
+    const n = S.npcs[m.dataset.npc]; if(n) pts = [n];
+  } else if(q){
+    sel = {kind:'sq', id:+q.dataset.sq};
+    pts = Object.values(S.npcs).filter(n=>n.sq===+q.dataset.sq && playT-n._t<=3000);
+  } else return;
+  if(pts.length && view){   // показать на карте, масштаб не трогаем
+    view.cx = pts.reduce((a,n)=>a+n.px,0)/pts.length; view.cz = pts.reduce((a,n)=>a+n.pz,0)/pts.length;
+  }
+  updateSelInfo(); renderRoster(true); draw();
+});
 
 resize();
 loadIndex().then(()=>{ poll(); requestAnimationFrame(tick); });

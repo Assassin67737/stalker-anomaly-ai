@@ -1,4 +1,4 @@
--- varka_cmd.script — v0.1: творческий режим. Мост «наша игра → Anomaly» (20.10.2026)
+-- varka_cmd.script — v0.2 (+probe, has_order): творческий режим. Мост «наша игра → Anomaly» (20.10.2026)
 --
 -- Вьювер (tools/twin) шлёт команды серверу, сервер дописывает их строками в файл
 -- ../appdata/logs/varka_cmd.txt, этот скрипт читает файл и исполняет новые строки.
@@ -33,6 +33,7 @@ local last_seq = 0
 local squad_order = {}  -- [squad_id] = order
 local npc_order   = {}  -- [npc_id]   = order (перекрывает отрядный)
 local ghost_squad = {}  -- [squad_id] = true: нейтральны к актёру (зритель не лезет в бой)
+local dir_order   = {}  -- [npc_id]   = order от дирижёра (пьесы вроде «засесть»); приказ игрока сильнее
 
 -- order = { kind = "move"|"hold", vid, pos, hard, stamp }
 
@@ -78,15 +79,36 @@ local function resolve(target)
 	return nil
 end
 
-local function order_of(npc)
+local function player_order(npc)
 	local o = npc_order[npc:id()]
 	if o then return o end
 	local squad = get_object_squad(npc)
 	return squad and squad_order[squad.id] or nil
 end
 
+local function order_of(npc)
+	return player_order(npc) or dir_order[npc:id()]
+end
+
+-- Есть ли у бойца приказ ИГРОКА. Приказ игрока сильнее пьес дирижёра (перегруппировка уступает).
+function has_order(npc)
+	return player_order(npc) ~= nil
+end
+
+-- Приказ дирижёра: жёстко (сквозь бой) в точную ноду и держать её. nil vid — снять.
+-- Тот же станок, что у игрока: бегом без огня, на месте — огонь по видимому из укрытия.
+-- look — куда смотреть на месте, пока врага не видно (сектор огня); гранате приказ уступает.
+function set_dir_order(npc_id, vid, look)
+	if not vid then dir_order[npc_id] = nil; return end
+	local o = dir_order[npc_id]
+	if o and o.vid == vid then o.look = look; return end  -- та же точка — не дёргать бойца заново
+	dir_order[npc_id] = { kind = "move", vid = vid, pos = level.vertex_position(vid), hard = true,
+		exact = true, look = look, stamp = time_global() }
+end
+
 -- Точка бойца внутри приказа отряда: первый — в центре, остальные кольцом по SLOT_STEP.
 local function slot_vid(npc, order)
+	if order.exact then return order.vid end  -- дирижёр сам раздал точки по бойцам
 	local cache = db.storage[npc:id()]
 	if not cache then return order.vid end
 	if cache.varka_slot_stamp == order.stamp then return cache.varka_slot_vid end
@@ -125,6 +147,11 @@ function eva_varka_order:evaluate()
 	local npc = self.object
 	if not npc:alive() or IsWounded(npc) then return false end
 	local o = order_of(npc)
+	-- приказ дирижёра уступает гранате: пусть ваниль отбежит, потом приказ продолжится
+	if o and o.exact and not player_order(npc) then
+		local bd = npc:best_danger()
+		if bd and bd:type() == danger_object.grenade then return false end
+	end
 	return o ~= nil and (o.hard == true) == self.hard
 end
 
@@ -136,6 +163,7 @@ end
 function act_varka_order:initialize()
 	action_base.initialize(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	npc:set_path_type(game_object.level_path)
 	db.storage[npc:id()].varka_order_active = true
 	if varka_trace then
@@ -146,6 +174,7 @@ end
 function act_varka_order:execute()
 	action_base.execute(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	local o = order_of(npc)
 	if not o then return end
 
@@ -170,7 +199,8 @@ function act_varka_order:execute()
 	if self.hard and be and npc:see(be) then
 		state_mgr.set_state(npc, "hide_fire", nil, nil, { look_object = be })
 	elseif self.hard then
-		state_mgr.set_state(npc, "hide", nil, nil, { look_position = be and be:position() or nil })
+		local look = (be and be:position()) or o.look
+		state_mgr.set_state(npc, "hide", nil, nil, look and { look_position = look } or nil)
 	else
 		state_mgr.set_state(npc, "threat", nil, nil, nil)
 	end
@@ -241,6 +271,11 @@ local function vid_pos(vid)
 end
 
 local CMD = {}
+
+-- Другие скрипты добавляют свои команды (varka_match: match_begin / match_abort)
+function register(name, fn)
+	CMD[name] = fn
+end
 
 -- spawn <секция_отряда> <vid> <сколько> [ghost 1/0]
 CMD.spawn = function(a)
@@ -382,6 +417,34 @@ CMD.tp = function(a)
 	return true, tostring(vid)
 end
 
+-- cam <x> <y> <z> <tx> <ty> <tz> — камера деморекорда (demo_record) в точку, взгляд на цель.
+-- Деморекорд не выключаем: тело игрока раннер переносит к бою (онлайн считается от тела),
+-- а свободную камеру — сюда. Угол — как движок разбирает взгляд камеры (FDemoRecord.cpp):
+-- heading = acos(dz) при dx<0, иначе 2π − acos(dz); pitch = asin(dy).
+CMD.cam = function(a)
+	local v = {}
+	for i = 1, 6 do v[i] = tonumber(a[i]); if not v[i] then return false, "cam x y z tx ty tz" end end
+	local d = vector():set(v[4] - v[1], v[5] - v[2], v[6] - v[3])
+	local hz = vector():set(d.x, 0, d.z)
+	if hz:magnitude() < 0.01 then hz = vector():set(0, 0, 1) end
+	hz:normalize()
+	local c = math.max(-1, math.min(1, hz.z))
+	local h = (hz.x < 0) and math.acos(c) or (2 * math.pi - math.acos(c))
+	d:normalize()
+	local p = math.asin(math.max(-1, math.min(1, d.y)))
+	exec_console_cmd(string.format("demo_set_cam_position %.2f,%.2f,%.2f", v[1], v[2], v[3]))
+	exec_console_cmd(string.format("demo_set_cam_direction %.4f,%.4f,0", h, p))
+	return true, "ok"
+end
+
+-- probe on|off|once — эхолот сверки зрения (varka_probe)
+CMD.probe = function(a)
+	if not varka_probe then return false, "нет varka_probe" end
+	if a[1] == "once" then return varka_probe.snapshot(), "снимок" end
+	varka_probe.set_enabled(a[1] == "on")
+	return true, a[1] or "off"
+end
+
 -- ============================================================================
 -- ЧТЕНИЕ ФАЙЛА КОМАНД
 -- ============================================================================
@@ -393,6 +456,7 @@ local function run(seq, name, args)
 		return
 	end
 	local ok, res, info = pcall(fn, args)
+	if varka_hud then varka_hud.push("cmd " .. name .. ((ok and res) and ": ok" or ": FAILED (reason in viewer log)")) end
 	if not ok then
 		emit("cmd_fail", { seq = seq, cmd = name, info = "ошибка Lua: " .. tostring(res) })
 		printf("VARKA-CMD: %s #%s ERROR %s", name, seq, tostring(res))
@@ -462,7 +526,7 @@ local function npc_update(npc)
 end
 
 local function npc_death(npc)
-	if npc then npc_order[npc:id()] = nil end
+	if npc then npc_order[npc:id()] = nil; dir_order[npc:id()] = nil end
 end
 
 function on_game_start()

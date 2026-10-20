@@ -1,4 +1,7 @@
--- varka_director.script — v0.4: оживлён из парковки (20.10.2026)
+-- varka_director.script — v0.7: пресеты front/bound с пьесами контакта (varka_plays)
+-- v0.6: «засесть» (мораль выбирает пьесу) + «прижат» из запечки зрения (20.10.2026)
+-- v0.5: мораль v0.2 (оси → одно число) + перегруппировка после боя
+-- v0.4: оживлён из парковки (20.10.2026)
 --   v0.4: фикс порядка объявлений (мораль падала), трасса dir_plan/dir_moral, пресет на отряд.
 -- v0.3: ШТУРМ-пресет (масса держит + один флангер)
 --
@@ -65,87 +68,204 @@ local function owner_alive(id)
 end
 
 -- ============================================================================
--- МОРАЛЬ — скелет v0.1 (считает + логирует, на поведение пока не влияет)
+-- МОРАЛЬ v0.2 — ОДНО число на отряд (20.10.2026). Теория: §🩸 МОРАЛЬ в STALKER_AI_VARKA.md
+--
+-- Мораль одна. Оси её КОРМЯТ, а потребители (перегруппировка; позже HOLD, поза, скаут)
+-- читают три вещи: само число, его производную (импульс) и состояние с гистерезисом.
+--
+--   цель = сплочённость × дух
+--     сплочённость = 0.15 + 0.85 × (вес живых / вес при появлении), вес бойца растёт с рангом:
+--                    потеря ветерана бьёт сильнее новичка. Множитель, а не слагаемое:
+--                    у полёгшего отряда дух не спасает (дю Пик — мораль живёт между бойцами)
+--     дух = 0.40 × способность влиять + 0.35 × вертикаль + 0.25 × (1 − туман)
+--     × (1 − 0.12 × тяжёлое) — у врага известный отряду пулемёт (0.5) / гранатомёт (0.7) / оба (1)
+--       способность влиять — доля бойцов, кто может ответить: по нему не попадали 3 с → 1;
+--                    попали, но врага видит → 0.5; попали и не видит никого → 0 (беспомощность)
+--       вертикаль  — жив кэп (старший по рангу при появлении) → 1; убит → 0.4 + 0.6 × ранг
+--                    нового старшего (сержант-мастер держит отряд лучше новичка)
+--       туман      — попадания от невидимого стрелка копят туман, со временем он тает
+--
+-- ДИНАМИКА — сама суть, её не упрощаем:
+--   асимметрия    — вниз быстро, вверх медленно; запас (счёт Морана) гнёт обе скорости
+--   запас         — тратится, пока мораль падает, копится медленно; ветераны начинают богаче
+--   загиб на дне  — прижатый звереет: цель тянется вверх. «Прижат» = враг виден ближе 20 м
+--                   и бойцы стоят у стен (средняя замкнутость ≥ 0.2 из varka_vision; без запечки —
+--                   только дистанция)
+--   шум у порога  — около 0.45 цель дрожит: там и рождаются переломы. Шум детерминированный
+--                   (синусы от id и времени), без math.random — двойник обязан повторить бой
+--   импульс       — сглаженная производная: «нас давят» = мораль падает, и быстро
+--   состояние     — steady / shaken / broken с гистерезисом: не дребезжит на границе
 -- ============================================================================
 
--- Асимметрия: вниз быстро, вверх медленно
-local MORAL_DECAY_DOWN = 0.05   -- за секунду при падении
-local MORAL_DECAY_UP   = 0.005  -- за секунду при росте
-local SUPPRESS_TTL     = 3000   -- мс: попадание → подавлен на 3 сек
+local M = {
+	W_INF = 0.40, W_CAP = 0.35, W_FOG = 0.25, -- веса осей духа (сумма 1)
+	COH_FLOOR = 0.15,                         -- пол сплочённости. Полигон 20.10: при 0.3 последний живой
+	                                          -- держался на 0.32 — никто ни разу не стал «сломлен»
+	DOWN = 0.06, UP = 0.006,                  -- 1/с: скорость дрейфа к цели вниз / вверх
+	SUPPRESS_TTL = 3000,                      -- мс: попадание делает бойца подавленным
+	FOG_HIT = 0.25, FOG_DECAY = 0.03,         -- туман: + за попадание от невидимого, − в секунду
+	RES_DRAIN = 0.01, RES_GAIN = 0.002,       -- запас: тратится в секунду падения, копится в остальное время
+	BEND_BELOW = 0.30, BEND_UP = 0.25, BEND_DIST = 20, -- загиб на дне: ниже чего, насколько, враг ближе скольких м
+	WALL_PINNED = 0.20,                       -- средняя замкнутость бойцов, с которой «спина к стене»
+	W_HEAVY = 0.12,                           -- тяжёлое оружие врага (varka_intel): пулемёт/гранатомёт
+	                                          -- давят на цель не больше чем на 12% — малый коэффициент
+	NOISE_AMP = 0.08, NOISE_AT = 0.45, NOISE_W = 0.12, -- шум у порога: амплитуда, центр, ширина
+	IMP_ALPHA = 0.3,                          -- сглаживание импульса
+	VETERAN = 12000, MASTER = 17500,          -- game_relations.ltx: veteran от 12000, master от 17500
+}
 
-local initial_count = {}  -- [squad_id] = кол-во живых при первом появлении
-local moral_val     = {}  -- [squad_id] = текущая инерционная мораль [0..1]
-local moral_stamp   = {}  -- [squad_id] = time_global последнего тика морали
-local hit_stamp     = {}  -- [npc_id]   = time_global последнего попадания
+local moral = {}     -- [squad_id] = { val, stamp, init_w, cap_id, fog, res, imp, state, ... }
+local hit_info = {}  -- [npc_id]   = { t = time_global попадания, blind = стрелка не видел }
 
-local function count_live(squad)
-	local n = 0
-	each_member(squad, function() n = n + 1 end)
-	return n
+local function clamp01(x) return x < 0 and 0 or (x > 1 and 1 or x) end
+
+local function rank_of(obj)
+	return obj.character_rank and obj:character_rank() or 0
 end
 
-local function is_suppressed(npc_id)
-	local s = hit_stamp[npc_id]
-	return s and (time_global() - s) < SUPPRESS_TTL
-end
+-- Вес бойца в отряде: новичок ≈ 1.2, ветеран 2, легенда ≈ 3.3
+local function rank_w(r) return 1 + r / M.VETERAN end
 
--- Мгновенная «целевая» мораль по двум осям — то, куда стремится инерционное число.
-local function target_moral(squad)
-	local sid   = squad.id
-	local total = initial_count[sid] or 1
-	local live  = count_live(squad)
-
-	local cohesion  = live / total
-
-	local not_sup = 0
-	each_member(squad, function(id)
-		if not is_suppressed(id) then not_sup = not_sup + 1 end
+-- Старший по рангу из живых
+local function top_rank(squad)
+	local best_id, best_r = nil, -1
+	each_member(squad, function(id, obj)
+		local r = rank_of(obj)
+		if r > best_r then best_id, best_r = id, r end
 	end)
-	local influence = (live > 0) and (not_sup / live) or 0.0
-
-	return cohesion * 0.7 + influence * 0.3, cohesion, influence
+	return best_id, best_r
 end
 
--- Обновляем инерционную мораль отряда (асимметричный дрейф к цели).
-local function update_moral(squad)
-	local sid = squad.id
-	local now = time_global()
-	local dt  = (now - (moral_stamp[sid] or now)) / 1000.0  -- секунды
-	moral_stamp[sid] = now
+-- Шум без случайности: два несоизмеримых синуса, у каждого отряда своя фаза
+local function noise(sid, now)
+	return math.sin(now * 0.0011 + sid * 1.7) * 0.6 + math.sin(now * 0.0037 + sid * 0.3) * 0.4
+end
 
-	-- инициализация начального размера
-	if not initial_count[sid] then
-		initial_count[sid] = count_live(squad)
-		moral_val[sid]     = 1.0
-		if DEBUG then
-			printf("VARKA-MORAL: squad %s INIT total=%d moral=1.00",
-				sid, initial_count[sid])
-		end
-		return moral_val[sid]
+-- Гистерезис: войти в состояние легче, чем выйти обратно
+local function next_state(st, m)
+	if st == "steady" then
+		if m < 0.55 then return "shaken" end
+	elseif st == "shaken" then
+		if m > 0.65 then return "steady" elseif m < 0.30 then return "broken" end
+	elseif st == "broken" then
+		if m > 0.42 then return "shaken" end
 	end
+	return st
+end
 
-	local target, cohesion, influence = target_moral(squad)
-	local cur = moral_val[sid] or 1.0
-
-	local decay = (target < cur) and MORAL_DECAY_DOWN or MORAL_DECAY_UP
-	local new   = cur + (target - cur) * decay * math.max(dt, 0)
-	new = math.max(0.0, math.min(1.0, new))
-	moral_val[sid] = new
-
+local function moral_init(squad)
+	local w, sum_r, n = 0, 0, 0
+	each_member(squad, function(_, obj)
+		local r = rank_of(obj)
+		w, sum_r, n = w + rank_w(r), sum_r + r, n + 1
+	end)
+	local cap_id = top_rank(squad)
+	local S = {
+		val = 1.0, stamp = time_global(), init_w = math.max(w, 1), cap_id = cap_id,
+		fog = 0, imp = 0, state = "steady",
+		res = 0.4 + 0.6 * clamp01((n > 0 and sum_r / n or 0) / M.MASTER),
+	}
+	moral[squad.id] = S
 	if DEBUG then
-		printf("VARKA-MORAL: squad %s live=%d/%d coh=%.2f inf=%.2f target=%.2f moral=%.2f->%.2f",
-			sid,
-			count_live(squad), initial_count[sid],
-			cohesion, influence,
-			target, cur, new)
+		printf(string.format("VARKA-MORAL: squad %s INIT n=%d w=%.1f cap=%s res=%.2f", squad.id, n, S.init_w, tostring(cap_id), S.res))
+	end
+	return S
+end
+
+-- Оси прямо сейчас. Возвращает таблицу — она же уходит в трассу.
+local function moral_axes(squad, S, now)
+	local live_w, n, can, near, wall = 0, 0, 0, false, 0
+	local eyes = varka_vision and varka_vision.available()
+	each_member(squad, function(id, obj)
+		live_w, n = live_w + rank_w(rank_of(obj)), n + 1
+		if eyes then wall = wall + (varka_vision.enclosure(obj:level_vertex_id()) or 0) end
+		local be = obj:best_enemy()
+		local sees = be and obj:see(be)
+		if sees and obj:position():distance_to(be:position()) < M.BEND_DIST then near = true end
+		local h = hit_info[id]
+		if not (h and now - h.t < M.SUPPRESS_TTL) then
+			can = can + 1
+		elseif sees then
+			can = can + 0.5
+		end
+	end)
+
+	local coh = clamp01(live_w / S.init_w)
+	local inf = n > 0 and can / n or 0
+
+	local cap = 1
+	if not owner_alive(S.cap_id) then
+		local _, r = top_rank(squad)
+		cap = 0.4 + 0.6 * clamp01(math.max(r, 0) / M.MASTER)
 	end
 
+	-- «прижат» (v0.6): враг рядом И стены вокруг (запечка зрения). Без запечки — как раньше,
+	-- одно «враг ближе BEND_DIST». wall — средняя замкнутость нод, где стоят бойцы.
+	wall = n > 0 and wall / n or 0
+	local pinned = near and (not eyes or wall >= M.WALL_PINNED)
+
+	-- тяжёлое у врага: только то, что отряд ЗНАЕТ (узнали и поделились — varka_intel)
+	local heavy = varka_intel and varka_intel.heavy_threat(squad) or 0
+
+	local spirit = M.W_INF * inf + M.W_CAP * cap + M.W_FOG * (1 - S.fog)
+	return { coh = coh, inf = inf, cap = cap, fog = S.fog, near = pinned, wall = wall, heavy = heavy,
+		target = (M.COH_FLOOR + (1 - M.COH_FLOOR) * coh) * spirit * (1 - M.W_HEAVY * heavy) }
+end
+
+local function update_moral(squad)
+	local S = moral[squad.id]
+	if not S then return moral_init(squad).val end
+
+	local now = time_global()
+	local dt  = math.max((now - S.stamp) / 1000.0, 0)
+	S.stamp = now
+	if dt <= 0 then return S.val end
+
+	S.fog = math.max(0, S.fog - M.FOG_DECAY * dt)
+	local ax = moral_axes(squad, S, now)
+	local cur, target = S.val, ax.target
+
+	-- загиб на дне: прижатый звереет (тем сильнее, чем глубже упал)
+	if cur < M.BEND_BELOW and ax.near then
+		target = target + M.BEND_UP * (1 - cur / M.BEND_BELOW)
+	end
+	-- шум у порога: колокол вокруг NOISE_AT
+	local z = (cur - M.NOISE_AT) / M.NOISE_W
+	target = clamp01(target + M.NOISE_AMP * math.exp(-z * z) * noise(squad.id, now))
+
+	-- асимметрия, согнутая запасом: богатый запасом падает медленнее и быстрее встаёт
+	local rate = (target < cur) and M.DOWN * (1.5 - S.res) or M.UP * (0.5 + S.res)
+	local new = clamp01(cur + (target - cur) * math.min(1, rate * dt))
+
+	if new < cur then
+		S.res = clamp01(S.res - M.RES_DRAIN * dt)
+	else
+		S.res = clamp01(S.res + M.RES_GAIN * dt)
+	end
+	S.imp   = S.imp + M.IMP_ALPHA * ((new - cur) / dt - S.imp)
+	S.val   = new
+	local was = S.state
+	S.state = next_state(S.state, new)
+	if S.state ~= was and varka_hud then
+		local sq = alife_object(squad.id)
+		varka_hud.push(string.format("#%s %s: morale %s (%.2f)", string.sub(tostring(squad.id), -3),
+			tostring(sq and sq.player_id or "?"), string.upper(S.state), new))
+	end
+	S.axes  = ax
+	S.target = target
 	return new
 end
 
--- Публичное API: другие скрипты могут читать мораль отряда.
+-- Публичное API. Число, импульс (1/с), состояние, и оси — для потребителей и трассы.
 function get_squad_moral(squad)
-	return squad and (moral_val[squad.id] or 1.0)
+	local S = squad and moral[squad.id]
+	return S and S.val or 1.0
+end
+
+function get_squad_morale_state(squad)
+	local S = squad and moral[squad.id]
+	if not S then return { val = 1.0, imp = 0, state = "steady" } end
+	return { val = S.val, imp = S.imp, state = S.state, res = S.res, axes = S.axes }
 end
 
 -- Небоёвка (echo жив, belief мёртв): ближайший к echo разведывает, остальные на посту.
@@ -210,6 +330,316 @@ PRESETS.shturm = {
 	end,
 }
 
+-- ----------------------------------------------------------------------------
+-- v0.7: пресеты с пьесой на КОНТАКТЕ (varka_plays). Вне контакта — как ГРЕХ / ШТУРМ.
+--   front — ФРОНТ: линия с секторами огня, держат.
+--   bound — ПЕРЕКАТЫ: двойки, одна прикрывает, другая перебегает вперёд.
+-- ----------------------------------------------------------------------------
+PRESETS.front = { name = "front", combat = "front", assign = PRESETS.greh.assign }
+PRESETS.bound = { name = "bound", combat = "bound", assign = PRESETS.shturm.assign }
+
+-- ============================================================================
+-- ПОСЛЕ БОЯ — перегруппировка (v0.5, 20.10.2026). Пьеса aswr_to_threat из конструктора:
+--   hit → run → node → cover → crouch → wait → cap → hear
+-- Бой кончился (ни у кого нет врага и веры нет) → все бегом в ближайшее укрытие от точки
+-- угрозы, присели, ждут. Отмашка кэпа (старший по рангу из живых) — через время, которое
+-- задаёт МОРАЛЬ: побитый отряд сидит дольше. Потом разведка по правилу юзера:
+-- один ветеран+ ИЛИ двое ниже ветерана. Остальные стоят наготове. Разведчики дошли и
+-- осмотрелись — пьеса кончилась, дальше ваниль (посты, симуляция).
+-- Сломленный отряд (broken) новичков в разведку не шлёт: только ветерана, если он есть.
+-- Пьеса общая для всех пресетов: «после боя» — не стиль отряда, а фаза.
+-- Руки — varka_regroup (вне боя) и глушилка в search_action (пока движок ещё в бою).
+-- ============================================================================
+
+local REGROUP_MIN    = 8000   -- мс: минимум сидеть в укрытии
+local REGROUP_SPAN   = 30000  -- мс: + столько × (1 − мораль)
+local REGROUP_BROKEN = 15000  -- мс: сломленным ещё столько сверху
+local SCOUT_MAX      = 45000  -- мс: разведка дольше — пьеса кончается сама
+local SCOUT_ARRIVE   = 4      -- м до точки угрозы = «дошёл»
+local SCOUT_LOOK     = 5000   -- мс: осмотреться на месте
+
+local fight = {}  -- [squad_id] = { threat = vector|nil } пока идёт бой
+local post  = {}  -- [squad_id] = { phase, t0, till, cap_id, threat, scouts = {[id]=true}, arrived }
+
+-- Строка для ленты внизу экрана (varka_hud, только латиница)
+local function squad_tag(key)
+	local sq = alife_object(key)
+	return "#" .. string.sub(tostring(key), -3) .. " " .. tostring(sq and sq.player_id or "?")
+end
+
+local HUD_EVENTS = {
+	regroup_start = function(f) return string.format("REGROUP: into cover, wait %.0fs (morale %.2f %s)", f.dur / 1000, f.moral, f.mstate) end,
+	all_clear     = function(f) return "ALL CLEAR from captain, scouts " .. f.scouts end,
+	scout_arrive  = function(f) return "scout reached the threat point" end,
+	post_end      = function(f) return "after-fight over (" .. f.reason .. ")" end,
+	holdout_start = function(f) return string.format("HOLDOUT: hole up inside (walls %.0f%%, morale %.2f %s)", f.enc * 100, f.moral, f.mstate) end,
+	holdout_end   = function(f) return "holdout over (" .. f.reason .. ")" end,
+}
+
+local function post_emit(key, ev, f)
+	f = f or {}
+	if varka_trace then varka_trace.emit(key, 0, ev, f) end
+	local line = varka_hud and HUD_EVENTS[ev]
+	if line then varka_hud.push(squad_tag(key) .. ": " .. line(f)) end
+end
+
+-- Идёт ли бой и где угроза: вера → её центр; иначе враг в памяти любого бойца.
+local function fight_now(squad, b)
+	if b then return true, vec_set(b.pos) end
+	local found, pos = false, nil
+	each_member(squad, function(_, obj)
+		local be = obj:best_enemy()
+		if be then
+			found = true
+			pos = pos or obj:memory_position(be) or be:position()
+		end
+	end)
+	return found, pos and vec_set(pos) or nil
+end
+
+local function end_post(key, reason)
+	if post[key] then post_emit(key, "post_end", { reason = reason }) end
+	post[key] = nil
+end
+
+local function start_regroup(squad, key, threat)
+	local ms = get_squad_morale_state(squad)
+	local dur = REGROUP_MIN + REGROUP_SPAN * (1 - ms.val)
+	if ms.state == "broken" then dur = dur + REGROUP_BROKEN end
+	local cap_id = top_rank(squad)
+	local now = time_global()
+	post[key] = { phase = "regroup", t0 = now, till = now + dur, cap_id = cap_id, threat = threat, scouts = {} }
+	post_emit(key, "regroup_start", { dur = math.floor(dur), cap = cap_id or -1, moral = ms.val, mstate = ms.state,
+		tx = threat and threat.x or 0, tz = threat and threat.z or 0, has_t = threat and 1 or 0 })
+	if DEBUG then printf(string.format("VARKA-DIR: squad %s REGROUP %.0fs cap=%s moral=%.2f(%s)", key, dur / 1000, tostring(cap_id), ms.val, ms.state)) end
+end
+
+-- Разведчики: один ветеран+ (ближайший к угрозе) или двое ниже ветерана (ближайшие).
+-- Кэп не идёт, если есть кому. Сломленный отряд шлёт только ветерана.
+local function pick_scouts(squad, p, mstate)
+	local vets, rest, n = {}, {}, 0
+	each_member(squad, function(id, obj)
+		n = n + 1
+		if id ~= p.cap_id then
+			local d = obj:position():distance_to(p.threat)
+			local list = rank_of(obj) >= M.VETERAN and vets or rest
+			list[#list+1] = { id = id, d = d }
+		end
+	end)
+	local by_d = function(a, b) return a.d < b.d end
+	table.sort(vets, by_d)
+	table.sort(rest, by_d)
+	local out = {}
+	if vets[1] then
+		out[vets[1].id] = true
+	elseif mstate ~= "broken" and rest[1] then
+		out[rest[1].id] = true
+		if rest[2] then out[rest[2].id] = true end
+	elseif n == 1 and p.cap_id and mstate ~= "broken" then
+		out[p.cap_id] = true  -- один остался — сам себе разведка
+	end
+	return out
+end
+
+-- План фазы «после боя» или nil, когда пьеса кончилась.
+local function post_plan(squad, key)
+	local p = post[key]
+	local now = time_global()
+
+	if p.phase == "regroup" and now >= p.till then
+		local ms = get_squad_morale_state(squad)
+		p.scouts = p.threat and pick_scouts(squad, p, ms.state) or {}
+		if next(p.scouts) == nil then
+			end_post(key, p.threat and "no_scouts" or "no_threat")
+			return nil
+		end
+		p.phase, p.till = "scout", now + SCOUT_MAX
+		local ids = {}
+		for id in pairs(p.scouts) do ids[#ids+1] = id end
+		post_emit(key, "all_clear", { cap = p.cap_id or -1, scouts = table.concat(ids, ","), mstate = ms.state })
+	end
+
+	if p.phase == "scout" then
+		local alive_scout = false
+		for id in pairs(p.scouts) do
+			local o = level.object_by_id(id)
+			if o and o:alive() then
+				alive_scout = true
+				if not p.arrived and o:position():distance_to(p.threat) < SCOUT_ARRIVE then
+					p.arrived = now
+					post_emit(key, "scout_arrive", { npc = id })
+				end
+			end
+		end
+		if not alive_scout then end_post(key, "scouts_lost"); return nil end
+		if p.arrived and now - p.arrived > SCOUT_LOOK then end_post(key, "clear"); return nil end
+		if now > p.till then end_post(key, "timeout"); return nil end
+	end
+
+	local roles, scout_id = {}, nil
+	each_member(squad, function(id)
+		if p.phase == "regroup" then
+			roles[id] = "regroup"
+		elseif p.scouts[id] then
+			roles[id] = "scout"
+			scout_id = scout_id or id
+		else
+			roles[id] = "guard"
+		end
+	end)
+	return { mode = p.phase, cap_id = p.cap_id, threat = p.threat, scout_id = scout_id, roles = roles }
+end
+
+-- ============================================================================
+-- ЗАСЕСТЬ (v0.6, 20.10.2026) — первая пьеса, которую выбирает МОРАЛЬ.
+-- Отряд сломлен (или шаток и валится), а отходить опасно: враг виден близко — побежишь,
+-- получишь в спину. Тогда не бежать, а забиться в помещение: все бегом (без огня) в
+-- ближайшее замкнутое место (запечка зрения: стены вокруг), там присесть и отстреливаться.
+-- Это ручное правило. Обучаемый дирижёр позже не изобретает «засесть» с нуля, а учится,
+-- КОГДА её выбирать (пьеса = готовое макро-действие) — и тюнит пороги ниже.
+-- Руки — жёсткий приказ varka_cmd (тот же станок, что «сквозь бой» в творческом режиме).
+-- ============================================================================
+
+local HOLDOUT_UNSAFE = 35     -- м: враг виден ближе — отход опасен
+local HOLDOUT_ENC    = 0.35   -- замкнутость, с которой нода — «помещение»
+local HOLDOUT_SEEK   = { 4, 8, 12, 16, 20, 25, 30 }  -- м: кольца поиска убежища
+local HOLDOUT_DIRS   = 16
+local HOLDOUT_MIN    = 25000  -- мс: сидят минимум
+local HOLDOUT_MAX    = 90000  -- мс: дольше — пьеса кончается сама
+local HOLDOUT_COOL   = 30000  -- мс: после конца не начинать снова
+local SLOT_RINGS     = { 0, 2, 4, 6 }
+local SLOT_DIRS      = 12
+local SLOT_SPREAD    = 1.5    -- м между бойцами в убежище
+
+local INVALID_VID = 4294967295
+local holdout   = {}  -- [squad_id] = { t0, anchor = vid, slots = {[npc_id] = vid}, threat }
+local hold_cool = {}  -- [squad_id] = до какого времени не начинать
+
+local function centroid(squad)
+	local c, n = vector():set(0, 0, 0), 0
+	each_member(squad, function(_, obj) c:add(obj:position()); n = n + 1 end)
+	return n > 0 and c:div(n) or nil
+end
+
+-- Видит ли кто-то врага ближе dist (бежать — подставить спину)
+local function enemy_close(squad, dist)
+	local close = false
+	each_member(squad, function(_, obj)
+		local be = obj:best_enemy()
+		if be and obj:see(be) and obj:position():distance_to(be:position()) < dist then close = true end
+	end)
+	return close
+end
+
+-- Убежище: самая замкнутая нода на кольцах вокруг отряда, не ближе к угрозе, чем сам отряд
+local function pick_refuge(squad, threat)
+	local c = centroid(squad)
+	local base_id = c and nearest_member(squad, c)
+	local base_obj = base_id and level.object_by_id(base_id)
+	local base = base_obj and base_obj:level_vertex_id()
+	if not (base and base < INVALID_VID) then return nil end
+	local my_d = threat and c:distance_to(threat) or 0
+	local best, best_s = nil, nil
+	for _, r in ipairs(HOLDOUT_SEEK) do
+		for i = 1, HOLDOUT_DIRS do
+			local a = (i - 1) * math.pi * 2 / HOLDOUT_DIRS
+			local vid = level.vertex_in_direction(base, vector():set(math.cos(a), 0, math.sin(a)), r)
+			local enc = vid and vid < INVALID_VID and varka_vision.enclosure(vid)
+			if enc and enc >= HOLDOUT_ENC then
+				local pos = level.vertex_position(vid)
+				local s = enc - c:distance_to(pos) / 50
+				if threat and pos:distance_to(threat) < my_d - 3 then s = s - 0.4 end  -- к врагу не бежим
+				if not best_s or s > best_s then best, best_s = vid, s end
+			end
+		end
+	end
+	return best
+end
+
+-- Места бойцов в убежище: замкнутые ноды вокруг якоря, не теснее SLOT_SPREAD, ближайшему — ближнее
+local function refuge_slots(squad, anchor)
+	local cand = {}
+	for _, r in ipairs(SLOT_RINGS) do
+		for i = 1, (r == 0 and 1 or SLOT_DIRS) do
+			local a = (i - 1) * math.pi * 2 / SLOT_DIRS
+			local vid = r == 0 and anchor or level.vertex_in_direction(anchor, vector():set(math.cos(a), 0, math.sin(a)), r)
+			local enc = vid and vid < INVALID_VID and varka_vision.enclosure(vid)
+			if enc and enc >= HOLDOUT_ENC * 0.7 then cand[#cand+1] = { vid = vid, pos = level.vertex_position(vid) } end
+		end
+	end
+	local slots, taken = {}, {}
+	local spread_sqr = SLOT_SPREAD * SLOT_SPREAD
+	each_member(squad, function(id, obj)
+		local best, bd = nil, nil
+		for _, c in ipairs(cand) do
+			local free = true
+			for _, t in ipairs(taken) do if t:distance_to_sqr(c.pos) < spread_sqr then free = false; break end end
+			if free and obj:accessible(c.vid) then
+				local d = obj:position():distance_to(c.pos)
+				if not bd or d < bd then best, bd = c, d end
+			end
+		end
+		best = best or { vid = anchor, pos = level.vertex_position(anchor) }  -- места кончились — к якорю
+		slots[id] = best.vid
+		taken[#taken+1] = best.pos
+	end)
+	return slots
+end
+
+local function end_holdout(key, reason)
+	local h = holdout[key]
+	if not h then return end
+	for id in pairs(h.slots) do varka_cmd.set_dir_order(id, nil) end
+	holdout[key] = nil
+	hold_cool[key] = time_global() + HOLDOUT_COOL
+	post_emit(key, "holdout_end", { reason = reason })
+	if DEBUG then printf("VARKA-DIR: squad %s HOLDOUT end (%s)", key, reason) end
+end
+
+-- Вызывается каждый тик отряда в бою. План «засесть» или nil.
+local function holdout_plan(squad, key, threat)
+	local now = time_global()
+	local h = holdout[key]
+	local ms = get_squad_morale_state(squad)
+
+	if h then
+		local age = now - h.t0
+		if age > HOLDOUT_MAX then end_holdout(key, "timeout")
+		elseif age > HOLDOUT_MIN and ms.state ~= "broken" and ms.imp >= 0 then end_holdout(key, "recovered")
+		end
+	elseif varka_cmd and varka_vision and varka_vision.available() and now >= (hold_cool[key] or 0)
+		and (ms.state == "broken" or (ms.state == "shaken" and ms.imp < -0.01))
+		and enemy_close(squad, HOLDOUT_UNSAFE) then
+		local anchor = pick_refuge(squad, threat)
+		if anchor then
+			local slots = refuge_slots(squad, anchor)
+			holdout[key] = { t0 = now, anchor = anchor, slots = slots, threat = threat }
+			local parts = {}
+			for id, vid in pairs(slots) do
+				varka_cmd.set_dir_order(id, vid)
+				local p = level.vertex_position(vid)
+				parts[#parts+1] = string.format("%d:%.1f:%.1f", id, p.x, p.z)
+			end
+			local ap = level.vertex_position(anchor)
+			post_emit(key, "holdout_start", { ax = ap.x, az = ap.z, enc = varka_vision.enclosure(anchor),
+				moral = ms.val, mstate = ms.state, slots = table.concat(parts, ";") })
+			if DEBUG then printf(string.format("VARKA-DIR: squad %s HOLDOUT -> vid %s (moral %.2f %s)", key, anchor, ms.val, ms.state)) end
+		end
+	end
+
+	h = holdout[key]
+	if not h then return nil end
+	local roles = {}
+	each_member(squad, function(id)
+		roles[id] = "holdout"
+		if not h.slots[id] then  -- прибился новый — к якорю
+			h.slots[id] = h.anchor
+			varka_cmd.set_dir_order(id, h.anchor)
+		end
+	end)
+	return { mode = "holdout", roles = roles, threat = h.threat }
+end
+
 -- ============================================================================
 -- ДВИЖОК ДИРИЖЁРА
 -- ============================================================================
@@ -218,11 +648,6 @@ PRESETS.shturm = {
 local states     = {}
 local squad_tick = {}
 
-local HUD_LABELS = {
-	hold  = "[VARKA] SHTURM -- mass holds, one flanks",
-	scout = "[VARKA] SCOUT -- recon moving",
-	idle  = "[VARKA] IDLE -- director silent",
-}
 
 local function announce(key, plan, prev_mode)
 	local mode = plan and plan.mode
@@ -231,8 +656,6 @@ local function announce(key, plan, prev_mode)
 		printf("VARKA-DIR: squad %s -> %s (preset=%s) scout=%s flank=%s",
 			key, mode or "ПОКОЙ", ACTIVE_PRESET,
 			tostring(plan and plan.scout_id), tostring(plan and plan.flank_id))
-		local label = HUD_LABELS[mode or "idle"]
-		if label and actor_menu then actor_menu.set_msg(1, label, 4) end
 	end
 end
 
@@ -255,7 +678,7 @@ local function plan_sig(plan, preset_name)
 	return preset_name .. "|" .. (plan.mode or "-") .. "|" .. table.concat(parts, ",")
 end
 
-local function trace_plan(key, plan, preset_name, moral)
+local function trace_plan(key, plan, preset_name, moral_v)
 	if not varka_trace then return end
 	local sig = plan_sig(plan, preset_name)
 	if sig ~= last_sig[key] then
@@ -268,9 +691,15 @@ local function trace_plan(key, plan, preset_name, moral)
 		})
 	end
 	local now = time_global()
-	if moral and now >= (moral_next[key] or 0) then
+	local S = moral[key]
+	if moral_v and S and now >= (moral_next[key] or 0) then
 		moral_next[key] = now + MORAL_TRACE_MS
-		varka_trace.emit(key, 0, "dir_moral", { moral = moral })
+		local ax = S.axes or {}
+		varka_trace.emit(key, 0, "dir_moral", {
+			moral = moral_v, target = S.target or moral_v, imp = S.imp, st = S.state, res = S.res,
+			coh = ax.coh or 1, inf = ax.inf or 1, cap = ax.cap or 1, fog = ax.fog or 0, near = ax.near and 1 or 0,
+			wall = ax.wall or 0, heavy = ax.heavy or 0,
+		})
 	end
 end
 
@@ -279,10 +708,18 @@ local function update_squad(squad)
 	local sample = get_live_member(squad)
 	if not sample then states[key] = nil; return end
 
+	-- мораль считаем всегда, даже при выключенном дирижёре: это наблюдение, а матчи
+	-- «ваниль против дирижёра» должны мерить мораль обеих сторон одинаково
+	local moral_v = update_moral(squad)
+
 	local preset_name = squad_preset[key] or ACTIVE_PRESET
 	if preset_name == "off" then
 		states[key] = nil
-		trace_plan(key, nil, preset_name, nil)
+		fight[key] = nil
+		end_post(key, "off")
+		end_holdout(key, "off")
+		if varka_plays then varka_plays.stop(key, "off") end
+		trace_plan(key, nil, preset_name, moral_v)
 		return
 	end
 	local preset = PRESETS[preset_name]
@@ -299,14 +736,37 @@ local function update_squad(squad)
 		echo   = varka_lkp.get_echo(sample),
 	}
 
-	local moral     = update_moral(squad)
+	-- v0.5: фаза «после боя» поверх пресета. Бой идёт — копим, где угроза; кончился — перегруппировка.
+	local in_fight, threat = fight_now(squad, ctx.belief)
+	if in_fight then
+		fight[key] = { threat = threat or (fight[key] and fight[key].threat) }
+		end_post(key, "fight")
+	elseif fight[key] then
+		end_holdout(key, "fight_over")  -- убежище держали до конца боя → дальше перегруппировка
+		if varka_plays then varka_plays.stop(key, "fight_over") end
+		start_regroup(squad, key, fight[key].threat)
+		fight[key] = nil
+	end
 
 	local prev_mode = states[key] and states[key].mode
-	local plan      = preset.assign(ctx, states[key])
-	if plan then plan.moral = moral end
+	local plan
+	if post[key] then
+		plan = post_plan(squad, key)
+	else
+		-- v0.6: в бою мораль может выбрать «засесть» поверх пресета;
+		-- v0.7: на контакте — пьеса (пресета или отход по морали), иначе роли поиска
+		plan = in_fight and holdout_plan(squad, key, threat) or nil
+		if plan then
+			if varka_plays then varka_plays.stop(key, "holdout") end
+		elseif in_fight and varka_plays then
+			plan = varka_plays.update(squad, key, threat, get_squad_morale_state(squad), preset.combat)
+		end
+		if not plan then plan = preset.assign(ctx, states[key]) end
+	end
+	if plan then plan.moral = moral_v end
 	states[key]     = plan
 	announce(key, plan, prev_mode)
-	trace_plan(key, plan, preset_name, moral)
+	trace_plan(key, plan, preset_name, moral_v)
 end
 
 -- ===== ПУБЛИЧНОЕ API =====
@@ -358,16 +818,34 @@ local function npc_update(npc)
 	update_squad(squad)
 end
 
+-- Попадание: боец подавлен на SUPPRESS_TTL; стрелка не видит — отряду туман.
+-- Аномалии и падения (нет стрелка или сам себя) мораль не трогают.
 local function npc_on_hit(npc, amount, direction, who, bone)
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if not (who and who:id() ~= npc:id() and amount > 0) then return end
 	local id = npc:id()
-	hit_stamp[id] = time_global()
+	local blind = not npc:see(who)
+	hit_info[id] = { t = time_global(), blind = blind }
+	local squad = get_object_squad(npc)
+	local S = squad and moral[squad.id]
+	if S and blind then S.fog = math.min(1, S.fog + M.FOG_HIT) end
 	if DEBUG then
-		printf("VARKA-MORAL: npc %d HIT amount=%.1f -> suppressed for %dms", id, amount, SUPPRESS_TTL)
+		printf(string.format("VARKA-MORAL: npc %d HIT amount=%.2f blind=%s fog=%.2f", id, amount, tostring(blind), S and S.fog or -1))
 	end
+end
+
+-- Фаза «после боя» для бойца: { phase, role, threat, cap_id } или nil. Руки читают её.
+function get_post(npc)
+	local squad = get_object_squad(npc)
+	local p = squad and post[squad.id]
+	local st = p and states[squad.id]
+	if not (st and st.roles) then return nil end
+	local role = st.roles[npc:id()]
+	if not role then return nil end
+	return { phase = p.phase, role = role, threat = p.threat, cap_id = p.cap_id }
 end
 
 function on_game_start()
 	RegisterScriptCallback("npc_on_update", npc_update)
-	RegisterScriptCallback("npc_on_hit",    npc_on_hit)
+	RegisterScriptCallback("npc_on_hit_callback", npc_on_hit)
 end

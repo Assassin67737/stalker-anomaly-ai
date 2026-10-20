@@ -1,4 +1,6 @@
--- varka_search_action.script — v0.19: + роли дирижёра (флангер в поиске, скаут в глушилке)
+-- varka_search_action.script — v0.21: оружие при входе — object.idle вместо fire2 (краши 20.10)
+-- v0.20: глушилка уважает фазу «после боя» (присел, смотрит на угрозу)
+-- v0.19: + роли дирижёра (флангер в поиске, скаут в глушилке)
 -- v0.17: одна машина (взгляд + ноги + отъедание) + argmax + HOLD
 --
 -- v0.17 добавляет ХВОСТ поиска — команду «ДЕРЖАТЬ» (overwatch, первая косточка дирижёра):
@@ -154,7 +156,8 @@ end
 -- Центроид массы = где стоят СВОИ (без себя). Флангер берёт укрытие вокруг угрозы,
 -- чей пеленг ОТ угрозы максимально расходится с пеленгом массы → заходит с торца.
 -- Это задача ВЫБОРА ЦЕЛИ, не навигации: ноги — движковые (send_to_vertex), мы лишь
--- даём умную точку. Ноль рейкастов — чистые вектора на кольце best_cover.
+-- даём умную точку. Укрытие от угрозы — varka_eyes.hidden_spot (свои лучи; движковый
+-- best_cover убран после двух крашей 20.10, см. varka_eyes).
 -- Деградирует красиво: в тесноте расхождения нет → берёт лучшее доступное → фронтал.
 
 local function mass_centroid(npc)
@@ -190,9 +193,9 @@ local function pick_flank(npc, b)
 		local vid = level.vertex_id(rp)
 		if vid and vid < 4294967295 then
 			local npos  = level.vertex_position(vid)
-			local cover = npc:best_cover(npos, T, 6, 1, 150)
-			local cpos  = cover and vec_set(cover:position()) or vec_set(npos)
-			local cvid  = cover and cover:level_vertex_id() or vid
+			local hvid, hpos = varka_eyes.hidden_spot(vid, T, 6)
+			local cpos  = hpos and vec_set(hpos) or vec_set(npos)
+			local cvid  = hvid or vid
 			local c_dir = vec_set(cpos):sub(T); c_dir.y = 0
 			if c_dir:magnitude() > 0.01 and cvid < 4294967295 then
 				c_dir:normalize()
@@ -249,7 +252,6 @@ local function enter_hold(npc, b, st, now)
 	if DEBUG then
 		printf("VARKA-ACT: npc %s fan swept -- HOLD %s at %s (w=%s)",
 			npc:id(), mode, h.vid, string.format("%.2f", h.w))
-		if actor_menu then actor_menu.set_msg(1, "[VARKA] HOLD " .. mode, 2) end
 	end
 	return true
 end
@@ -271,26 +273,39 @@ end
 function action_varka_freeze:initialize()
 	action_base.initialize(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	local bw = npc:best_weapon()
-	if bw and IsWeapon(bw) then npc:set_item(object.fire2, bw) end
+	-- v0.21: idle, не fire2. fire2 переводит обработчик оружия в стрельбу, а глушилка входит,
+	-- когда врага нет (часто — он только что умер). Три краша 20.10 (адрес 0x1690F4400) — каждый в
+	-- кадр смерти рядом с входом в наш поиск/глушилку. Ваниль fire2 в set_item не использует нигде.
+	if bw and IsWeapon(bw) then npc:set_item(object.idle, bw) end
 	npc:set_mental_state(anim.danger)
 	npc:set_body_state(move.stand)
 	self.st.freeze_log_next = 0
 	db.storage[npc:id()].varka_active = true
 	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "freeze_enter", {}) end
 	if DEBUG then printf("VARKA-FREEZE: npc %s frozen (no belief)", npc:id()) end
-	if actor_menu then actor_menu.set_msg(1, "[VARKA] FREEZE -- no belief", 3) end
 end
 
 function action_varka_freeze:execute()
 	action_base.execute(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	local now = time_global()
 	if DEBUG and now >= self.st.freeze_log_next then
 		self.st.freeze_log_next = now + FREEZE_LOG_RATE
 		printf("VARKA-FREEZE: npc %s holding position", npc:id())
-		if actor_menu then actor_menu.set_msg(1, "[VARKA] FREEZE", 2) end
 	end
+	-- ПОСЛЕ БОЯ (v0.20): дирижёр объявил перегруппировку, а движок ещё держит бой
+	-- (post_combat_wait). Сидим и смотрим на угрозу; бег в укрытие — у varka_regroup,
+	-- он примет бойца, как только бой отпустит.
+	local post = varka_director and varka_director.get_post(npc)
+	if post then
+		if post.threat then npc:set_sight(look.fire_point, post.threat) end
+		npc:set_body_state(move.crouch)
+		return
+	end
+
 	local e = varka_lkp.get_echo(npc)
 	if not e then return end
 
@@ -357,9 +372,10 @@ end
 function action_varka_search:initialize()
 	action_base.initialize(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	local bw = npc:best_weapon()
 	if bw and IsWeapon(bw) then
-		npc:set_item(object.fire2, bw)
+		npc:set_item(object.idle, bw)  -- v0.21: держать, не стрелять (см. глушилку выше)
 	end
 	npc:set_mental_state(anim.danger)
 	npc:set_body_state(move.stand)
@@ -384,6 +400,7 @@ end
 function action_varka_search:execute()
 	action_base.execute(self)
 	local npc = self.object
+	if not npc:alive() then return end  -- v0.22: кадр смерти — трупом не командуем (краши 20.10)
 	local now = time_global()
 	local st  = self.st
 
@@ -402,7 +419,7 @@ function action_varka_search:execute()
 				if varka_trace then
 					varka_trace.emit(key, npc:id(), "flank_pick", { vid=fn.vid, w=fn.w, fx=fn.pos.x, fz=fn.pos.z })
 				end
-				if DEBUG then printf("VARKA-FLANK: npc %s -> node %s (sep=%.2f)", tostring(npc:id()), tostring(fn.vid), fn.w) end
+				if DEBUG then printf(string.format("VARKA-FLANK: npc %s -> node %s (sep=%.2f)", tostring(npc:id()), tostring(fn.vid), fn.w)) end
 			else
 				if varka_trace then varka_trace.emit(key, npc:id(), "flank_none", {}) end
 				if DEBUG then printf("VARKA-FLANK: npc %s pick_flank=nil (no off-axis cover)", tostring(npc:id())) end

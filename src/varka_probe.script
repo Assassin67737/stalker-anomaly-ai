@@ -1,0 +1,112 @@
+-- varka_probe.script — v0.1: эхолот игрока для сверки запечки зрения (20.10.2026)
+--
+-- Пространственное зрение дирижёра печётся оффлайн из level.cform (tools/twin/vision).
+-- Чтобы ему верить, сверяем с игрой: ходишь по уровню, этот скрипт пускает вокруг тебя
+-- сферу лучей ТЕМ ЖЕ движковым ray_pick (статика), и пишет в trace, куда упёрся каждый луч:
+-- дистанцию и номер треугольника (get_element). Потом vision/check_probe.py пересчитывает
+-- те же лучи по запечке и говорит, сколько совпало до треугольника.
+--
+-- Включение: Scroll Lock в игре (или кнопка «эхолот» во вьювере → varka_cmd probe on/off).
+-- Пока включён — снимок каждые PROBE_MS, если ты сдвинулся больше чем на MOVE_M.
+-- Сфера: NAZ азимутов × ELEV наклонов. Нижняя полусфера срезана (кроме −10°: пол рядом).
+--
+-- Формат события probe (emit пишет только скаляры, поэтому списки — строками):
+--   ox, oy, oz   — начало лучей (глаза: позиция актёра + EYE_H)
+--   naz          — азимутов; азимут i = 2π·i/naz, как в запечке
+--   elev         — наклоны в градусах через запятую
+--   hits         — по лучам (наклон за наклоном, внутри — азимуты): "дистанция:треугольник",
+--                  промах = "-1:-1"
+
+local DEBUG    = true
+local PROBE_MS = 1500
+local MOVE_M   = 1.5
+local EYE_H    = 1.6     -- как в bake_vision.py (стоя)
+local RANGE    = 150
+local NAZ      = 32
+local ELEV     = { -10, 0, 10, 25, 45, 70 }
+local RQT_STATIC = 2     -- collide::rqtStatic, как в varka_eyes
+
+local enabled  = false
+local next_at  = 0
+local last_pos = nil
+local shots    = 0       -- снимков за сессию — видно в ленте, что эхолот живой
+
+local function cast_all(origin)
+	local parts, near = {}, 0
+	local rp = ray_pick()
+	rp:set_position(origin)
+	rp:set_range(RANGE)
+	rp:set_flags(RQT_STATIC)
+	for _, e in ipairs(ELEV) do
+		local el = math.rad(e)
+		local ce, se = math.cos(el), math.sin(el)
+		for i = 0, NAZ - 1 do
+			local a = 2 * math.pi * i / NAZ
+			rp:set_direction(vector():set(math.cos(a) * ce, se, math.sin(a) * ce))
+			if rp:query() then
+				local d = rp:get_distance()
+				if e == 0 and d < 3 then near = near + 1 end
+				parts[#parts+1] = string.format("%.3f:%d", d, rp:get_element())
+			else
+				parts[#parts+1] = "-1:-1"
+			end
+		end
+	end
+	return table.concat(parts, ","), near
+end
+
+function snapshot()
+	if not (db.actor and varka_trace) then return false end
+	local p = db.actor:position()
+	local origin = vector():set(p.x, p.y + EYE_H, p.z)
+	local ok, hits, near = pcall(cast_all, origin)
+	if not ok then
+		printf("VARKA-PROBE: ray_pick failed -- %s", tostring(hits))
+		return false
+	end
+	varka_trace.emit(0, 0, "probe", {
+		ox = origin.x, oy = origin.y, oz = origin.z,
+		naz = NAZ, elev = table.concat(ELEV, ","), hits = hits,
+		vid = db.actor:level_vertex_id(), level = level.name(),
+	})
+	last_pos = vector():set(p.x, p.y, p.z)
+	shots = shots + 1
+	if varka_hud then
+		varka_hud.push(string.format("probe #%d: %d rays, walls within 3 m in %d of %d directions",
+			shots, NAZ * #ELEV, near, NAZ))
+	end
+	return true
+end
+
+function set_enabled(on)
+	enabled = on and true or false
+	next_at = 0
+	last_pos = nil
+	if varka_hud then
+		varka_hud.push(enabled and "probe ON: walk around, a snapshot every 1.5 s while you move (Scroll Lock = off)"
+			or string.format("probe OFF (%d snapshots this session)", shots))
+	end
+	if varka_trace then varka_trace.emit(0, 0, "probe_mode", { on = enabled and 1 or 0 }) end
+	if DEBUG then printf("VARKA-PROBE: %s", enabled and "on" or "off") end
+end
+
+function is_enabled() return enabled end
+
+local function actor_update()
+	if not enabled then return end
+	local now = time_global()
+	if now < next_at then return end
+	next_at = now + PROBE_MS
+	local p = db.actor:position()
+	if last_pos and p:distance_to(last_pos) < MOVE_M then return end
+	snapshot()
+end
+
+local function key_press(dik)
+	if dik == DIK_keys.DIK_SCROLL then set_enabled(not enabled) end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", actor_update)
+	RegisterScriptCallback("on_key_press", key_press)
+end

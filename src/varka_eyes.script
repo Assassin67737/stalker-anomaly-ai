@@ -40,3 +40,58 @@ function has_los(a_pos, b_pos)
 	end
 	return res
 end
+
+-- ===== v0.2 (20.10.2026): укрытия своими лучами вместо движкового npc:best_cover =====
+-- best_cover делит с движком «выбиратель укрытий» бойца, а тот помнит указатель на прошлое
+-- выбранное укрытие. Два краша полигона 20.10 (один адрес 0x1690F4400) — оба сразу после
+-- нашего best_cover в кадр смерти врага. Поэтому укрытие ищем сами: ноды навмеша рядом,
+-- лучи по статике. Указателей движка не держим — только vid и копии позиций.
+
+local INVALID = 4294967295
+
+-- Чистая ли линия между a (на высоте ha) и b (на высоте hb). Статика уровня, без живых.
+function los_h(a, ha, b, hb)
+	if broken or not (a and b) then return nil end
+	local ok, res = pcall(function()
+		local src  = vector():set(a.x, a.y + ha, a.z)
+		local dst  = vector():set(b.x, b.y + hb, b.z)
+		local diff = vec_set(dst):sub(src)
+		local dist = diff:magnitude()
+		if dist < 1.0 then return true end
+		diff:normalize()
+		local rp = ray_pick()
+		rp:set_position(src)
+		rp:set_direction(diff)
+		rp:set_range(dist - 0.3)
+		rp:set_flags(RQT_STATIC)
+		return not rp:query()
+	end)
+	if not ok then
+		broken = true
+		printf("VARKA-EYES: ray_pick failed, eyes off -- %s", tostring(res))
+		return nil
+	end
+	return res
+end
+
+-- Ближайшая к around_vid нода в радиусе radius, которую НЕ видно из from_pos (грудь — грудь).
+-- Порядок: сама нода, кольцо radius/2, кольцо radius; на первой спрятанной — выходим.
+-- nil — спрятаться негде (или глаза сломаны).
+function hidden_spot(around_vid, from_pos, radius)
+	if broken or not (around_vid and around_vid < INVALID and from_pos) then return nil end
+	local function hidden(vid)
+		local seen = los_h(level.vertex_position(vid), CHEST_H, from_pos, CHEST_H)
+		return seen == false
+	end
+	if hidden(around_vid) then return around_vid, level.vertex_position(around_vid) end
+	for _, r in ipairs({ radius * 0.5, radius }) do
+		for i = 0, 7 do
+			local a = i * math.pi / 4
+			local vid = level.vertex_in_direction(around_vid, vector():set(math.cos(a), 0, math.sin(a)), r)
+			if vid and vid < INVALID and vid ~= around_vid and hidden(vid) then
+				return vid, level.vertex_position(vid)
+			end
+		end
+	end
+	return nil
+end

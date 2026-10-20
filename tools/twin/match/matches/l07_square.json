@@ -1,0 +1,15 @@
+{
+  "id": "l07_square",
+  "level": "l07_military",
+  "limit_s": 300,
+  "zone": {"x": 35, "z": 12, "r": 15},
+  "spectator": {"x": 30, "z": 40},
+  "ghost": true,
+  "speed": 1,
+  "sides": {
+    "A": {"director": "shturm", "start": "advance",
+          "squads": [{"faction": "freedom", "tier": "advanced", "n": 4, "at": {"x": -20, "z": 0}}]},
+    "B": {"director": "off", "start": "advance",
+          "squads": [{"faction": "duty", "tier": "advanced", "n": 4, "at": {"x": 75, "z": 5}}]}
+  }
+}

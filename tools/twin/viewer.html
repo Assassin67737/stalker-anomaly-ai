@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VARKA — вид сверху</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#d0d0d0;font-family:'Courier New',monospace;font-size:12px;
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#top{display:flex;flex:1;overflow:hidden}
+#canvas-wrap{flex:1;position:relative;background:#0a0a0a}
+canvas{display:block;width:100%;height:100%;cursor:crosshair}
+canvas.drag{cursor:grabbing}
+#sidebar{width:300px;display:flex;flex-direction:column;border-left:1px solid #222;background:#0d0d0d}
+.box{padding:8px 10px;border-bottom:1px solid #222}
+.box b{color:#888;display:block;margin-bottom:4px}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#layers label{display:flex;align-items:center;gap:6px;padding:1px 0;cursor:pointer}
+#layers input{accent-color:#777}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px}
+#eventlog{flex:1;overflow-y:auto;padding:6px 10px;font-size:11px}
+.ev{padding:1px 0;border-bottom:1px solid #141414;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button,select{padding:3px 8px;cursor:pointer;border:1px solid #444;border-radius:3px;
+       background:#1a1a1a;color:#ccc;font-family:inherit;font-size:11px}
+button:hover{background:#252525}
+button.on{border-color:#2e7d32;color:#66BB6A}
+#scrub{width:100%;accent-color:#546}
+#scrub-label{color:#555;font-size:10px;text-align:right}
+#statusbar{padding:3px 10px;font-size:10px;color:#666;border-top:1px solid #1a1a1a;
+           background:#080808;white-space:nowrap;overflow:hidden;display:flex;gap:20px}
+#hover{color:#8a8}
+#sidebar{overflow-y:auto}
+#eventlog{min-height:120px}
+details>summary{cursor:pointer;color:#888;font-weight:bold;margin-bottom:4px;list-style:none}
+details>summary::before{content:'▸ ';color:#555}
+details[open]>summary::before{content:'▾ '}
+#creative .tools button{min-width:0;padding:3px 6px}
+#creative .tools button.on{border-color:#00bcd4;color:#4dd0e1;background:#0f2226}
+#creative label{display:flex;align-items:center;gap:4px}
+#creative input[type=number]{width:44px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;
+       font-family:inherit;font-size:11px;padding:2px 4px}
+#sel-info{color:#4dd0e1;min-height:14px;margin:4px 0}
+#hint{color:#666;font-size:10px;margin-top:4px;line-height:1.4}
+#cmdlog{max-height:110px;overflow-y:auto;font-size:10px;margin-top:6px;border-top:1px solid #1a1a1a;padding-top:4px}
+#cmdlog .ok{color:#66BB6A} #cmdlog .fail{color:#ef5350} #cmdlog .wait{color:#888}
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="canvas-wrap"><canvas id="cv"></canvas></div>
+  <div id="sidebar">
+    <div class="box">
+      <b>Карта</b>
+      <div class="row">
+        <select id="level" onchange="pickLevel(this.value)"><option value="auto">уровень: авто</option></select>
+        <button onclick="fitFight()">к бою</button>
+        <button onclick="fitLevel()">весь</button>
+      </div>
+    </div>
+    <div class="box" id="creative">
+      <details open><summary>Творческий режим → игра</summary>
+      <div class="row tools" id="tools">
+        <button data-tool="select" class="on" title="клик по бойцу — выбрать отряд, Shift — одного бойца">выбор</button>
+        <button data-tool="spawn"  title="клик по карте — заспавнить отряд">спавн</button>
+        <button data-tool="move"   title="клик — выбранные идут туда и стоят (ПКМ — то же из любого инструмента)">идти</button>
+        <button data-tool="hold"   title="клик — стоять в точке">стоять</button>
+        <button data-tool="attack" title="клик по бойцу — назначить его врагом выбранным">атака</button>
+        <button data-tool="hostile" title="клик по бойцу другого отряда — стравить два отряда">стравить</button>
+        <button data-tool="tp"     title="клик — перенести себя (актёра) туда">телепорт</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <select id="sp-faction">
+          <option value="freedom">Свобода</option><option value="duty">Долг</option>
+          <option value="stalker">сталкеры</option><option value="bandit">бандиты</option>
+          <option value="army">военные</option><option value="monolith">Монолит</option>
+          <option value="csky">ЧН</option><option value="ecolog">экологи</option>
+          <option value="greh">Грех</option><option value="isg">ИИГ</option>
+        </select>
+        <select id="sp-level"><option value="novice">новички</option><option value="advanced" selected>опытные</option><option value="veteran">ветераны</option></select>
+        <label title="сколько бойцов">× <input type="number" id="sp-n" value="4" min="1" max="12"></label>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label title="отряд нейтрален к тебе: смотришь, а не воюешь"><input type="checkbox" id="sp-ghost" checked> нейтральны ко мне</label>
+        <label title="приказ перебивает бой и опасность; без галочки — бой важнее приказа"><input type="checkbox" id="ord-hard"> сквозь бой</label>
+      </div>
+      <div id="sel-info">ничего не выбрано</div>
+      <div class="row">
+        <select id="sel-preset" title="пресет дирижёра для выбранного отряда">
+          <option value="default">дирижёр: общий</option><option value="shturm">ШТУРМ</option>
+          <option value="greh">ГРЕХ</option><option value="off">выключен</option>
+        </select>
+        <button onclick="selCmd('preset')">задать</button>
+        <button onclick="selCmd('free')" title="снять приказы — снова сами по себе">свобода</button>
+        <button onclick="selCmd('kill')">убить</button>
+        <button onclick="selCmd('remove')">убрать</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button onclick="send('freeze',['1'])" title="заморозить мир (консоль: freeze_time on)">❄ пауза</button>
+        <button onclick="send('freeze',['0'])">▶ дальше</button>
+        <button onclick="send('time',['0.25'])">×¼</button>
+        <button onclick="send('time',['1'])">×1</button>
+        <button onclick="send('time',['3'])">×3</button>
+      </div>
+      <div id="hint"></div>
+      <div id="cmdlog"></div>
+      </details>
+    </div>
+    <div class="box" id="layers">
+      <b>Слои</b>
+      <div class="row" style="margin-bottom:4px">
+        <button onclick="preset('player')">игрок</button>
+        <button onclick="preset('analyst')">аналитик</button>
+      </div>
+    </div>
+    <div id="eventlog"></div>
+    <div class="box" style="border-top:1px solid #222;border-bottom:none">
+      <div class="row" style="margin-bottom:6px">
+        <button id="live-btn" class="on" onclick="goLive()">● LIVE</button>
+        <button id="play-btn" onclick="togglePlay()">▶</button>
+        <select id="speed"><option>1</option><option selected>4</option><option>16</option></select>×
+      </div>
+      <input type="range" id="scrub" min="0" max="0" value="0" step="100" oninput="onScrub(+this.value)">
+      <div id="scrub-label">—</div>
+    </div>
+  </div>
+</div>
+<div id="statusbar"><span id="status">ожидание данных...</span><span id="hover"></span></div>
+
+<script>
+// ─────────────────────────────────────────────
+// СЛОИ
+// ─────────────────────────────────────────────
+// [ключ, подпись, цвет образца, в наборе «игрок»]
+const LAYERS = [
+  ['relief', 'навмеш (рельеф)',    '#555',    true ],
+  ['cover',  'укрытия',            '#b07a3a', false],
+  ['trails', 'следы путей',        '#4a6a8a', false],
+  ['npcs',   'бойцы',              '#2196F3', true ],
+  ['gaze',   'взгляд',             '#888',    true ],
+  ['director','дирижёр (роли, фланг, мораль)','#00e5ff', true ],
+  ['targets','цели (— видит, ┄ нет; белая — цель ранена)','#e05050', false],
+  ['status', 'ранен / опасность / добивает','#ff5', false],
+  ['shots',  'выстрелы / попадания','#FF7043', true ],
+  ['barks',  'выкрики',            '#ddd',    true ],
+  ['belief', 'вера (конус)',       '#FFD700', false],
+  ['echo',   'эхо',                '#b4a0ff', false],
+  ['fan',    'веер поиска',        '#78c8c8', false],
+  ['lots',   'лоты',               '#CE93D8', false],
+  ['holds',  'посты HOLD',         '#fff',    false],
+];
+const on = {};
+let layerSave = null;
+try{ layerSave = JSON.parse(localStorage.getItem('varka_layers')); }catch(_){}
+{
+  const box = document.getElementById('layers');
+  for(const [k,label,col,player] of LAYERS){
+    on[k] = layerSave && k in layerSave ? layerSave[k] : true;
+    const l = document.createElement('label');
+    l.innerHTML = `<input type="checkbox" id="ly-${k}" ${on[k]?'checked':''}>`+
+                  `<span class="sw" style="background:${col}"></span>${label}`;
+    l.querySelector('input').onchange = e=>setLayer(k, e.target.checked);
+    box.appendChild(l);
+  }
+}
+function setLayer(k, v){
+  on[k] = v;
+  document.getElementById('ly-'+k).checked = v;
+  try{ localStorage.setItem('varka_layers', JSON.stringify(on)); }catch(_){}
+  if(k==='relief'||k==='cover') mapDirty = true;
+  draw();
+}
+function preset(name){
+  for(const [k,,,player] of LAYERS) setLayer(k, name==='analyst' ? true : player);
+}
+
+// ─────────────────────────────────────────────
+// ДАННЫЕ БОЯ
+// ─────────────────────────────────────────────
+const allEvents = [];
+let t0 = 0, tMax = 0;   // время первого и последнего события, мс
+let playT = 0;          // время, которое показываем
+let isLive = true, isPlaying = false;
+
+const FACTIONS = {
+  stalker:'#4CAF50', bandit:'#FF9800', military:'#8BC34A',
+  monolith:'#9C27B0', freedom:'#2196F3', csky:'#00BCD4',
+  dolg:'#F44336', duty:'#F44336', killer:'#EF5350', zombied:'#607D8B',
+  actor:'#FF6B6B', ecolog:'#26A69A', greh:'#EF9A9A',
+};
+function fcolor(comm){ return FACTIONS[comm] || '#aaa'; }
+
+function rankLetter(r){
+  if(r<3500)  return 'N';
+  if(r<6500)  return 'T';
+  if(r<9000)  return 'E';
+  if(r<12000) return 'P';
+  if(r<14500) return 'V';
+  if(r<17500) return 'X';
+  if(r<27000) return 'M';
+  return 'L';
+}
+
+// Состояние мира на момент playT. Строится проигрыванием событий по порядку;
+// при движении вперёд докатываем, при перемотке назад — заново с нуля.
+function freshState(){
+  return { upto:0, npcs:{}, trails:{}, beliefs:{}, echos:{}, nodes:{}, lots:{}, holds:{},
+           shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{} };
+}
+let S = freshState();
+
+function applyEvent(s, ev){
+  const t = ev.ev;
+
+  if(t==='npc_pos'){
+    s.npcs[ev.npc] = {px:ev.px,py:ev.py,pz:ev.pz,dx:ev.dx,dz:ev.dz,
+                      rank:ev.rank,comm:ev.comm,active:ev.active,sq:ev.sq,_t:ev.t,
+                      be:ev.be, bsee:ev.bsee, wnd:ev.wnd, dng:ev.dng, dtype:ev.dtype, kw:ev.kw};
+    (s.trails[ev.npc] ||= []).push(ev.px, ev.pz);
+
+  } else if(t==='belief_born'||t==='belief_notice'||t==='belief_update'){
+    const b = s.beliefs[ev.sq] || {cone:20,reach:3,mass:1};
+    b.px=ev.px; b.pz=ev.pz; b.bx=ev.bx; b.bz=ev.bz; b._t=ev.t;
+    s.beliefs[ev.sq] = b;
+
+  } else if(t==='belief_snap'){
+    const b = s.beliefs[ev.sq] || {};
+    b.px=ev.px; b.pz=ev.pz; b.bx=ev.bx; b.bz=ev.bz;
+    b.cone=ev.cone; b.reach=ev.reach; b.mass=ev.mass; b._t=ev.t;
+    s.beliefs[ev.sq] = b;
+
+  } else if(t==='belief_fade'||t==='belief_kill'){
+    delete s.beliefs[ev.sq];
+
+  } else if(t==='echo_born'||t==='echo_snap'){
+    s.echos[ev.sq] = {px:ev.px,pz:ev.pz,_t:ev.t};
+
+  } else if(t==='echo_dead'){
+    delete s.echos[ev.sq];
+
+  } else if(t==='lot_claim'){
+    s.lots[ev.npc] = {vid:ev.vid,cx:ev.cx,cz:ev.cz,_t:ev.t};
+
+  } else if(t==='lot_release'){
+    delete s.lots[ev.npc];
+
+  } else if(t==='search_node'){
+    s.nodes[ev.vid] = {px:ev.nx,pz:ev.nz,w:ev.w||0,checked:false,_t:ev.t};
+
+  } else if(t==='node_checked'){
+    if(s.nodes[ev.vid]) s.nodes[ev.vid].checked = true;
+
+  } else if(t==='hold_enter'){
+    s.holds[ev.npc] = {px:ev.hx,pz:ev.hz,mode:ev.mode,_t:ev.t};
+
+  } else if(t==='hold_expire'||t==='search_end'){
+    delete s.holds[ev.npc];
+
+  } else if(t==='alert_hear'){
+    s.shots.push({px:ev.px,pz:ev.pz,stype:ev.stype,_t:ev.t});
+
+  } else if(t==='bark'){
+    s.barks[ev.npc] = {theme:ev.theme,_t:ev.t};
+
+  } else if(t==='dir_plan'){
+    // roles = "id:роль,id:роль" — роли отряда целиком заменяют прошлые
+    const old = s.plans[ev.sq];
+    if(old) for(const id of Object.keys(old.roles)) delete s.roles[id];
+    const roles = {};
+    for(const pair of (ev.roles||'').split(',')){
+      const [id, role] = pair.split(':');
+      if(id && role){ roles[id] = role; s.roles[id] = role; }
+    }
+    s.plans[ev.sq] = {preset:ev.preset, mode:ev.mode, roles, _t:ev.t};
+    for(const id of Object.keys(s.flanks)) if(!(id in roles) || roles[id]!=='flank') delete s.flanks[id];
+
+  } else if(t==='dir_moral'){
+    s.moral[ev.sq] = ev.moral;
+
+  } else if(t==='flank_pick'){
+    s.flanks[ev.npc] = {px:ev.fx, pz:ev.fz, w:ev.w, arrived:false};
+
+  } else if(t==='flank_arrive'){
+    if(s.flanks[ev.npc]) s.flanks[ev.npc].arrived = true;
+
+  } else if(t==='scout_go'){
+    s.scouts[ev.npc] = {px:ev.sx, pz:ev.sz, _t:ev.t};
+  }
+
+  if(t!=='npc_pos' && t!=='belief_snap' && t!=='echo_snap' && t!=='dir_moral'){
+    s.evLog.push(ev);
+    if(s.evLog.length > 80) s.evLog.shift();
+  }
+}
+
+function stateAt(T){
+  if(S.upto > 0 && allEvents[S.upto-1] && allEvents[S.upto-1].t > T) S = freshState();
+  while(S.upto < allEvents.length && allEvents[S.upto].t <= T){
+    applyEvent(S, allEvents[S.upto]);
+    S.upto++;
+  }
+  return S;
+}
+
+// рамка боя — для кнопки «к бою» и угадывания уровня
+function fightBounds(){
+  let b = null;
+  const add=(x,z)=>{ if(x===undefined) return;
+    if(!b) b={x0:x,x1:x,z0:z,z1:z};
+    b.x0=Math.min(b.x0,x); b.x1=Math.max(b.x1,x); b.z0=Math.min(b.z0,z); b.z1=Math.max(b.z1,z); };
+  for(const e of allEvents){ add(e.px,e.pz); add(e.cx,e.cz); add(e.nx,e.nz); add(e.hx,e.hz); }
+  return b;
+}
+
+// ─────────────────────────────────────────────
+// УРОВЕНЬ: подложка из запечённого level.ai
+// ─────────────────────────────────────────────
+let levels = {};        // имя → meta
+let levelChoice = 'auto';
+let L = null;           // текущий уровень: {meta, info: ImageData, vid: ImageData}
+let mapCv = null, mapDirty = true;
+
+async function loadIndex(){
+  try{
+    const names = await (await fetch('levels/index.json')).json();
+    const sel = document.getElementById('level');
+    for(const n of names){
+      levels[n] = await (await fetch(`levels/${n}.json`)).json();
+      const o = document.createElement('option'); o.value=n; o.textContent=n; sel.appendChild(o);
+    }
+  }catch(e){ setStatus('нет levels/index.json — запеки уровень: bake_level.py'); }
+}
+
+// Уровень угадываем по самому бою: все vid меньше числа нод и все точки внутри рамки.
+// trace пока не пишет имя уровня — когда начнёт, это станет не нужно.
+function guessLevel(){
+  let maxVid = -1;
+  for(const e of allEvents) if(e.vid!==undefined && e.vid>maxVid) maxVid = e.vid;
+  const b = fightBounds();
+  for(const [n,m] of Object.entries(levels)){
+    if(maxVid >= m.count) continue;
+    if(b && (b.x0 < m.box[0]-5 || b.x1 > m.box[3]+5 || b.z0 < m.box[2]-5 || b.z1 > m.box[5]+5)) continue;
+    return n;
+  }
+  return null;
+}
+
+async function pickLevel(choice){
+  levelChoice = choice;
+  const name = choice==='auto' ? guessLevel() : choice;
+  if(L && L.meta.name===name) return;
+  L = null; mapDirty = true;
+  if(!name){ draw(); return; }
+  const grab = async src=>{
+    const img = new Image(); img.src = src; await img.decode();
+    const c = document.createElement('canvas'); c.width=img.width; c.height=img.height;
+    const x = c.getContext('2d'); x.drawImage(img,0,0);
+    return x.getImageData(0,0,img.width,img.height);
+  };
+  const [info, vid] = await Promise.all([grab(`levels/${name}.png`), grab(`levels/${name}_vid.png`)]);
+  L = {meta:levels[name], info, vid};
+  if(!view) fitFight();
+  draw();
+}
+
+// Красим подложку под включённые слои: серый = высота, тёплый оттенок = укрытие.
+// В level.ai хранится открытость (15 = голо, 0 = закрыто), движок берёт min(высокое, низкое) —
+// cover_evaluators.cpp. Укрытие = 1 − min/15.
+function buildMap(){
+  const {w,h} = L.meta, src = L.info.data;
+  mapCv = mapCv || document.createElement('canvas');
+  mapCv.width = w; mapCv.height = h;
+  const mx = mapCv.getContext('2d');
+  const out = mx.createImageData(w,h), d = out.data;
+  for(let i=0;i<src.length;i+=4){
+    if(!src[i+3] || (!on.relief && !on.cover)) continue;
+    let g = on.relief ? 34 + src[i]*0.42 : 46;
+    let r = g, b = g;
+    if(on.cover){
+      // типичная нода в поле открыта на 6–8 из 15; настоящее укрытие — 4 и ниже (~9% нод)
+      const c = Math.max(0, (5.5 - Math.min(src[i+1], src[i+2])/17) / 5.5);
+      r += 170*c; g += 60*c; b -= 30*c;
+    }
+    d[i]=r; d[i+1]=g; d[i+2]=b; d[i+3]=255;
+  }
+  mx.putImageData(out,0,0);
+  mapDirty = false;
+}
+
+// ─────────────────────────────────────────────
+// ВИД: мир (x, z) → экран. Север (+z) вверх, метры × масштаб.
+// ─────────────────────────────────────────────
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let view = null;  // {cx, cz, sc}: центр экрана в мире и пикселей на метр
+
+function resize(){ cv.width = cv.offsetWidth; cv.height = cv.offsetHeight; draw(); }
+window.addEventListener('resize', resize);
+
+function w2s(x, z){ return {x: cv.width/2 + (x-view.cx)*view.sc, y: cv.height/2 - (z-view.cz)*view.sc}; }
+function s2w(px, py){ return {x: view.cx + (px-cv.width/2)/view.sc, z: view.cz - (py-cv.height/2)/view.sc}; }
+
+function fitBox(x0,x1,z0,z1){
+  const pad = Math.max(x1-x0, z1-z0)*0.15 + 10;
+  view = {cx:(x0+x1)/2, cz:(z0+z1)/2,
+          sc: Math.min(cv.width/(x1-x0+2*pad), cv.height/(z1-z0+2*pad))};
+  draw();
+}
+function fitFight(){
+  const b = fightBounds();
+  if(b) fitBox(b.x0,b.x1,b.z0,b.z1); else fitLevel();
+}
+function fitLevel(){
+  if(L){ const m=L.meta.box; fitBox(m[0],m[3],m[2],m[5]); }
+}
+
+// Мышь: колесо — зум к курсору, перетаскивание — сдвиг, наведение — нода под курсором
+let drag = null;
+cv.addEventListener('wheel', e=>{
+  if(!view) return;
+  e.preventDefault();
+  const before = s2w(e.offsetX, e.offsetY);
+  view.sc *= Math.exp(-e.deltaY*0.0015);
+  const after = s2w(e.offsetX, e.offsetY);
+  view.cx += before.x-after.x; view.cz += before.z-after.z;
+  draw();
+}, {passive:false});
+let downAt = null;   // где нажали: если отпустили почти там же — это клик, а не перетаскивание
+cv.addEventListener('mousedown', e=>{
+  if(e.button!==0) return;
+  drag = {x:e.offsetX, y:e.offsetY}; downAt = {x:e.offsetX, y:e.offsetY}; cv.classList.add('drag');
+});
+window.addEventListener('mouseup', e=>{
+  if(downAt && e.target===cv && Math.hypot(e.offsetX-downAt.x, e.offsetY-downAt.y) < 4) mapClick(e, false);
+  drag = null; downAt = null; cv.classList.remove('drag');
+});
+cv.addEventListener('contextmenu', e=>{ e.preventDefault(); mapClick(e, true); });
+cv.addEventListener('mousemove', e=>{
+  if(drag && view){
+    view.cx -= (e.offsetX-drag.x)/view.sc; view.cz += (e.offsetY-drag.y)/view.sc;
+    drag = {x:e.offsetX, y:e.offsetY};
+    draw();
+  }
+  showHover(e.offsetX, e.offsetY);
+});
+
+function nodeAt(x, z){
+  if(!L) return null;
+  const m = L.meta;
+  const i = Math.round((x-m.box[0])/m.cell);
+  const j = m.h-1 - Math.round((z-m.box[2])/m.cell);
+  if(i<0||j<0||i>=m.w||j>=m.h) return null;
+  const k = (j*m.w+i)*4, v = L.vid.data, f = L.info.data;
+  const vid = (v[k]<<16 | v[k+1]<<8 | v[k+2]) - 1;
+  if(vid < 0) return null;
+  return {vid, y: m.box[1] + f[k]/255*(m.box[4]-m.box[1]),
+          high: Math.round(f[k+1]/17), low: Math.round(f[k+2]/17)};
+}
+
+function showHover(px, py){
+  const el = document.getElementById('hover');
+  if(!view){ el.textContent=''; return; }
+  const p = s2w(px, py), n = nodeAt(p.x, p.z);
+  el.textContent = `x=${p.x.toFixed(1)} z=${p.z.toFixed(1)}  ` +
+    (n ? `vid ${n.vid}  y=${n.y.toFixed(1)}  открыто: выс ${n.high}/15 низ ${n.low}/15 (0 = закрыто)` : 'нет ноды (стена / край)');
+}
+
+// ─────────────────────────────────────────────
+// РИСОВАНИЕ
+// ─────────────────────────────────────────────
+function draw(){
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0,0,cv.width,cv.height);
+  if(!view){
+    ctx.fillStyle='#444'; ctx.font='14px monospace';
+    ctx.fillText('ожидание данных: запусти игру → бой', 20, 40);
+    return;
+  }
+
+  // подложка: клетка 0,7 м = пиксель картинки, растягиваем без сглаживания
+  if(L && (on.relief || on.cover)){
+    if(mapDirty) buildMap();
+    const m = L.meta, tl = w2s(m.box[0]-m.cell/2, m.box[5]+m.cell/2);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(mapCv, tl.x, tl.y, m.w*m.cell*view.sc, m.h*m.cell*view.sc);
+  }
+
+  const s = stateAt(playT);
+  const sc = view.sc;
+  const alive = npc => playT - npc._t <= 3000;  // нет npc_pos > 3 с — мёртв или ушёл из онлайна
+
+  // ── следы путей ───────────────────────────────
+  if(on.trails){
+    ctx.lineWidth = 1;
+    for(const [id,tr] of Object.entries(s.trails)){
+      const npc = s.npcs[id];
+      ctx.strokeStyle = fcolor(npc && npc.comm) + (npc && alive(npc) ? '88' : '33');
+      ctx.beginPath();
+      for(let i=0;i<tr.length;i+=2){
+        const p = w2s(tr[i], tr[i+1]);
+        i ? ctx.lineTo(p.x,p.y) : ctx.moveTo(p.x,p.y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ── веер поиска ───────────────────────────────
+  if(on.fan){
+    for(const n of Object.values(s.nodes)){
+      const p = w2s(n.px, n.pz);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+      if(n.checked) ctx.fillStyle='#333';
+      else{
+        const w = Math.max(0,Math.min(1,n.w));
+        ctx.fillStyle=`rgb(${40+215*w|0},${120+80*w|0},${200-200*w|0})`;
+      }
+      ctx.fill();
+    }
+  }
+
+  // ── эхо ───────────────────────────────────────
+  if(on.echo){
+    for(const [sq,e] of Object.entries(s.echos)){
+      const p = w2s(e.px, e.pz);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI*2);
+      ctx.strokeStyle='rgba(180,160,255,0.35)'; ctx.lineWidth=2; ctx.stroke();
+      ctx.fillStyle='rgba(180,160,255,0.6)'; ctx.font='9px monospace';
+      ctx.fillText('эхо sq'+sq, p.x+12, p.y-10);
+    }
+  }
+
+  // ── вера: конус «куда враг делся» ─────────────
+  if(on.belief){
+    for(const [sq,b] of Object.entries(s.beliefs)){
+      const p = w2s(b.px, b.pz);
+      const mass = Math.max(0, Math.min(1, b.mass||0));
+      const half = ((b.cone||45)/2) * Math.PI/180;
+      const ang  = Math.atan2(-(b.bz||0), b.bx||1);   // минус: на экране z вверх
+      ctx.beginPath(); ctx.moveTo(p.x, p.y);
+      ctx.arc(p.x, p.y, Math.max(6,(b.reach||10)*sc), ang-half, ang+half);
+      ctx.closePath();
+      ctx.fillStyle   = `rgba(255,200,0,${0.08+mass*0.35})`; ctx.fill();
+      ctx.strokeStyle = `rgba(255,200,0,${0.25+mass*0.6})`; ctx.lineWidth=1; ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fillStyle='#FFD700'; ctx.fill();
+      ctx.fillStyle='rgba(255,200,0,0.9)'; ctx.font='bold 10px monospace';
+      ctx.fillText(`sq${sq} m=${mass.toFixed(2)} ${(b.cone||0).toFixed(0)}°`, p.x+8, p.y-6);
+    }
+  }
+
+  // ── выстрелы и попадания: вспышка 2 с ─────────
+  if(on.shots){
+    for(const sh of s.shots){
+      const age = playT - sh._t;
+      if(age < 0 || age > 2000 || sh.px===undefined) continue;
+      const p = w2s(sh.px, sh.pz), k = 1 - age/2000;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4 + 14*(1-k), 0, Math.PI*2);
+      ctx.strokeStyle=`rgba(255,112,67,${k})`; ctx.lineWidth=2; ctx.stroke();
+    }
+  }
+
+  // ── лоты: кто какую ноду занял ────────────────
+  if(on.lots){
+    ctx.setLineDash([3,4]);
+    for(const [id,lot] of Object.entries(s.lots)){
+      const npc = s.npcs[id];
+      if(!npc || !alive(npc)) continue;
+      const a = w2s(npc.px, npc.pz), c = w2s(lot.cx, lot.cz), col = fcolor(npc.comm);
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y);
+      ctx.strokeStyle=col+'aa'; ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle=col; ctx.beginPath();
+      ctx.moveTo(c.x,c.y-4); ctx.lineTo(c.x+4,c.y); ctx.lineTo(c.x,c.y+4); ctx.lineTo(c.x-4,c.y);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // ── посты HOLD ────────────────────────────────
+  if(on.holds){
+    for(const h of Object.values(s.holds)){
+      const p = w2s(h.px, h.pz);
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.strokeRect(p.x-5, p.y-5, 10, 10);
+      ctx.fillStyle='#ccc'; ctx.font='9px monospace'; ctx.fillText('HOLD '+(h.mode||''), p.x+7, p.y+3);
+    }
+  }
+
+  // ── цели: линия к best_enemy. Сплошная — видит сейчас, пунктир — цель по памяти ──
+  if(on.targets){
+    for(const npc of Object.values(s.npcs)){
+      if(!alive(npc) || npc.be===undefined || npc.be<0) continue;
+      const t = s.npcs[npc.be];
+      if(!t || !alive(t)) continue;   // актёр и не трассируемые цели не рисуются
+      const a = w2s(npc.px,npc.pz), b = w2s(t.px,t.pz);
+      ctx.setLineDash(npc.bsee ? [] : [4,4]);
+      ctx.strokeStyle = t.wnd ? 'rgba(255,255,255,0.9)' : fcolor(npc.comm)+'aa';  // цель-раненый — белым (Долг и так красный)
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      const ang = Math.atan2(b.y-a.y, b.x-a.x);   // стрелка у цели
+      ctx.setLineDash([]); ctx.beginPath();
+      ctx.moveTo(b.x-Math.cos(ang)*8, b.y-Math.sin(ang)*8);
+      ctx.lineTo(b.x-Math.cos(ang-0.4)*16, b.y-Math.sin(ang-0.4)*16);
+      ctx.moveTo(b.x-Math.cos(ang)*8, b.y-Math.sin(ang)*8);
+      ctx.lineTo(b.x-Math.cos(ang+0.4)*16, b.y-Math.sin(ang+0.4)*16);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // ── дирижёр: точка фланга, путь скаута, подпись отряда ──
+  if(on.director){
+    for(const [id,f] of Object.entries(s.flanks)){
+      const npc = s.npcs[id]; if(!npc || !alive(npc)) continue;
+      const a = w2s(npc.px,npc.pz), c = w2s(f.px,f.pz);
+      ctx.setLineDash([6,4]); ctx.strokeStyle='#00e5ff'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(c.x,c.y-7); ctx.lineTo(c.x+7,c.y); ctx.lineTo(c.x,c.y+7); ctx.lineTo(c.x-7,c.y); ctx.closePath();
+      ctx.strokeStyle='#00e5ff'; ctx.lineWidth=2; ctx.stroke();
+      if(f.arrived){ ctx.fillStyle='#00e5ff'; ctx.fill(); }
+    }
+    for(const [id,sc] of Object.entries(s.scouts)){
+      const npc = s.npcs[id]; if(!npc || !alive(npc) || s.roles[id]!=='scout') continue;
+      const a = w2s(npc.px,npc.pz), c = w2s(sc.px,sc.pz);
+      ctx.setLineDash([2,4]); ctx.strokeStyle='#b4a0ff'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // подпись отряда над его центром: пресет · режим · мораль
+    const groups = {};
+    for(const [id,npc] of Object.entries(s.npcs)){
+      if(!alive(npc) || !s.plans[npc.sq]) continue;
+      const g = groups[npc.sq] ||= {x:0, z:0, n:0, zmax:-1e9};
+      g.x += npc.px; g.z += npc.pz; g.n++; g.zmax = Math.max(g.zmax, npc.pz);
+    }
+    for(const [sq,g] of Object.entries(groups)){
+      const pl = s.plans[sq], m = s.moral[sq];
+      const p = w2s(g.x/g.n, g.zmax);
+      const txt = `${pl.preset} · ${pl.mode}` + (m!=null ? ` · мораль ${m.toFixed(2)}` : '');
+      ctx.font='bold 11px monospace';
+      const w = ctx.measureText(txt).width;
+      ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(p.x-w/2-4, p.y-34, w+8, 15);
+      ctx.fillStyle='#00e5ff'; ctx.fillText(txt, p.x-w/2, p.y-23);
+    }
+  }
+
+  drawCreative(s, alive);
+
+  // ── бойцы и взгляд ────────────────────────────
+  for(const [id,npc] of Object.entries(s.npcs)){
+    if(!alive(npc)) continue;
+    const p = w2s(npc.px, npc.pz), col = fcolor(npc.comm), r = npc.active ? 7 : 5;
+    if(on.gaze){
+      const ang = Math.atan2(-(npc.dz||0), npc.dx||1);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x+Math.cos(ang)*16, p.y+Math.sin(ang)*16);
+      ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke();
+    }
+    if(on.npcs){
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+      ctx.fillStyle=col; ctx.fill();
+      ctx.strokeStyle = npc.active ? '#fff' : '#222'; ctx.lineWidth = npc.active ? 2 : 1; ctx.stroke();
+      ctx.fillStyle='#bbb'; ctx.font='10px monospace';
+      ctx.fillText(`${id}(${rankLetter(npc.rank||0)})`, p.x+r+2, p.y-r);
+    }
+    if(on.status){
+      if(npc.wnd){   // ранен: белый крест на бойце
+        ctx.strokeStyle='#fff'; ctx.lineWidth=2.5; ctx.beginPath();
+        ctx.moveTo(p.x-r-3,p.y-r-3); ctx.lineTo(p.x+r+3,p.y+r+3);
+        ctx.moveTo(p.x+r+3,p.y-r-3); ctx.lineTo(p.x-r-3,p.y+r+3); ctx.stroke();
+      }
+      const tags = [];
+      if(npc.dng) tags.push('! '+(npc.dtype||'danger'));
+      if(npc.kw)  tags.push('добивает');
+      if(tags.length){
+        ctx.fillStyle = npc.kw ? '#ff8a80' : '#ffee58'; ctx.font='bold 10px monospace';
+        ctx.fillText(tags.join(' · '), p.x+r+2, p.y-r-11);
+      }
+    }
+    const role = s.roles[id];
+    if(on.director && role && role!=='hold'){   // hold — норма, подписываем только особые роли
+      ctx.fillStyle = role==='flank' ? '#00e5ff' : '#b4a0ff'; ctx.font='bold 10px monospace';
+      ctx.fillText(role==='flank' ? 'ФЛАНГ' : role==='scout' ? 'РАЗВЕДКА' : role.toUpperCase(), p.x-r-2, p.y+r+22);
+    }
+    const bk = s.barks[id];
+    if(on.barks && bk && playT-bk._t < 2500){
+      ctx.fillStyle='#fff'; ctx.font='bold 11px monospace';
+      ctx.fillText('«'+bk.theme+'»', p.x+r+2, p.y+r+11);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// ЖУРНАЛ СОБЫТИЙ
+// ─────────────────────────────────────────────
+const EV_COLORS = {
+  belief_born:'#FFD700', belief_notice:'#FFEB3B', belief_update:'#FFC107',
+  belief_fade:'#666',    belief_kill:'#FF7043',
+  echo_born:'#CE93D8',   echo_dead:'#444',
+  search_start:'#4CAF50',search_node:'#81C784',  node_checked:'#388E3C',
+  hold_enter:'#66BB6A',  hold_expire:'#4CAF50',  search_end:'#4CAF50',
+  freeze_enter:'#90CAF9',freeze_exit:'#42A5F5',
+  lot_claim:'#CE93D8',   lot_release:'#7B1FA2',
+  alert_hear:'#FF7043',  alert_corpse:'#FF5722',
+  watch_lost:'#F44336',  trace_start:'#555',  bark:'#ddd',  kw_fire:'#ff5252',
+  cmd_ok:'#66BB6A', cmd_fail:'#ef5350', spawned:'#4dd0e1', order_start:'#4dd0e1', order_arrive:'#26c6da', order_end:'#557',
+  dir_plan:'#00e5ff',    flank_pick:'#00e5ff',  flank_arrive:'#00bcd4', flank_none:'#557',  scout_go:'#b4a0ff',
+};
+
+function fmtEv(e){
+  const col  = EV_COLORS[e.ev] || '#666';
+  const ts   = e.t!=null ? (e.t/1000).toFixed(1)+'s' : '';
+  const nstr = e.npc ? `<span style="color:#555">n${e.npc}</span> ` : '';
+  const sqstr= e.sq  ? `<span style="color:#445">sq${e.sq}</span> ` : '';
+  let d='';
+  if(e.ev==='search_node'||e.ev==='hold_enter') d=` vid=${e.vid} w=${(e.w||0).toFixed(2)}${e.mode?' '+e.mode:''}`;
+  else if(e.ev==='node_checked'||e.ev==='lot_claim') d=` vid=${e.vid}`;
+  else if(e.ev==='belief_kill')  d=` reason=${e.reason||'?'}`;
+  else if(e.ev==='alert_hear')   d=` ${e.stype||''} who=${e.who||0}`;
+  else if(e.ev==='alert_corpse') d=` corpse=${e.cid}`;
+  else if(e.ev==='watch_lost')   d=` bel=${e.bel} echo=${e.echo}`;
+  else if(e.ev==='search_start') d=` rank=${rankLetter(e.rank||0)}`;
+  else if(e.ev==='bark')         d=` «${e.theme}»`;
+  else if(e.ev==='kw_fire')      d=` → n${e.victim} с ${(e.d||0).toFixed(1)} м`;
+  else if(e.ev==='dir_plan')     d=` ${e.preset}/${e.mode} ${e.roles||''}`;
+  else if(e.ev==='cmd_ok'||e.ev==='cmd_fail') d=` #${e.seq} ${e.cmd} ${e.info||''}`;
+  else if(e.ev==='spawned')      d=` sq${e.sq} ${e.section} ×${e.n}`;
+  else if(e.ev==='flank_pick')   d=` vid=${e.vid} sep=${(e.w||0).toFixed(2)}`;
+  return `<div class="ev"><span style="color:#333">${ts} </span>${nstr}${sqstr}`+
+         `<span style="color:${col}">${e.ev}</span><span style="color:#555">${d}</span></div>`;
+}
+
+// ─────────────────────────────────────────────
+// ВРЕМЯ: live, повтор, перемотка
+// ─────────────────────────────────────────────
+function setStatus(t){ document.getElementById('status').textContent = t; }
+
+function refresh(){
+  const scrub = document.getElementById('scrub');
+  scrub.min = t0; scrub.max = tMax; scrub.value = playT;
+  document.getElementById('scrub-label').textContent =
+    `${(playT/1000).toFixed(1)} / ${(tMax/1000).toFixed(1)} с`;
+  draw();
+  const el = document.getElementById('eventlog');
+  el.innerHTML = S.evLog.map(fmtEv).join('');
+  el.scrollTop = el.scrollHeight;
+  const alive = Object.values(S.npcs).filter(n=>playT-n._t<=3000).length;
+  setStatus(`${L ? L.meta.name : 'уровень ?'} | событий ${S.upto}/${allEvents.length} | ` +
+            `бойцов ${alive} | вер ${Object.keys(S.beliefs).length}`);
+}
+
+function setButtons(){
+  document.getElementById('live-btn').className = isLive ? 'on' : '';
+  document.getElementById('play-btn').textContent = isPlaying ? '❚❚' : '▶';
+}
+function goLive(){ isLive = true; isPlaying = false; playT = tMax; setButtons(); refresh(); }
+function onScrub(v){ isLive = false; playT = v; setButtons(); refresh(); }
+function togglePlay(){
+  isLive = false;
+  if(!isPlaying && playT >= tMax) playT = t0;  // с конца — повтор с начала
+  isPlaying = !isPlaying; setButtons();
+}
+
+let lastFrame = performance.now();
+function tick(now){
+  const dt = now - lastFrame; lastFrame = now;
+  if(isPlaying){
+    playT = Math.min(tMax, playT + dt * +document.getElementById('speed').value);
+    if(playT >= tMax){ isPlaying = false; setButtons(); }
+    refresh();
+  }
+  requestAnimationFrame(tick);
+}
+
+// ─────────────────────────────────────────────
+// МОСТ: опрос trace из игры
+// ─────────────────────────────────────────────
+let lastLen = 0;
+
+async function poll(){
+  try{
+    const r = await fetch('/log?t='+Date.now());
+    if(r.ok && r.status!==204){
+      const text = await r.text();
+      if(text.length !== lastLen){
+        const restarted = text.length < lastLen;  // файл перезаписан — новая игра
+        lastLen = text.length;
+        allEvents.length = 0;
+        for(const line of text.split('\n')){
+          const l = line.trim(); if(!l) continue;
+          try{ const e = JSON.parse(l); if(e.t!=null) allEvents.push(e); }catch(_){}
+        }
+        t0 = allEvents.length ? allEvents[0].t : 0;
+        tMax = allEvents.length ? allEvents[allEvents.length-1].t : 0;
+        S = freshState();
+        if(restarted || !L) await pickLevel(levelChoice);
+        if(!view) fitFight();
+        if(isLive) playT = tMax;
+        refresh();
+        autoSelectSpawned(); updateSelInfo(); if(sent.length) renderCmdLog();
+      }
+    }
+  }catch(e){ setStatus('ошибка: '+e.message+' — сервер запущен?'); }
+  setTimeout(poll, 500);
+}
+
+// ─────────────────────────────────────────────
+// ТВОРЧЕСКИЙ РЕЖИМ: команды в игру (server.py → varka_cmd.txt → varka_cmd.script)
+// ─────────────────────────────────────────────
+let tool = 'select';
+let sel = null;              // {kind:'sq'|'npc', id}
+const sent = [];             // [{seq, cmd, args, at}] — наши команды, ответ ищем в trace
+const marks = {};            // цель → {x, z, kind, hard}: куда приказали (рисуем флажок)
+let lastOkSeen = 0;          // сколько cmd_ok/cmd_fail уже обработали (для автовыбора после спавна)
+
+const HINTS = {
+  select:  'клик по бойцу — выбрать его отряд, Shift+клик — одного бойца. ПКМ по карте — «идти» для выбранных.',
+  spawn:   'клик по карте — отряд появится там и будет стоять (на бой реагирует как обычно).',
+  move:    'клик — выбранные идут туда и встают. «Сквозь бой» — не отвлекаются на врага по дороге.',
+  hold:    'клик — встать в точке и держать её.',
+  attack:  'клик по бойцу — выбранные получают его во враги.',
+  hostile: 'клик по бойцу другого отряда — два отряда становятся врагами друг другу.',
+  tp:      'клик — перенести тебя (актёра) в точку. Удобно подойти посмотреть.',
+};
+function setTool(t){
+  tool = t;
+  for(const b of document.querySelectorAll('#tools button')) b.classList.toggle('on', b.dataset.tool===t);
+  document.getElementById('hint').textContent = HINTS[t] || '';
+}
+for(const b of document.querySelectorAll('#tools button')) b.onclick = ()=>setTool(b.dataset.tool);
+setTool('select');
+
+async function send(cmd, args){
+  try{
+    const r = await fetch('/cmd', {method:'POST', body: JSON.stringify({cmd, args})});
+    const j = await r.json();
+    if(j.seq){ sent.push({seq:j.seq, cmd, args, at:Date.now()}); renderCmdLog(); }
+    else setStatus('сервер не принял команду: '+(j.error||r.status));
+    return j.seq;
+  }catch(e){ setStatus('нет связи с сервером: '+e.message); }
+}
+
+function selTarget(){ return sel ? `${sel.kind}:${sel.id}` : null; }
+function selCmd(cmd){
+  const t = selTarget();
+  if(!t){ setStatus('сначала выбери отряд или бойца'); return; }
+  if(cmd==='preset'){
+    if(sel.kind!=='sq'){ setStatus('пресет задаётся отряду, не бойцу'); return; }
+    send('preset', [t, document.getElementById('sel-preset').value]);
+  } else {
+    send(cmd, [t]);
+    if(cmd==='free') delete marks[t];
+    if(cmd==='remove'||cmd==='kill'){ delete marks[t]; sel = null; updateSelInfo(); }
+  }
+}
+
+// ответ игры: последний cmd_ok/cmd_fail с этим seq (после отправки)
+function replyFor(c){
+  for(let i=allEvents.length-1;i>=0;i--){
+    const e = allEvents[i];
+    if((e.ev==='cmd_ok'||e.ev==='cmd_fail') && e.seq===c.seq) return e;
+  }
+  return null;
+}
+function renderCmdLog(){
+  const el = document.getElementById('cmdlog');
+  el.innerHTML = sent.slice(-12).reverse().map(c=>{
+    const r = replyFor(c);
+    const cls = !r ? 'wait' : r.ev==='cmd_ok' ? 'ok' : 'fail';
+    const st  = !r ? ((Date.now()-c.at > 5000) ? 'нет ответа — игра запущена? varka_cmd загружен?' : 'ждём игру…') : (r.info||'');
+    return `<div class="${cls}">#${c.seq} ${c.cmd} ${c.args.join(' ')} — ${st}</div>`;
+  }).join('');
+}
+
+// после спавна сразу выбираем новый отряд — можно тут же отдавать приказы
+function autoSelectSpawned(){
+  const replies = allEvents.filter(e=>e.ev==='cmd_ok' && e.cmd==='spawn');
+  if(replies.length <= lastOkSeen){ lastOkSeen = replies.length; return; }
+  const last = replies[replies.length-1];
+  lastOkSeen = replies.length;
+  const m = /^sq:(\d+)$/.exec(last.info||'');
+  if(m && sent.some(c=>c.seq===last.seq)){ sel = {kind:'sq', id:+m[1]}; updateSelInfo(); }
+}
+
+function npcAtScreen(px, py){
+  let best = null, bd = 14;
+  for(const [id,npc] of Object.entries(S.npcs)){
+    if(playT - npc._t > 3000) continue;
+    const p = w2s(npc.px, npc.pz), d = Math.hypot(p.x-px, p.y-py);
+    if(d < bd){ bd = d; best = {id:+id, npc}; }
+  }
+  return best;
+}
+
+function updateSelInfo(){
+  const el = document.getElementById('sel-info');
+  if(!sel){ el.textContent = 'ничего не выбрано'; return; }
+  const members = Object.entries(S.npcs).filter(([id,n])=> playT-n._t<=3000 && (sel.kind==='sq' ? n.sq===sel.id : +id===sel.id));
+  const comm = members[0] ? members[0][1].comm : '?';
+  el.textContent = sel.kind==='sq' ? `отряд sq:${sel.id} · ${comm} · бойцов ${members.length}` : `боец npc:${sel.id} · ${comm}`;
+}
+
+function mapClick(e, right){
+  if(!view) return;
+  const w = s2w(e.offsetX, e.offsetY), node = nodeAt(w.x, w.z), hit = npcAtScreen(e.offsetX, e.offsetY);
+  const t = right ? 'move' : tool;
+  const hard = document.getElementById('ord-hard').checked ? '1' : '0';
+
+  if(t==='select'){
+    sel = hit ? (e.shiftKey ? {kind:'npc', id:hit.id} : {kind:'sq', id:hit.npc.sq}) : null;
+    updateSelInfo(); draw(); return;
+  }
+  if(t==='attack' || t==='hostile'){
+    if(!sel){ setStatus('сначала выбери, кто атакует'); return; }
+    if(!hit){ setStatus('кликни по бойцу'); return; }
+    if(t==='attack') send('attack', [selTarget(), String(hit.id)]);
+    else send('hostile', [selTarget(), `sq:${hit.npc.sq}`]);
+    return;
+  }
+  if(!node){ setStatus('там нет ноды навмеша — туда нельзя'); return; }
+  if(t==='spawn'){
+    const f = document.getElementById('sp-faction').value, lv = document.getElementById('sp-level').value;
+    send('spawn', [`${f}_sim_squad_${lv}`, String(node.vid), document.getElementById('sp-n').value,
+                   document.getElementById('sp-ghost').checked ? '1' : '0']);
+    return;
+  }
+  if(t==='tp'){ send('tp', [String(node.vid)]); return; }
+  if(t==='move' || t==='hold'){
+    const target = selTarget();
+    if(!target){ setStatus('сначала выбери отряд или бойца'); return; }
+    send('order', [target, t, String(node.vid), hard]);
+    marks[target] = {x:w.x, z:w.z, kind:t, hard:hard==='1'};
+    draw();
+  }
+}
+
+function drawCreative(s, alive){
+  // выбранные — бирюзовое кольцо
+  if(sel){
+    for(const [id,npc] of Object.entries(s.npcs)){
+      if(!alive(npc)) continue;
+      if(sel.kind==='sq' ? npc.sq!==sel.id : +id!==sel.id) continue;
+      const p = w2s(npc.px, npc.pz);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 12, 0, Math.PI*2);
+      ctx.strokeStyle='#4dd0e1'; ctx.lineWidth=2; ctx.stroke();
+    }
+  }
+  // флажки приказов: куда отправили (жёсткий — красный)
+  for(const [target,m] of Object.entries(marks)){
+    const p = w2s(m.x, m.z), col = m.hard ? '#ff5252' : '#4dd0e1';
+    ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y-18); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.x, p.y-18); ctx.lineTo(p.x+11, p.y-14); ctx.lineTo(p.x, p.y-10); ctx.closePath(); ctx.fill();
+    ctx.font='9px monospace'; ctx.fillText(`${target} ${m.kind==='move'?'идти':'стоять'}${m.hard?' !':''}`, p.x+13, p.y-12);
+  }
+}
+
+setInterval(()=>{ if(sent.length) renderCmdLog(); }, 1000);
+
+resize();
+loadIndex().then(()=>{ poll(); requestAnimationFrame(tick); });
+</script>
+</body>
+</html>

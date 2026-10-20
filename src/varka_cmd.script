@@ -1,0 +1,473 @@
+-- varka_cmd.script — v0.1: творческий режим. Мост «наша игра → Anomaly» (20.10.2026)
+--
+-- Вьювер (tools/twin) шлёт команды серверу, сервер дописывает их строками в файл
+-- ../appdata/logs/varka_cmd.txt, этот скрипт читает файл и исполняет новые строки.
+-- Ответ идёт обратно через trace: cmd_ok / cmd_fail. Обратного канала другого нет.
+--
+-- Формат файла:
+--   #session<TAB>id              — первая строка; новый id = сервер перезапущен, счёт с нуля
+--   seq<TAB>команда<TAB>арг...   — команды; исполняем только seq больше последнего
+--
+-- Цели команд: "sq:<id>" — весь отряд, "npc:<id>" — один боец.
+--
+-- ПРИКАЗЫ двух сил (оба — свои действия в GOAP главного планировщика бойца):
+--   мягкий  — «иди/стой, пока нет боя». Перебивает только прогулку симуляции (alife).
+--             Появился враг или опасность — воюет как в обычной игре, потом возвращается.
+--             Паттерн ванильного axr_beh (схема компаньонов).
+--   жёсткий — «сквозь бой». Перебивает и бой, и опасность. Паттерн xrs_kill_wounded.
+-- Приказ «идти» по прибытии превращается в «стоять» там же (той же силы).
+
+local DEBUG     = true
+local CMD_PATH  = "../appdata/logs/varka_cmd.txt"
+local POLL_EVERY = 10       -- кадров между чтениями файла (кадры, а не time_global: под freeze_time время стоит)
+local ARRIVE_SQR = 1.5 * 1.5
+local SLOT_STEP  = 2.5      -- м между бойцами отряда вокруг точки приказа
+
+local EVA_SOFT, ACT_SOFT = 188201, 188202  -- id в главном планировщике (рядом с xrs_kill_wounded 188112)
+local EVA_HARD, ACT_HARD = 188203, 188204
+
+local frame   = 0
+local session = nil   -- id сессии сервера, которую уже читаем
+local last_seq = 0
+
+local squad_order = {}  -- [squad_id] = order
+local npc_order   = {}  -- [npc_id]   = order (перекрывает отрядный)
+local ghost_squad = {}  -- [squad_id] = true: нейтральны к актёру (зритель не лезет в бой)
+
+-- order = { kind = "move"|"hold", vid, pos, hard, stamp }
+
+-- varka_trace пишет строки как есть: кавычка или обратный слэш в тексте ошибки сломали бы JSON
+local function emit(ev, f)
+	if not varka_trace then return end
+	for k, v in pairs(f) do
+		if type(v) == "string" then f[k] = v:gsub("[\\\"]", "'"):gsub("[\r\n\t]", " ") end
+	end
+	varka_trace.emit(0, 0, ev, f)
+end
+
+local function split(line)
+	local t = {}
+	for part in string.gmatch(line, "[^\t]+") do t[#t+1] = part end
+	return t
+end
+
+-- ============================================================================
+-- ЦЕЛИ: "sq:123" / "npc:456" → список онлайн-бойцов
+-- ============================================================================
+
+local function squad_members_online(squad_id)
+	local out = {}
+	local squad = alife_object(squad_id)
+	if not (squad and squad.squad_members) then return out end
+	for k in squad:squad_members() do
+		local o = level.object_by_id(k.id)
+		if o and o:alive() then out[#out+1] = o end
+	end
+	return out
+end
+
+local function resolve(target)
+	local kind, id = string.match(target or "", "^(%a+):(%d+)$")
+	id = tonumber(id)
+	if not id then return nil end
+	if kind == "sq" then return "sq", id, squad_members_online(id) end
+	if kind == "npc" then
+		local o = level.object_by_id(id)
+		return "npc", id, (o and o:alive()) and { o } or {}
+	end
+	return nil
+end
+
+local function order_of(npc)
+	local o = npc_order[npc:id()]
+	if o then return o end
+	local squad = get_object_squad(npc)
+	return squad and squad_order[squad.id] or nil
+end
+
+-- Точка бойца внутри приказа отряда: первый — в центре, остальные кольцом по SLOT_STEP.
+local function slot_vid(npc, order)
+	local cache = db.storage[npc:id()]
+	if not cache then return order.vid end
+	if cache.varka_slot_stamp == order.stamp then return cache.varka_slot_vid end
+
+	local idx = 0
+	local squad = get_object_squad(npc)
+	if squad and not npc_order[npc:id()] then
+		local ids = {}
+		for k in squad:squad_members() do ids[#ids+1] = k.id end
+		table.sort(ids)
+		for i, id in ipairs(ids) do if id == npc:id() then idx = i - 1 end end
+	end
+
+	local vid = order.vid
+	if idx > 0 then
+		local ring  = math.floor((idx - 1) / 6) + 1
+		local angle = ((idx - 1) % 6) * 60 + ring * 30
+		local dir = vector_rotate_y(vector():set(1, 0, 0), angle)
+		local v = level.vertex_in_direction(order.vid, dir, SLOT_STEP * ring)
+		if v and v < 4294967295 and npc:accessible(v) then vid = v end
+	end
+	cache.varka_slot_stamp = order.stamp
+	cache.varka_slot_vid   = vid
+	return vid
+end
+
+-- ============================================================================
+-- GOAP: оценщики «есть приказ» и действие «исполнять приказ»
+-- ============================================================================
+
+class "eva_varka_order" (property_evaluator)
+function eva_varka_order:__init(name, hard) super(nil, name)
+	self.hard = hard
+end
+function eva_varka_order:evaluate()
+	local npc = self.object
+	if not npc:alive() or IsWounded(npc) then return false end
+	local o = order_of(npc)
+	return o ~= nil and (o.hard == true) == self.hard
+end
+
+class "act_varka_order" (action_base)
+function act_varka_order:__init(name, hard) super(nil, name)
+	self.hard = hard
+end
+
+function act_varka_order:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	npc:set_path_type(game_object.level_path)
+	db.storage[npc:id()].varka_order_active = true
+	if varka_trace then
+		varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_start", { hard = self.hard })
+	end
+end
+
+function act_varka_order:execute()
+	action_base.execute(self)
+	local npc = self.object
+	local o = order_of(npc)
+	if not o then return end
+
+	local vid = slot_vid(npc, o)
+	local pos = level.vertex_position(vid)
+	local far = npc:position():distance_to_sqr(pos) > ARRIVE_SQR
+
+	if far then
+		-- жёсткий — бегом без стрельбы; мягкий — шагом, ствол наготове
+		state_mgr.set_state(npc, self.hard and "assault" or "raid", nil, nil, { look_position = pos })
+		utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_order")
+		return
+	end
+
+	if o.kind == "move" then
+		o.kind = "hold"  -- дошли → стоим там же (та же сила приказа)
+		if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_arrive", { vid = vid }) end
+	end
+
+	-- стоим: жёсткий держит пост и стреляет по видимому врагу; мягкий просто стоит наготове
+	local be = npc:best_enemy()
+	if self.hard and be and npc:see(be) then
+		state_mgr.set_state(npc, "hide_fire", nil, nil, { look_object = be })
+	elseif self.hard then
+		state_mgr.set_state(npc, "hide", nil, nil, { look_position = be and be:position() or nil })
+	else
+		state_mgr.set_state(npc, "threat", nil, nil, nil)
+	end
+	utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_order")
+end
+
+function act_varka_order:finalize()
+	local npc = self.object
+	if db.storage[npc:id()] then db.storage[npc:id()].varka_order_active = nil end
+	if varka_trace then
+		varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_end", { hard = self.hard })
+	end
+	action_base.finalize(self)
+end
+
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+
+	manager:add_evaluator(EVA_SOFT, eva_varka_order("eva_varka_order_soft", false))
+	manager:add_evaluator(EVA_HARD, eva_varka_order("eva_varka_order_hard", true))
+
+	-- мягкий: только вне боя и опасности (как axr_beh)
+	local soft = act_varka_order("act_varka_order_soft", false)
+	soft:add_precondition(wp(stalker_ids.property_alive,  true))
+	soft:add_precondition(wp(stalker_ids.property_enemy,  false))
+	soft:add_precondition(wp(stalker_ids.property_danger, false))
+	soft:add_precondition(wp(EVA_HARD, false))
+	soft:add_precondition(wp(EVA_SOFT, true))
+	soft:add_effect(wp(EVA_SOFT, false))
+	manager:add_action(ACT_SOFT, soft)
+
+	-- жёсткий: поверх всего (как xrs_kill_wounded)
+	local hard = act_varka_order("act_varka_order_hard", true)
+	hard:add_precondition(wp(stalker_ids.property_alive, true))
+	hard:add_precondition(wp(EVA_HARD, true))
+	hard:add_effect(wp(EVA_HARD, false))
+	manager:add_action(ACT_HARD, hard)
+
+	-- Кто должен уступать приказу. ВАЖНО: manager:action(id) ищет через lower_bound —
+	-- спроси про id, которого у бойца нет, и получишь СОСЕДНЕЕ действие (условие повиснет
+	-- не туда). Поэтому только действия, которые у сталкера есть всегда.
+	local yield_soft = { xr_actions_id.alife, xr_actions_id.state_mgr + 2 }
+	local yield_hard = { xr_actions_id.alife, xr_actions_id.state_mgr + 2,
+		stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	for _, id in ipairs(yield_soft) do
+		manager:action(id):add_precondition(wp(EVA_SOFT, false))
+	end
+	for _, id in ipairs(yield_hard) do
+		manager:action(id):add_precondition(wp(EVA_HARD, false))
+	end
+	-- добивание тоже уступает жёсткому приказу. Его действие есть не у всех: xrs_kill_wounded
+	-- не регистрирует его зомбированным (и когда выключен в ltx) — тогда не трогаем.
+	if xrs_kill_wounded and character_community(npc) ~= "zombied" and npc:section() ~= "actor_visual_stalker" then
+		manager:action(xrs_kill_wounded.actid):add_precondition(wp(EVA_HARD, false))
+	end
+end
+
+-- ============================================================================
+-- КОМАНДЫ. Каждая: function(args) → true, "инфо" | false, "почему"
+-- ============================================================================
+
+local function vid_pos(vid)
+	vid = tonumber(vid)
+	if not (vid and vid < 4294967295) then return nil end
+	return vid, level.vertex_position(vid)
+end
+
+local CMD = {}
+
+-- spawn <секция_отряда> <vid> <сколько> [ghost 1/0]
+CMD.spawn = function(a)
+	local section, vid, n, ghost = a[1], a[2], tonumber(a[3]) or 3, a[4] ~= "0"
+	local pos
+	vid, pos = vid_pos(vid)
+	if not vid then return false, "плохой vid" end
+	if not ini_sys:section_exist(section) then return false, "нет секции " .. tostring(section) end
+	local gvid = db.actor:game_vertex_id()
+
+	local squad = alife_create(section, pos, vid, gvid)
+	if not squad then return false, "alife_create не создал отряд" end
+
+	-- состав: ровно n бойцов из npc_random секции (create_npc взял бы случайное число)
+	local pool = parse_names(ini_sys:r_string_ex(section, "npc_random") or ini_sys:r_string_ex(section, "npc") or "")
+	if #pool == 0 then return false, "у секции нет npc_random" end
+	local sim = alife()
+	for i = 1, n do
+		local id = squad:add_squad_member(pool[math.random(1, #pool)], pos, vid, gvid)
+		local se = id and sim:object(id)
+		if se then
+			SIMBOARD:setup_squad_and_group(se)
+			SendScriptCallback("squad_on_npc_creation", squad, se)
+		end
+	end
+	if ghost then ghost_squad[squad.id] = true end
+	-- по умолчанию отряд стоит, где родился (мягко: на бой реагирует)
+	squad_order[squad.id] = { kind = "hold", vid = vid, pos = pos, hard = false, stamp = time_global() }
+	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid })
+	return true, "sq:" .. squad.id
+end
+
+-- order <цель> <move|hold> <vid> <hard 1/0>
+CMD.order = function(a)
+	local kind, id = resolve(a[1])
+	if not kind then return false, "плохая цель" end
+	local vid, pos = vid_pos(a[3])
+	if not vid then return false, "плохой vid" end
+	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global() }
+	if kind == "sq" then squad_order[id] = o else npc_order[id] = o end
+	return true, kind .. ":" .. id
+end
+
+-- free <цель> — снять приказы, отдать симуляции / дирижёру
+CMD.free = function(a)
+	local kind, id, list = resolve(a[1])
+	if not kind then return false, "плохая цель" end
+	if kind == "sq" then
+		squad_order[id] = nil
+		for _, o in ipairs(list) do npc_order[o:id()] = nil end
+	else
+		npc_order[id] = nil
+	end
+	return true, a[1]
+end
+
+-- preset <sq> <имя|off|default>
+CMD.preset = function(a)
+	local kind, id = resolve(a[1])
+	if kind ~= "sq" then return false, "нужна цель sq:" end
+	if not varka_director then return false, "дирижёра нет" end
+	local name = a[2]
+	if name == "default" then name = nil end
+	if not varka_director.set_squad_preset(id, name) then return false, "нет пресета " .. tostring(name) end
+	return true, a[1] .. " → " .. tostring(name or "default")
+end
+
+-- hostile <цель A> <цель B> — стравить: каждый из A враг каждому из B и наоборот
+CMD.hostile = function(a)
+	local ka, _, la = resolve(a[1])
+	local kb, _, lb = resolve(a[2])
+	if not (ka and kb) then return false, "плохая цель" end
+	if #la == 0 or #lb == 0 then return false, "кто-то не в онлайне" end
+	for _, x in ipairs(la) do
+		for _, y in ipairs(lb) do
+			x:set_relation(game_object.enemy, y)
+			y:set_relation(game_object.enemy, x)
+		end
+	end
+	return true, #la .. "×" .. #lb
+end
+
+-- attack <цель> <npc_id> — назначить врага (жёсткий приказ, если был, снимается)
+CMD.attack = function(a)
+	local kind, id, list = resolve(a[1])
+	local victim = level.object_by_id(tonumber(a[2]) or -1)
+	if not (kind and victim and victim:alive()) then return false, "плохая цель" end
+	for _, o in ipairs(list) do
+		npc_order[o:id()] = nil
+		o:set_relation(game_object.enemy, victim)
+		o:set_enemy(victim)
+	end
+	if kind == "sq" then squad_order[id] = nil end
+	return true, #list .. " → " .. victim:id()
+end
+
+-- kill <цель> / remove <цель>
+CMD.kill = function(a)
+	local kind, _, list = resolve(a[1])
+	if not kind then return false, "плохая цель" end
+	for _, o in ipairs(list) do o:kill(o) end
+	return true, #list .. " убито"
+end
+
+CMD.remove = function(a)
+	local kind, id, list = resolve(a[1])
+	if not kind then return false, "плохая цель" end
+	if kind == "sq" then
+		local squad = alife_object(id)
+		if squad then
+			for k in squad:squad_members() do alife_release_id(k.id, "varka_cmd remove") end
+		end
+		squad_order[id] = nil
+	else
+		alife_release_id(id, "varka_cmd remove")
+	end
+	return true, a[1]
+end
+
+-- time <множитель> — 1 норма, 0.2 слоу-мо, 3 ускорение
+CMD.time = function(a)
+	local f = tonumber(a[1])
+	if not (f and f > 0) then return false, "нужно число > 0" end
+	exec_console_cmd("time_factor " .. f)
+	return true, tostring(f)
+end
+
+-- freeze <1|0> — заморозить мир (движковая freeze_time). Кадры идут, команды читаются.
+CMD.freeze = function(a)
+	exec_console_cmd("freeze_time " .. (a[1] == "1" and "on" or "off"))
+	return true, a[1] == "1" and "on" or "off"
+end
+
+-- tp <vid> — перенести актёра (камеру-зрителя) к точке
+CMD.tp = function(a)
+	local vid, pos = vid_pos(a[1])
+	if not vid then return false, "плохой vid" end
+	db.actor:set_actor_position(pos)
+	return true, tostring(vid)
+end
+
+-- ============================================================================
+-- ЧТЕНИЕ ФАЙЛА КОМАНД
+-- ============================================================================
+
+local function run(seq, name, args)
+	local fn = CMD[name]
+	if not fn then
+		emit("cmd_fail", { seq = seq, cmd = name, info = "нет такой команды" })
+		return
+	end
+	local ok, res, info = pcall(fn, args)
+	if not ok then
+		emit("cmd_fail", { seq = seq, cmd = name, info = "ошибка Lua: " .. tostring(res) })
+		printf("VARKA-CMD: %s #%s ERROR %s", name, seq, tostring(res))
+	elseif res then
+		emit("cmd_ok", { seq = seq, cmd = name, info = tostring(info or "") })
+		if DEBUG then printf("VARKA-CMD: %s #%s ok %s", name, seq, tostring(info)) end
+	else
+		emit("cmd_fail", { seq = seq, cmd = name, info = tostring(info or "") })
+		if DEBUG then printf("VARKA-CMD: %s #%s fail %s", name, seq, tostring(info)) end
+	end
+end
+
+-- execute=false: только запомнить, докуда файл уже прочитан (старт игры — старые команды не исполняем)
+local function poll(execute)
+	local f = io.open(CMD_PATH, "r")
+	if not f then return end
+	local text = f:read("*a")
+	f:close()
+	if not text or text == "" then return end
+
+	for line in string.gmatch(text, "[^\r\n]+") do
+		local p = split(line)
+		if p[1] == "#session" then
+			if p[2] ~= session then
+				session = p[2]
+				last_seq = 0  -- сервер перезапущен: нумерация заново
+			end
+		else
+			local seq = tonumber(p[1])
+			if seq and seq > last_seq then
+				last_seq = seq
+				if execute then
+					local args = {}
+					for i = 3, #p do args[#args+1] = p[i] end
+					run(seq, p[2], args)
+				end
+			end
+		end
+	end
+end
+
+local function actor_update()
+	frame = frame + 1
+	if frame % POLL_EVERY ~= 0 then return end
+	poll(true)
+end
+
+local function first_update()
+	poll(false)  -- что лежало в файле до загрузки — история, не исполняем
+	printf("VARKA-CMD: ready, session=%s last_seq=%s", tostring(session), tostring(last_seq))
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local id = npc:id()
+	-- флаг в db.storage, а не в своей таблице: после офлайна боец приходит с новым
+	-- планировщиком и новым storage — встраиваемся заново. Дважды в один планировщик нельзя
+	-- (повторный add_evaluator с тем же id — падение движка).
+	local st = db.storage[id]
+	if not st or st.varka_cmd_hooked then return end
+	st.varka_cmd_hooked = true
+	hook_npc(npc)
+	local squad = get_object_squad(npc)
+	if squad and ghost_squad[squad.id] then
+		npc:set_relation(game_object.neutral, db.actor)  -- зритель: отряд не воюет с актёром
+	end
+end
+
+local function npc_death(npc)
+	if npc then npc_order[npc:id()] = nil end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_first_update", first_update)
+	RegisterScriptCallback("actor_on_update", actor_update)
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

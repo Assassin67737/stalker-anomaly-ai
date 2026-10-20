@@ -1,4 +1,6 @@
--- varka_director.script — v0.3: ШТУРМ-пресет (масса держит + один флангер)
+-- varka_director.script — v0.4: оживлён из парковки (20.10.2026)
+--   v0.4: фикс порядка объявлений (мораль падала), трасса dir_plan/dir_moral, пресет на отряд.
+-- v0.3: ШТУРМ-пресет (масса держит + один флангер)
 --
 -- === РАЗВЯЗКА «ПУТАНИЦЫ УРОВНЕЙ» ===
 -- Нет фиксированной лестницы «примитив → пресет → мультисквад». Есть ОДНА рекурсивная
@@ -29,6 +31,9 @@ local ACTIVE_PRESET = "shturm"
 
 -- ============================================================================
 -- ОБЩИЕ ХЕЛПЕРЫ (нейтральные к пресету)
+-- v0.4: подняты выше морали. Раньше each_member объявлялась ПОСЛЕ count_live, и Lua
+-- в count_live искал глобальную each_member (nil) → первая же мораль падала с ошибкой.
+-- Правило Lua: local-функция видна только НИЖЕ своего объявления.
 -- ============================================================================
 
 local function each_member(squad, fn)
@@ -57,6 +62,90 @@ end
 local function owner_alive(id)
 	local o = id and level.object_by_id(id)
 	return o and o:alive()
+end
+
+-- ============================================================================
+-- МОРАЛЬ — скелет v0.1 (считает + логирует, на поведение пока не влияет)
+-- ============================================================================
+
+-- Асимметрия: вниз быстро, вверх медленно
+local MORAL_DECAY_DOWN = 0.05   -- за секунду при падении
+local MORAL_DECAY_UP   = 0.005  -- за секунду при росте
+local SUPPRESS_TTL     = 3000   -- мс: попадание → подавлен на 3 сек
+
+local initial_count = {}  -- [squad_id] = кол-во живых при первом появлении
+local moral_val     = {}  -- [squad_id] = текущая инерционная мораль [0..1]
+local moral_stamp   = {}  -- [squad_id] = time_global последнего тика морали
+local hit_stamp     = {}  -- [npc_id]   = time_global последнего попадания
+
+local function count_live(squad)
+	local n = 0
+	each_member(squad, function() n = n + 1 end)
+	return n
+end
+
+local function is_suppressed(npc_id)
+	local s = hit_stamp[npc_id]
+	return s and (time_global() - s) < SUPPRESS_TTL
+end
+
+-- Мгновенная «целевая» мораль по двум осям — то, куда стремится инерционное число.
+local function target_moral(squad)
+	local sid   = squad.id
+	local total = initial_count[sid] or 1
+	local live  = count_live(squad)
+
+	local cohesion  = live / total
+
+	local not_sup = 0
+	each_member(squad, function(id)
+		if not is_suppressed(id) then not_sup = not_sup + 1 end
+	end)
+	local influence = (live > 0) and (not_sup / live) or 0.0
+
+	return cohesion * 0.7 + influence * 0.3, cohesion, influence
+end
+
+-- Обновляем инерционную мораль отряда (асимметричный дрейф к цели).
+local function update_moral(squad)
+	local sid = squad.id
+	local now = time_global()
+	local dt  = (now - (moral_stamp[sid] or now)) / 1000.0  -- секунды
+	moral_stamp[sid] = now
+
+	-- инициализация начального размера
+	if not initial_count[sid] then
+		initial_count[sid] = count_live(squad)
+		moral_val[sid]     = 1.0
+		if DEBUG then
+			printf("VARKA-MORAL: squad %s INIT total=%d moral=1.00",
+				sid, initial_count[sid])
+		end
+		return moral_val[sid]
+	end
+
+	local target, cohesion, influence = target_moral(squad)
+	local cur = moral_val[sid] or 1.0
+
+	local decay = (target < cur) and MORAL_DECAY_DOWN or MORAL_DECAY_UP
+	local new   = cur + (target - cur) * decay * math.max(dt, 0)
+	new = math.max(0.0, math.min(1.0, new))
+	moral_val[sid] = new
+
+	if DEBUG then
+		printf("VARKA-MORAL: squad %s live=%d/%d coh=%.2f inf=%.2f target=%.2f moral=%.2f->%.2f",
+			sid,
+			count_live(squad), initial_count[sid],
+			cohesion, influence,
+			target, cur, new)
+	end
+
+	return new
+end
+
+-- Публичное API: другие скрипты могут читать мораль отряда.
+function get_squad_moral(squad)
+	return squad and (moral_val[squad.id] or 1.0)
 end
 
 -- Небоёвка (echo жив, belief мёртв): ближайший к echo разведывает, остальные на посту.
@@ -147,14 +236,58 @@ local function announce(key, plan, prev_mode)
 	end
 end
 
+-- v0.4: пресет можно задать отдельному отряду (творческий режим вьювера); иначе ACTIVE_PRESET.
+-- "off" = дирижёр молчит для этого отряда (ваниль + наш поиск без ролей).
+local squad_preset = {}  -- [squad_id] = имя пресета
+
+-- Трасса: план пишем только когда он поменялся (роли/режим), мораль — раз в MORAL_TRACE_MS.
+local MORAL_TRACE_MS = 2000
+local last_sig   = {}  -- [squad_id] = строка-подпись последнего плана
+local moral_next = {}  -- [squad_id] = когда писать мораль в следующий раз
+
+local function plan_sig(plan, preset_name)
+	if not plan then return preset_name .. "|-" end
+	local ids = {}
+	for id in pairs(plan.roles or {}) do ids[#ids+1] = id end
+	table.sort(ids)
+	local parts = {}
+	for _, id in ipairs(ids) do parts[#parts+1] = id .. ":" .. plan.roles[id] end
+	return preset_name .. "|" .. (plan.mode or "-") .. "|" .. table.concat(parts, ",")
+end
+
+local function trace_plan(key, plan, preset_name, moral)
+	if not varka_trace then return end
+	local sig = plan_sig(plan, preset_name)
+	if sig ~= last_sig[key] then
+		last_sig[key] = sig
+		-- roles = "id:роль,id:роль" — вьювер разбирает строку (emit пишет только скаляры)
+		local roles = sig:match("^[^|]*|[^|]*|(.*)$") or ""
+		varka_trace.emit(key, 0, "dir_plan", {
+			preset = preset_name, mode = plan and plan.mode or "idle", roles = roles,
+			flank = plan and plan.flank_id or -1, scout = plan and plan.scout_id or -1,
+		})
+	end
+	local now = time_global()
+	if moral and now >= (moral_next[key] or 0) then
+		moral_next[key] = now + MORAL_TRACE_MS
+		varka_trace.emit(key, 0, "dir_moral", { moral = moral })
+	end
+end
+
 local function update_squad(squad)
 	local key    = squad.id
 	local sample = get_live_member(squad)
 	if not sample then states[key] = nil; return end
 
-	local preset = PRESETS[ACTIVE_PRESET]
+	local preset_name = squad_preset[key] or ACTIVE_PRESET
+	if preset_name == "off" then
+		states[key] = nil
+		trace_plan(key, nil, preset_name, nil)
+		return
+	end
+	local preset = PRESETS[preset_name]
 	if not preset then
-		if DEBUG then printf("VARKA-DIR: НЕТ пресета '%s' — проверь ACTIVE_PRESET", ACTIVE_PRESET) end
+		if DEBUG then printf("VARKA-DIR: НЕТ пресета '%s' — проверь ACTIVE_PRESET", preset_name) end
 		states[key] = nil
 		return
 	end
@@ -166,13 +299,32 @@ local function update_squad(squad)
 		echo   = varka_lkp.get_echo(sample),
 	}
 
+	local moral     = update_moral(squad)
+
 	local prev_mode = states[key] and states[key].mode
 	local plan      = preset.assign(ctx, states[key])
+	if plan then plan.moral = moral end
 	states[key]     = plan
 	announce(key, plan, prev_mode)
+	trace_plan(key, plan, preset_name, moral)
 end
 
 -- ===== ПУБЛИЧНОЕ API =====
+
+-- Пресет для отряда (nil = снять, вернуть ACTIVE_PRESET). Возвращает false, если такого пресета нет.
+function set_squad_preset(squad_id, name)
+	if name and name ~= "off" and not PRESETS[name] then return false end
+	squad_preset[squad_id] = name
+	states[squad_id] = nil  -- новый пресет начинает с чистого листа (флангер выбирается заново)
+	return true
+end
+
+function preset_names()
+	local t = {}
+	for name in pairs(PRESETS) do t[#t+1] = name end
+	table.sort(t)
+	return t
+end
 
 function get_mode(npc)
 	local squad = get_object_squad(npc)
@@ -206,6 +358,16 @@ local function npc_update(npc)
 	update_squad(squad)
 end
 
+local function npc_on_hit(npc, amount, direction, who, bone)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local id = npc:id()
+	hit_stamp[id] = time_global()
+	if DEBUG then
+		printf("VARKA-MORAL: npc %d HIT amount=%.1f -> suppressed for %dms", id, amount, SUPPRESS_TTL)
+	end
+end
+
 function on_game_start()
 	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_hit",    npc_on_hit)
 end

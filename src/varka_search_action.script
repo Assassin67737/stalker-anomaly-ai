@@ -1,4 +1,5 @@
--- varka_search_action.script — v0.17: одна машина (взгляд + ноги + отъедание) + argmax + HOLD
+-- varka_search_action.script — v0.19: + роли дирижёра (флангер в поиске, скаут в глушилке)
+-- v0.17: одна машина (взгляд + ноги + отъедание) + argmax + HOLD
 --
 -- v0.17 добавляет ХВОСТ поиска — команду «ДЕРЖАТЬ» (overwatch, первая косточка дирижёра):
 --   вымел веер → не уходит, а караулит угол HOLD_MS. Стоит на укрытии, смотрит в LKP,
@@ -17,6 +18,11 @@ local DEBUG    = true
 local DWELL_MS = 1600  -- сколько взгляд держится на ноде → «проверено»
 local MOVE_RATE = 500  -- мс между переназначениями цели движения (не каждый фрейм)
 local HOLD_MS  = 15000 -- overwatch: сколько караулить угол после того как вымел веер
+
+-- ФЛАНГ (v0.19: возвращён из ветки varka/override вместе с дирижёром)
+local FLANK_RADIUS  = 12   -- радиус кольца укрытий вокруг LKP (дворовые/оконные дистанции)
+local FLANK_K       = 12   -- сколько пеленгов по кольцу пробуем
+local FLANK_REFRESH = 3000 -- мс между пересчётами цели фланга (масса движется, LKP освежается)
 
 local PROPERTY_BELIEF      = 997
 local ACTION_BELIEF_SEARCH = 996
@@ -142,6 +148,71 @@ local function pick_overwatch(npc, b)
 	return best
 end
 
+-- ===== ФЛАНГ (примитив роли «flank») =====
+--
+-- Флангер определён РЕЛЯЦИОННО: не место, а пеленг, свободный от массы (§флангер).
+-- Центроид массы = где стоят СВОИ (без себя). Флангер берёт укрытие вокруг угрозы,
+-- чей пеленг ОТ угрозы максимально расходится с пеленгом массы → заходит с торца.
+-- Это задача ВЫБОРА ЦЕЛИ, не навигации: ноги — движковые (send_to_vertex), мы лишь
+-- даём умную точку. Ноль рейкастов — чистые вектора на кольце best_cover.
+-- Деградирует красиво: в тесноте расхождения нет → берёт лучшее доступное → фронтал.
+
+local function mass_centroid(npc)
+	local squad = get_object_squad(npc)
+	if not squad then return npc:position() end
+	local sx, sz, cnt = 0, 0, 0
+	local myid = npc:id()
+	for k in squad:squad_members() do
+		if k.id ~= myid then
+			local o = level.object_by_id(k.id)
+			if o and o:alive() and IsStalker(o) then
+				local p = o:position()
+				sx = sx + p.x; sz = sz + p.z; cnt = cnt + 1
+			end
+		end
+	end
+	if cnt == 0 then return npc:position() end
+	return vector():set(sx / cnt, npc:position().y, sz / cnt)
+end
+
+local function pick_flank(npc, b)
+	local T = b.pos
+	local M = mass_centroid(npc)
+	local m_dir = vec_set(T):sub(M); m_dir.y = 0
+	if m_dir:magnitude() < 0.01 then m_dir = vec_set(b.bearing) end
+	m_dir:normalize()
+
+	local best, best_sep = nil, -1
+	for i = 0, FLANK_K - 1 do
+		-- пеленг по кольцу вокруг угрозы (0..360 от направления массы)
+		local dir = vector_rotate_y(vec_set(m_dir), (i / FLANK_K) * 360)
+		local rp  = vector():set(T.x + dir.x * FLANK_RADIUS, T.y, T.z + dir.z * FLANK_RADIUS)
+		local vid = level.vertex_id(rp)
+		if vid and vid < 4294967295 then
+			local npos  = level.vertex_position(vid)
+			local cover = npc:best_cover(npos, T, 6, 1, 150)
+			local cpos  = cover and vec_set(cover:position()) or vec_set(npos)
+			local cvid  = cover and cover:level_vertex_id() or vid
+			local c_dir = vec_set(cpos):sub(T); c_dir.y = 0
+			if c_dir:magnitude() > 0.01 and cvid < 4294967295 then
+				c_dir:normalize()
+				-- расхождение с пеленгом массы: 1 - dot ∈ [0..2], больше = «противоположнее»
+				local sep = 1 - m_dir:dotproduct(c_dir)
+				if sep > best_sep and varka_lots.lot_free(npc, cvid) then
+					best_sep = sep
+					best = { vid = cvid, pos = cpos, w = sep }
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- Роль от дирижёра. Дирижёр может отсутствовать (вынут в парковку) — тогда ролей нет.
+local function role_of(npc)
+	return varka_director and varka_director.get_role(npc) or nil
+end
+
 -- Голос отряда: одна реплика на отряд не чаще BARK_MS. Тема — из ванильного
 -- script_sound_axr.ltx ([search] = fight\searching_enemy). pcall: нет темы — молчим.
 local function bark(npc, theme)
@@ -221,11 +292,40 @@ function action_varka_freeze:execute()
 		if actor_menu then actor_menu.set_msg(1, "[VARKA] FREEZE", 2) end
 	end
 	local e = varka_lkp.get_echo(npc)
-	if e then npc:set_sight(look.fire_point, e.pos) end
+	if not e then return end
+
+	-- РАЗВЕДКА (роль «scout» от дирижёра, v0.19). Дирижёр даёт её, когда belief умер, а echo
+	-- жив — то есть ровно тогда, когда управляет эта глушилка, а не поиск. Поэтому скаут живёт
+	-- здесь (в ветке varka/override он сидел внутри поиска и не мог сработать никогда).
+	if role_of(npc) == "scout" then
+		npc:set_sight(look.fire_point, e.pos)
+		if now >= (self.st.scout_move_next or 0) then
+			self.st.scout_move_next = now + MOVE_RATE
+			local vid = level.vertex_id(e.pos)
+			if vid and vid < 4294967295 then
+				if npc:path_type() ~= game_object.level_path then
+					npc:set_path_type(game_object.level_path)
+				end
+				npc:set_movement_type(move.walk)
+				npc:set_detail_path_type(move.line)
+				utils_obj.send_to_nearest_accessible_vertex(npc, vid)
+				if not self.st.scouting then
+					self.st.scouting = true
+					if varka_trace then
+						varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "scout_go", { vid=vid, sx=e.pos.x, sz=e.pos.z })
+					end
+				end
+			end
+		end
+		return
+	end
+	self.st.scouting = nil
+	npc:set_sight(look.fire_point, e.pos)
 end
 
 function action_varka_freeze:finalize()
 	local npc = self.object
+	self.st.scouting = nil
 	db.storage[npc:id()].varka_active = nil
 	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "freeze_exit", {}) end
 	action_base.finalize(self)
@@ -268,6 +368,9 @@ function action_varka_search:initialize()
 	self.st.move_next    = 0
 	self.st.hold_node    = nil
 	self.st.hold_until   = 0
+	self.st.flank_node    = nil
+	self.st.flank_refresh = 0
+	self.st.flank_arrived = nil
 	db.storage[npc:id()].varka_active = true
 	if varka_trace then
 		varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_start", {
@@ -286,6 +389,54 @@ function action_varka_search:execute()
 
 	local b = varka_lkp.get_belief(npc)
 	if not b then return end
+
+	-- ФЛАНГ (роль «flank» от дирижёра): рвётся к укрытию с торца, смотрит на угрозу.
+	-- Не метёт веер (это дело массы) — идёт на off-axis точку и там караулит.
+	if role_of(npc) == "flank" then
+		local key = varka_lkp.get_squad_key(npc)
+		if not st.flank_node or now >= st.flank_refresh then
+			local fn = pick_flank(npc, b)
+			if fn then
+				st.flank_node    = fn
+				st.flank_refresh = now + FLANK_REFRESH
+				if varka_trace then
+					varka_trace.emit(key, npc:id(), "flank_pick", { vid=fn.vid, w=fn.w, fx=fn.pos.x, fz=fn.pos.z })
+				end
+				if DEBUG then printf("VARKA-FLANK: npc %s -> node %s (sep=%.2f)", tostring(npc:id()), tostring(fn.vid), fn.w) end
+			else
+				if varka_trace then varka_trace.emit(key, npc:id(), "flank_none", {}) end
+				if DEBUG then printf("VARKA-FLANK: npc %s pick_flank=nil (no off-axis cover)", tostring(npc:id())) end
+			end
+		end
+		local fn = st.flank_node
+		if fn then
+			varka_lots.claim_lot(npc, fn.vid)
+			local arrived = npc:position():distance_to_sqr(fn.pos) < 4
+			if arrived then
+				npc:set_sight(look.fire_point, b.pos)
+				if not st.flank_arrived then
+					st.flank_arrived = true
+					if varka_trace then varka_trace.emit(key, npc:id(), "flank_arrive", { vid=fn.vid }) end
+					if DEBUG then printf("VARKA-FLANK: npc %s ARRIVED at flank node %s", tostring(npc:id()), tostring(fn.vid)) end
+				end
+			else
+				st.flank_arrived = nil
+				npc:set_sight(look.path_dir, nil, 0)
+			end
+			if now >= st.move_next then
+				st.move_next = now + MOVE_RATE
+				if fn.vid and fn.vid < 4294967295 then
+					if npc:path_type() ~= game_object.level_path then
+						npc:set_path_type(game_object.level_path)
+					end
+					npc:set_movement_type(move.walk)  -- поднять до move.run для жёсткого рывка
+					npc:set_detail_path_type(move.line)
+					utils_obj.send_to_nearest_accessible_vertex(npc, fn.vid)
+				end
+			end
+		end
+		return
+	end
 
 	-- HOLD-режим (боец вымел веер и караулит угол):
 	if st.hold_node then
@@ -406,6 +557,7 @@ function action_varka_search:finalize()
 	local npc = self.object
 	self.st.sight_node = nil
 	self.st.hold_node  = nil
+	self.st.flank_node = nil
 	db.storage[npc:id()].varka_active = nil
 	varka_lots.release_lots(npc)
 	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), "search_end", {}) end

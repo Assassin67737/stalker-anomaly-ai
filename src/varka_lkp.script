@@ -420,6 +420,21 @@ local function paint(now)
 	end
 end
 
+-- имена типов опасности для трассы (в xr_danger такая же таблица, но local)
+local DANGER_NAMES = {
+	[danger_object.grenade]         = "grenade",
+	[danger_object.entity_corpse]   = "corpse",
+	[danger_object.entity_attacked] = "entity_attacked",
+	[danger_object.attacked]        = "attacked",
+	[danger_object.bullet_ricochet] = "ricochet",
+	[danger_object.enemy_sound]     = "enemy_sound",
+	[danger_object.attack_sound]    = "attack_sound",
+	[danger_object.entity_death]    = "entity_death",
+	[danger_object.hit]             = "hit",
+	[danger_object.sound]           = "sound",
+	[danger_object.visual]          = "visual",
+}
+
 local function npc_update(npc)
 	if not (npc and npc:alive()) then return end
 	local now = time_global()
@@ -432,12 +447,21 @@ local function npc_update(npc)
 		local pos = npc:position()
 		local dir = npc:direction()
 		local st_npc = db.storage[id]
+		-- кто цель, видит ли он её, ранен ли сам, боится ли и добивает ли (разбор боя 20.10)
+		local be = npc:best_enemy()
+		local bd = npc:best_danger()
 		varka_trace.emit(squad_key(npc), id, "npc_pos", {
 			px=pos.x, py=pos.y, pz=pos.z,
 			dx=dir.x, dz=dir.z,
 			rank=npc.character_rank and npc:character_rank() or 0,
 			comm=character_community(npc) or "unknown",
-			active=st_npc and st_npc.varka_active and 1 or 0
+			active=st_npc and st_npc.varka_active and 1 or 0,
+			be=be and be:id() or -1,                       -- -1 = цели нет (0 — это актёр)
+			bsee=be and npc:see(be) and 1 or 0,
+			wnd=npc:wounded() and 1 or 0,
+			dng=xr_danger.has_danger(npc) and 1 or 0,
+			dtype=bd and DANGER_NAMES[bd:type()] or "",
+			kw=xrs_kill_wounded and xrs_kill_wounded.is_under_kill_wounded(npc) and 1 or 0
 		})
 	end
 

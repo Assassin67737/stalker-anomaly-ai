@@ -125,6 +125,8 @@ local function dump_navmesh()
 end
 
 local function on_first_update()
+    -- имя уровня — вьювер берёт подложку по нему (по рамке координат Кордон «вмещает» чужие бои)
+    emit(0, 0, "level", { name = level.name() })
     dump_navmesh()
 end
 

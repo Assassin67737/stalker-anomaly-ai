@@ -100,7 +100,14 @@ import { MeshBVH } from 'three-mesh-bvh';
 const W = (x, y, z) => new THREE.Vector3(x, y, -z);
 const qs = new URLSearchParams(location.search);
 const RUN = qs.get('run');
-const LEVEL = qs.get('level') || 'l07_military';
+let LEVEL = qs.get('level') || 'l07_military';
+let meshReady = false;
+// игра пишет имя уровня в trace (событие level); берём последнее — после переезда оно новое
+function traceLevel(text){
+  let lv = null;
+  for(const m of text.matchAll(/"ev":"level","name":"(\w+)"/g)) lv = m[1];
+  return lv;
+}
 
 const FACTIONS = { stalker:'#4CAF50', bandit:'#FF9800', army:'#8BC34A', military:'#8BC34A', monolith:'#9C27B0',
   freedom:'#2196F3', csky:'#00BCD4', dolg:'#F44336', killer:'#EF5350', ecolog:'#26A69A', greh:'#EF9A9A',
@@ -623,7 +630,16 @@ function toMatch(){
     if(s && (!m || m.side[s.sq])) pts.push([s.x, s.y, s.z]);
   }
   if(m) pts.push([m.start.zx, pts.length ? pts[0][1] : 0, m.start.zz]);
-  if(!pts.length) return;
+  if(!pts.length){
+    // боя нет (новый уровень, пустой trace) — весь уровень сверху-сбоку
+    if(!levelRaw) return;
+    const { lo, hi } = levelRaw;
+    const c = [0, 1, 2].map(i => (lo[i] + hi[i]) / 2), r = Math.hypot(hi[0] - lo[0], hi[2] - lo[2]) * 0.45;
+    controls.target.copy(W(c[0], lo[1], c[2]));
+    camera.position.copy(W(c[0], lo[1] + r * 1.1, c[2] - r * 0.75));
+    eyes = false; setBtn();
+    return;
+  }
   const mn = [0, 1, 2].map(i => Math.min(...pts.map(p => p[i]))), mx = [0, 1, 2].map(i => Math.max(...pts.map(p => p[i])));
   const c = [0, 1, 2].map(i => (mn[i] + mx[i]) / 2);
   const r = Math.max(25, Math.hypot(mx[0] - mn[0], mx[2] - mn[2]) * 0.6);
@@ -780,6 +796,12 @@ async function loadTrace(){
   const r = await fetch(RUN ? RUN : '/log?t=' + Date.now());
   if(!r.ok || r.status === 204) return false;
   const text = await r.text();
+  const lv = traceLevel(text);
+  if(lv && lv !== LEVEL && meshReady){
+    // игрок переехал на другой уровень — грузим его подложку заново
+    const q = new URLSearchParams(location.search); q.set('level', lv); location.search = q;
+    return false;
+  }
   if(text.length === liveLen) return false;
   const restarted = text.length < liveLen;
   liveLen = text.length;
@@ -809,7 +831,12 @@ function loop(now){
 (async () => {
   resize();
   try{
+    if(!qs.get('level')){
+      const r = await fetch(RUN ? RUN : '/log?t=' + Date.now());
+      if(r.ok && r.status !== 204) LEVEL = traceLevel(await r.text()) || LEVEL;
+    }
     const info = await loadMesh(LEVEL);
+    meshReady = true;
     await fillRuns();
     await loadTrace();
     T = RUN ? t0 : tMax;

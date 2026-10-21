@@ -1,0 +1,131 @@
+-- varka_stress.script — v0.1: износ бойца от угрозы смерти (21.10.2026)
+--
+-- Мораль (varka_director) — «верю, что мы победим»: число отряда, у выигрывающих растёт.
+-- Износ — другое: сколько угрозы смерти боец пропустил через себя. Копится у всех, у победителей
+-- тоже, спадает медленно и только в покое. Поэтому отдельное число, а не ещё одна ось морали
+-- (идея юзера 21.10: мораль почти не ломается — ночь, ≤1.4% — ей не хватает давления, которое копится).
+--
+-- Калибровка (Свалка 21.10, 10 боёв): медианный боец за дуэль — 3 попадания (полздоровья), ~9 выстрелов
+-- по нему, 20 с контакта → износ ≈ 0.4 без стойкости; тяжёлый бой (12 попаданий, 100 выстрелов) → 1.
+--
+-- Пока ТОЛЬКО считается и пишется в trace (поле wear в npc_pos) — поведение не меняет.
+-- Потребители потом: мораль (цель × (1 − k × износ отряда)), ствол (дольше целится, дрожит).
+--
+--   износ += раздражитель × (1 − стойкость);  в покое (угрозы нет REST_AFTER мс) −REST в секунду
+--   раздражители: попали в меня · стреляют по мне (ближе — страшнее) · рядом погиб свой ·
+--                 просто контакт (враг известен) — медленная усталость боя
+--   стойкость = max(закалка группировки, ранг) — как стойкость морали: не складываются, берётся
+--               бо́льшее; эксперт и выше любой группировки держит не меньше RANK_K
+
+local RATE       = 1000    -- мс: контакт и отдых считаем раз в секунду на бойца
+local HIT_BASE   = 0.06    -- попадание в меня: база …
+local HIT_K      = 0.20    -- … + доля снятого здоровья × HIT_K
+local HP_SCALE   = 145     -- amount в колбэке — сила удара, не доля здоровья; ночь 21.10: до смерти ≈145
+local FIRE       = 0.010   -- выстрел по мне (я — цель стрелка) на дистанции ≤ FIRE_NEAR …
+local FIRE_NEAR  = 20      -- м; дальше — слабее, как FIRE_NEAR / d, но не меньше FIRE_MIN
+local FIRE_MIN   = 0.25
+local DEATH      = 0.15    -- рядом погиб свой (тот же отряд) …
+local DEATH_R    = 30      -- м; на краю радиуса — половина
+local CONTACT    = 0.003   -- в секунду, пока враг известен: усталость боя
+local REST_AFTER = 10000   -- мс без угрозы — началась передышка
+local REST       = 0.003   -- в секунду: с 1 до 0 за ~5.5 минуты покоя
+
+-- Закалка группировки (юзер 21.10): Монолиту плевать; Грех чуть ниже; ИИГ — наёмники корпораций по
+-- приказу, жизнь не вольная — «шлют риск нахрен»; наёмникам риск — как обед; Свобода — компромисс;
+-- остальные устают нормально (решает ранг).
+local FACTION = {
+	monolith = 1.00,
+	greh     = 0.85,
+	isg      = 0.50,
+	killer   = 0.40,
+	freedom  = 0.25,
+}
+local FACTION_DEFAULT = 0
+
+-- Ранг: от новичка (≤ 3500) растёт до RANK_K и с эксперта (≥ 14500, game_relations.ltx) — плато:
+-- дальше опыт стойкости не прибавляет (юзер 21.10: «после середины ветерана — оно самое»).
+-- Эксперт любой группировки пропускает мимо себя половину угрозы. Ниже — градация по рангу.
+local RANK_LOW, RANK_TOP, RANK_K = 3500, 14500, 0.50
+
+local wear = {}  -- [npc_id] = { w = износ 0..1, threat = time_global последней угрозы, upd = последний пересчёт }
+
+local function clamp01(x) return x < 0 and 0 or (x > 1 and 1 or x) end
+
+local function hardness(npc)
+	local k = FACTION[character_community(npc) or ""] or FACTION_DEFAULT
+	local r = npc.character_rank and npc:character_rank() or 0
+	local kr = RANK_K * clamp01((r - RANK_LOW) / (RANK_TOP - RANK_LOW))
+	return math.max(k, kr)
+end
+
+local function state(id)
+	local s = wear[id]
+	if not s then
+		s = { w = 0, threat = 0, upd = time_global() }
+		wear[id] = s
+	end
+	return s
+end
+
+-- раздражитель g бьёт по бойцу с учётом стойкости; угроза сбрасывает передышку
+local function add(npc, g)
+	if not (npc and IsStalker(npc) and npc:alive()) then return end
+	local s = state(npc:id())
+	s.w = clamp01(s.w + g * (1 - hardness(npc)))
+	s.threat = time_global()
+end
+
+-- износ бойца 0..1 (нет записи — свежий)
+function get(id)
+	local s = wear[id]
+	return s and s.w or 0
+end
+
+-- varka_match.on_fired: стрелок выстрелил, его цель — victim на дистанции d
+function under_fire(victim, d)
+	if not (victim and IsStalker(victim)) then return end
+	local near = (d and d > FIRE_NEAR) and math.max(FIRE_MIN, FIRE_NEAR / d) or 1
+	add(victim, FIRE * near)
+end
+
+local function on_hit(npc, amount, dir, who, bone)
+	if not (amount and amount > 0) then return end
+	add(npc, HIT_BASE + HIT_K * math.min(1, amount / HP_SCALE))
+end
+
+local function on_death(victim, who)
+	if not victim then return end
+	wear[victim:id()] = nil
+	local squad = get_object_squad(victim)
+	if not squad then return end
+	local pos = victim:position()
+	for k in squad:squad_members() do
+		local mate = k.id ~= victim:id() and level.object_by_id(k.id)
+		if mate and mate:alive() then
+			local d = mate:position():distance_to(pos)
+			if d <= DEATH_R then add(mate, DEATH * (1 - 0.5 * d / DEATH_R)) end
+		end
+	end
+end
+
+-- раз в секунду на бойца: контакт копит усталость, покой — снимает
+local function on_update(npc)
+	if not (npc and IsStalker(npc) and npc:alive()) then return end
+	local now = time_global()
+	local s = state(npc:id())
+	local dt = now - s.upd
+	if dt < RATE then return end
+	s.upd = now
+	dt = dt / 1000
+	if npc:best_enemy() then
+		add(npc, CONTACT * dt)
+	elseif now - s.threat > REST_AFTER then
+		s.w = clamp01(s.w - REST * dt)
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", on_update)
+	RegisterScriptCallback("npc_on_hit_callback", on_hit)
+	RegisterScriptCallback("npc_on_death_callback", on_death)
+end

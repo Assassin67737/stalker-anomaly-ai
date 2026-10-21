@@ -1,0 +1,18 @@
+{
+  "id": "l02_duel",
+  "level": "l02_garbage",
+  "limit_s": 180,
+  "zone": {"smart": "random", "r": 15},
+  "spectator": {"aside": 30},
+  "camera": {"up": 8},
+  "clear_r": 150,
+  "ghost": true,
+  "speed": 1,
+  "matchup": "random",
+  "sides": {
+    "A": {"director": "off", "start": "advance",
+          "squads": [{"faction": "random", "tier": "random", "n": 1, "at": {"smart_ring": [30, 70]}}]},
+    "B": {"director": "off", "start": "advance",
+          "squads": [{"faction": "random", "tier": "random", "n": 1, "at": {"smart_ring": [30, 70]}}]}
+  }
+}

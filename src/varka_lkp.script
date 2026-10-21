@@ -437,7 +437,7 @@ local DANGER_NAMES = {
 
 -- Что GOAP делает прямо сейчас: верхнее действие и, если это бой/опасность, действие внутри.
 -- Номера — stalker_ids / xr_actions_id / моды (188xxx); вьювер переводит их в слова.
-local function goap_ids(npc)
+function goap_ids(npc)  -- не local: им же пользуется varka_match (событие shot)
 	local m = npc:motivation_action_manager()
 	if not (m and m:initialized()) then return -1, -1 end
 	local a, sub = m:current_action_id(), -1
@@ -469,6 +469,12 @@ local function npc_update(npc)
 		local wi = npc:active_item()
 		local wsec = wi and wi:section() or ""
 		local wkind = (wi and IsWeapon(wi) and ini_sys:r_string_ex(wsec, "kind")) or ""
+		-- «афк» (21.10: видит врага, патроны есть, не стреляет 5+ с): куда смотрела голова — движок жмёт
+		-- на спуск, только если она довёрнута на врага.
+		-- can_kill_enemy / can_kill_member есть в engine_src (Modded Exes), но НЕ в нашем exe 1.5.3 —
+		-- вызов = краш (21.10). Поля cke/ckm оставлены -1, пока не решим с exe.
+		local hd = be and npc:head_orientation()
+		local cke, ckm = -1, -1
 		varka_trace.emit(squad_key(npc), id, "npc_pos", {
 			px=pos.x, py=pos.y, pz=pos.z,
 			dx=dir.x, dz=dir.z,
@@ -484,7 +490,10 @@ local function npc_update(npc)
 			aid=aid, aid2=aid2,                            -- действие GOAP: верхнее / внутри боя
 			hp=npc.health, wpn=wsec, wk=wkind,
 			mag=(wi and IsWeapon(wi) and wi:get_ammo_in_magazine()) or -1,  -- видно перезарядку
-			cr=npc:body_state() == move.crouch and 1 or 0                    -- сидит ли (позиционка)
+			cr=npc:body_state() == move.crouch and 1 or 0,                   -- сидит ли (позиционка)
+			wear=varka_stress and varka_stress.get(id) or -1,               -- износ от угрозы (varka_stress)
+			hx=hd and hd.x or 0, hz=hd and hd.z or 0,                       -- куда смотрит голова
+			cke=cke, ckm=ckm                                                -- луч ствола: враг / свой (-1 — не меряли)
 		})
 	end
 

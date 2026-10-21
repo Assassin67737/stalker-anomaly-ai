@@ -59,7 +59,7 @@ def bake(path, name):
               open(os.path.join(out, name + '.json'), 'w'), indent=1)
 
     # список уровней — вьювер по нему угадывает, где шёл бой
-    index = sorted(f[:-5] for f in os.listdir(out) if f.endswith('.json') and f != 'index.json')
+    index = sorted(f[:-5] for f in os.listdir(out) if f.endswith('.json') and os.path.exists(os.path.join(out, f[:-5] + '.png')))
     json.dump(index, open(os.path.join(out, 'index.json'), 'w'))
     print(f'{name}: {meta["count"]} нод, картинка {w}×{h}, под верхними спрятано {meta["count"] - len(top)}')
 

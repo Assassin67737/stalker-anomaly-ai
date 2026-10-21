@@ -417,6 +417,28 @@ CMD.tp = function(a)
 	return true, tostring(vid)
 end
 
+-- level <имя_уровня> [смарт] — переехать на другой уровень, как быстрое перемещение ванили
+-- (game_fast_travel). Без смарта — первый по алфавиту смарт уровня. Уровень грузится заново:
+-- команды, лежавшие в файле до загрузки, там уже не исполнятся (first_update их пропускает).
+CMD.level = function(a)
+	local name, want = a[1], a[2]
+	local sim, gg = alife(), game_graph()
+	local pick, se
+	for sname, smart in pairs(SIMBOARD.smarts_by_names) do
+		if sim:level_name(gg:vertex(smart.m_game_vertex_id):level_id()) == name
+			and (not want or sname == want) and (not pick or sname < pick) then
+			pick, se = sname, smart
+		end
+	end
+	if not se then return false, "нет смарта " .. tostring(want or "") .. " на " .. tostring(name) end
+	if name == level.name() then
+		db.actor:set_actor_position(se.position)
+	else
+		ChangeLevel(se.position, se.m_level_vertex_id, se.m_game_vertex_id, VEC_ZERO, true)
+	end
+	return true, name .. " · " .. pick
+end
+
 -- cam <x> <y> <z> <tx> <ty> <tz> — камера деморекорда (demo_record) в точку, взгляд на цель.
 -- Деморекорд не выключаем: тело игрока раннер переносит к бою (онлайн считается от тела),
 -- а свободную камеру — сюда. Угол — как движок разбирает взгляд камеры (FDemoRecord.cpp):
@@ -458,8 +480,24 @@ CMD.hour = function(a)
 	if not (h and h >= 0 and h < 24) then return false, "нужен час 0..23" end
 	local cur = level.get_time_hours() + level.get_time_minutes() / 60
 	local dh = (h - cur) % 24
+	-- уже чуть позже нужного часа (10:12 при h = 10) — не крутим почти сутки вперёд
+	if dh > 22 then return true, string.format("%.1f ~ %d, не трогаю", cur, h) end
 	level.change_game_time(0, math.floor(dh), math.floor((dh % 1) * 60))
 	return true, string.format("%.1f → %d", cur, h)
+end
+
+-- cvar <имя> [значение] — прочитать / выставить числовую консольную переменную ИИ (только ai_*).
+-- Опыты над ванилью без перезапуска: раннер ставит перед серией и возвращает после.
+-- Ответ «имя старое → новое», чтобы значение осталось в trace рядом с матчами.
+CMD.cvar = function(a)
+	local name, v = a[1], tonumber(a[2])
+	if not (name and name:find("^ai_")) then return false, "только ai_*" end
+	local old = get_console():get_float(name)
+	if v then exec_console_cmd(name .. " " .. string.format("%.4f", v)) end
+	local new = get_console():get_float(name)
+	-- незнакомое имя движок молча читает как 0 (21.10: ai_aim_fire_angle есть в engine_src, но не в exe 1.5.3)
+	if v and math.abs(new - v) > 1e-3 then return false, name .. ": exe не знает такой команды" end
+	return true, string.format("%s %.4f → %.4f", name, old, new)
 end
 
 -- quit — закрыть игру (ночной прогон: перед выключением компьютера, чтобы лог дописался)

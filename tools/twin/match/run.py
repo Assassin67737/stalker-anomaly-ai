@@ -16,6 +16,7 @@
     "ghost": true,                       отряды нейтральны к игроку
     "speed": 1,                          time_factor на время матча
     "hour": 10,                          перед серией перевести часы игры до этого часа (бои при свете)
+    "cvars": {"ai_aim_fire_angle": 0.087}, консольные ai_* на серию (опыт над ванилью); после — вернуть как было
     "sides": {
       "A": {"director": "shturm",        пресет | "off" (ваниль) | "default" | "random"
             "start": "advance",          advance — мягко идти к точке (бой важнее), hold — стоять
@@ -38,6 +39,8 @@
     "zone": {"smart": "random", "r": 15}       точка матча — случайный смарт (или имя, или список имён)
     "at": {"smart_ring": [50, 120]}            спавн — смарт на таком расстоянии от точки; у B — с другой стороны
     "spectator": "zone"                         игрок встаёт на точку (с g_god on — безопасно)
+    "spectator": {"aside": 30}                  игрок сбоку от боя: в 30 м от точки поперёк линии A→B
+                                                (на точке он «свой на линии» для ванильного rx_ff)
     "camera": {"up": 18, "back": 25}            если ты в деморекорде (demo_record 1): свободная камера
                                                 переезжает к точке — выше на up, отступив на back, смотрит на точку
   Перед матчем площадка чистится: clear_r м вокруг точки (по умолчанию 150) — чужие отряды без сюжетных
@@ -154,6 +157,21 @@ def place(spec, setup, smarts, rng, lvl=None):
             if side == 'A':
                 ang_a = a
     return zone
+
+
+def aside_point(zone, setup, dist, lvl):
+    """Место зрителя сбоку от боя: перпендикуляр к линии A→B через точку матча.
+    Ночь 21.10: игрок на самой точке — «свой на линии» для rx_ff, 15% блокировок огня."""
+    a, b = setup['A']['squads'][0]['at'], setup['B']['squads'][0]['at']
+    dx, dz = b['x'] - a['x'], b['z'] - a['z']
+    n = math.hypot(dx, dz) or 1
+    px, pz = -dz / n, dx / n
+    for d in (dist, dist * 0.8, dist * 1.25, dist * 0.6, dist * 1.5):
+        for side in (1, -1):
+            x, z = zone['x'] + side * px * d, zone['z'] + side * pz * d
+            if lvl.has_node(x, z):
+                return x, z
+    return zone['x'], zone['z']
 
 
 FACTIONS = ['stalker', 'bandit', 'army', 'freedom', 'duty', 'csky', 'ecolog', 'monolith', 'greh', 'isg',
@@ -395,14 +413,22 @@ def run_one(spec, lvl, game, rng, tag):
 
     print(f"матч {spec['id']} #{tag}" + (f"  точка: {zone['name']}" if zone.get('name') else ''))
     sp = spec.get('spectator')
+    eye = None  # где стоит зритель сбоку — туда же камера
     if sp == 'zone':
         game.call('tp', zone_vid)
+    elif isinstance(sp, dict) and 'aside' in sp:
+        eye = aside_point(zone, setup, sp['aside'], lvl)
+        game.call('tp', lvl.node(*eye))
     elif sp:
         game.call('tp', lvl.node(sp['x'], sp['z']))
     cam = spec.get('camera', {'up': 18, 'back': 25})
     if cam:  # деморекорд: камера к точке матча (без деморекорда команда ничего не делает)
         zy = lvl.y(zone['x'], zone['z'])
-        game.call('cam', round(zone['x'], 2), round(zy + cam.get('up', 18), 2), round(zone['z'] - cam.get('back', 25), 2),
+        if eye:
+            cx, cz = eye
+        else:
+            cx, cz = zone['x'], zone['z'] - cam.get('back', 25)
+        game.call('cam', round(cx, 2), round(zy + cam.get('up', 18), 2), round(cz, 2),
                   round(zone['x'], 2), round(zy + 1, 2), round(zone['z'], 2))
     if sp and not game.dry:
         time.sleep(3)  # после переноса окрестность выходит в онлайн не сразу — иначе чистка её не видит
@@ -487,7 +513,8 @@ def run_one(spec, lvl, game, rng, tag):
     game.buf = []
 
     r = scoring.score(scoring.load(path))
-    r.update(directors=directors, setup=setup, zone=zone, run=os.path.relpath(path, HERE), spec=spec['id'])
+    r.update(directors=directors, setup=setup, zone=zone, run=os.path.relpath(path, HERE), spec=spec['id'],
+             cvars=spec.get('cvars'))
     with open(RESULTS, 'a', encoding='utf-8') as f:
         f.write(json.dumps(r, ensure_ascii=False) + '\n')
     scoring.show(r)
@@ -503,6 +530,35 @@ def single_instance():
     except BlockingIOError:
         raise SystemExit('раннер уже запущен в другом терминале — останови его (Ctrl+C) и запусти заново')
     return f
+
+
+def series(spec, lvl, game, rng, args):
+    """Матчи серии подряд; итоги — списком."""
+    results, fails = [], 0
+    for i in range(args.n):
+        r = None
+        try:
+            for _ in range(10):  # точка у края карты, второй стороне негде встать — другая точка
+                try:
+                    r = run_one(spec, lvl, game, rng, i + 1)
+                    break
+                except RuntimeError as e:
+                    if 'нет места' not in str(e):
+                        raise
+                    print(f'  {e} — другая точка')
+            fails = 0
+        except (RuntimeError, TimeoutError, OSError) as e:
+            # один сбойный матч не роняет серию (ночной прогон); три подряд — игра, скорее всего, упала
+            fails += 1
+            print(f'  СБОЙ матча #{i + 1} ({fails} подряд): {e}')
+            if fails >= 3:
+                print('три сбоя подряд — серия остановлена (игра жива? сервер запущен?)')
+                break
+        if r:
+            results.append(r)
+        if i + 1 < args.n:
+            time.sleep(args.pause)
+    return results
 
 
 def main():
@@ -529,30 +585,17 @@ def main():
         print(f'пары врагов ({src}): ' + ', '.join(f'{a}–{b}' for a, b in enemy_pairs()))
     if 'hour' in spec:  # серия при свете: часы игры вперёд до этого часа (один раз)
         print('часы игры: ' + game.call('hour', spec['hour']))
-    results, fails = [], 0
-    for i in range(args.n):
-        r = None
-        try:
-            for _ in range(10):  # точка у края карты, второй стороне негде встать — другая точка
-                try:
-                    r = run_one(spec, lvl, game, rng, i + 1)
-                    break
-                except RuntimeError as e:
-                    if 'нет места' not in str(e):
-                        raise
-                    print(f'  {e} — другая точка')
-            fails = 0
-        except (RuntimeError, TimeoutError, OSError) as e:
-            # один сбойный матч не роняет серию (ночной прогон); три подряд — игра, скорее всего, упала
-            fails += 1
-            print(f'  СБОЙ матча #{i + 1} ({fails} подряд): {e}')
-            if fails >= 3:
-                print('три сбоя подряд — серия остановлена (игра жива? сервер запущен?)')
-                break
-        if r:
-            results.append(r)
-        if i + 1 < args.n:
-            time.sleep(args.pause)
+    restore = {}
+    for k, v in spec.get('cvars', {}).items():  # ответ «имя старое → новое»: старое вернём после серии
+        info = game.call('cvar', k, v)
+        print('консоль: ' + info)
+        restore[k] = info.split()[1] if not args.dry else None
+    try:
+        results = series(spec, lvl, game, rng, args)
+    finally:
+        for k, v in restore.items():
+            if v is not None:
+                print('консоль назад: ' + game.call('cvar', k, v))
     if len(results) > 1:
         by = {}
         for r in results:

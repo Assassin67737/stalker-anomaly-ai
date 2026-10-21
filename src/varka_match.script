@@ -256,7 +256,103 @@ local function on_hit(npc, amount, dir, who, bone)
 	})
 end
 
+-- ===== выстрелы (21.10) =====
+-- Движок решает «стреляю» по глазам: враг виден, голова довёрнута (CStalkerActionCombatBase::fire);
+-- линию от ствола до цели не проверяет никто — object handler смотрит только «свой на линии».
+-- Поэтому на каждый выстрел NPC пишем: видят ли его глаза врага и свободны ли две линии до груди
+-- врага — от глаз и от ствола (≈ рука + полметра к цели). Лучи — движковый ray_pick по статике,
+-- как в varka_probe. Сколько пуль ушло в стену и почему — считает tools/twin/match/shots.py.
+local RQT_STATIC  = 2       -- collide::rqtStatic
+local MUZZLE_FWD  = 0.5     -- от кисти до дульного среза, м (грубо, для автомата)
+local SHOT_SLACK  = 0.5     -- упёрлись ближе чем за полметра до цели — это уже её укрытие, не наше
+local rp_shot
+
+-- Свободна ли линия a → b: true / false и где упёрлись
+local function line_clear(a, b)
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.5 then return true, d end
+	dir:normalize()
+	rp_shot:set_position(a)
+	rp_shot:set_direction(dir)
+	rp_shot:set_range(d)
+	if rp_shot:query() then
+		local hit = rp_shot:get_distance()
+		return hit >= d - SHOT_SLACK, hit
+	end
+	return true, d
+end
+
+-- Угол между направлением v и линией на цель to, в градусах. yaw_only — только по горизонтали.
+local function angle_to(v, to, yaw_only)
+	if yaw_only then
+		local a = math.atan2(v.x, v.z) - math.atan2(to.x, to.z)
+		a = (a + math.pi) % (2 * math.pi) - math.pi
+		return math.abs(math.deg(a))
+	end
+	local lv, lt = v:magnitude(), to:magnitude()
+	if lv < 1e-4 or lt < 1e-4 then return -1 end
+	local c = (v.x * to.x + v.y * to.y + v.z * to.z) / (lv * lt)
+	return math.deg(math.acos(math.max(-1, math.min(1, c))))
+end
+
+local function on_fired(npc, wpn, ammo)
+	if not (npc and npc.alive and npc:alive()) then return end
+	if not rp_shot then
+		rp_shot = ray_pick()
+		rp_shot:set_flags(RQT_STATIC)
+	end
+	local enemy = npc:best_enemy()
+	local sq = get_object_squad(npc)
+	local f = { wpn = wpn and wpn:section() or "?", ammo = ammo or -1,
+		cr = npc:body_state() == move.crouch and 1 or 0 }
+	if varka_lkp and varka_lkp.goap_ids then
+		local ok, aid, aid2 = pcall(varka_lkp.goap_ids, npc)
+		if ok then f.aid, f.aid2 = aid, aid2 end
+	end
+	if enemy then
+		local chest = utils_obj.safe_bone_pos(enemy, "bip01_spine1")
+		local eye = utils_obj.safe_bone_pos(npc, "bip01_head")
+		local hand = utils_obj.safe_bone_pos(npc, "bip01_r_hand")
+		local to = vector():set(chest):sub(hand)
+		local d = to:magnitude()
+		if d > 0.01 then to:mul(MUZZLE_FWD / d) end
+		local muzzle = vector():set(hand):add(to)
+		local mc, mhit = line_clear(muzzle, chest)
+		local ec, ehit = line_clear(eye, chest)
+		local seen = npc:memory_time(enemy)
+		f.enemy = enemy:id()
+		f.d = npc:position():distance_to(enemy:position())
+		f.see = npc:see(enemy) and 1 or 0
+		f.since = (seen and seen > 0) and (time_global() - seen) or -1   -- мс с последнего «вижу»
+		f.mc, f.mhit = mc and 1 or 0, mhit     -- ствол → грудь врага: свободно / где упёрлись
+		f.ec, f.ehit = ec and 1 or 0, ehit     -- глаза → грудь врага
+		f.ex, f.ey, f.ez = chest.x, chest.y, chest.z
+		-- Насколько стрелок не довернул: движок разрешает огонь, пока взгляд в ai_aim_fire_angle (22.5°)
+		-- от врага. Голову из Lua не достать — пишем тело (по горизонтали) и объект оружия (полный угол).
+		local aim = vector():set(chest):sub(eye)
+		f.ab = angle_to(npc:direction(), aim, true)
+		f.ah = angle_to(npc:head_orientation(), aim, true)  -- голова: по ней движок решает «довернулся ли»
+		if wpn then f.aw = angle_to(wpn:direction(), vector():set(chest):sub(muzzle)) end
+		if varka_stress then varka_stress.under_fire(enemy, f.d) end  -- по нему стреляют — износ
+	end
+	local p = npc:position()
+	f.px, f.py, f.pz = p.x, p.y, p.z
+	emit(sq and sq.id or 0, npc:id(), "shot", f)
+end
+
+-- Колбэк вешаем на каждого бойца один раз; флаг в db.storage — после офлайна боец приходит
+-- с новым storage, и мы встраиваемся заново (как varka_cmd).
+local function hook_shots(npc)
+	if not (npc and IsStalker(npc) and npc:alive()) then return end
+	local st = db.storage[npc:id()]
+	if not st or st.varka_shot_hooked then return end
+	st.varka_shot_hooked = true
+	npc:set_callback(callback.weapon_fired, on_fired)
+end
+
 function on_game_start()
+	RegisterScriptCallback("npc_on_update", hook_shots)
 	RegisterScriptCallback("actor_on_update", tick)
 	RegisterScriptCallback("npc_on_death_callback", on_death)
 	RegisterScriptCallback("npc_on_hit_callback", on_hit)

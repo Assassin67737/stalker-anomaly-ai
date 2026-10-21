@@ -97,8 +97,8 @@ decrease_value				        = 0.01		;Decrease over time to overall threshold
 velocity_factor		            	= 1.0		;Higher value = greater bonus to detection speed when target is moving (depended on movement speed)
 luminocity_factor			        = 0.65		;Low value = easier to see at night
 transparency_threshold	        	= 0.6		;Low value = easier to see through objects (if greater then 1 then enemies are blind)
-still_visible_time                  = 1500		;The time (milliseconds) that the object is still considered visible , even if it is not in the frustum (u32)
-; AI MOD v0.1: было 200 — в тревоге тоже почти мгновенно. 1500мс = в бою держит угол дольше.
+still_visible_time                  = 200		;The time (milliseconds) that the object is still considered visible , even if it is not in the frustum (u32)
+; AI MOD v0.1 поднимал до 1500. Возвращено 200 (21.10): пока цель «видима», движок целится в её НАСТОЯЩУЮ кость — 1.5 с вёл игрока сквозь бетон (мини-ВХ). Память об угле — дело веры, не зрения.
 
 
 

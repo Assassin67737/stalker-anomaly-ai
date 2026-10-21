@@ -141,6 +141,13 @@ details[open]>summary::before{content:'▾ '}
         <button onclick="send('time',['1'])">×1</button>
         <button onclick="send('time',['3'])">×3</button>
       </div>
+      <div class="row" style="margin-top:6px" title="перенести себя на другой уровень (как быстрое перемещение); игра перезагрузит уровень">
+        <select id="go-level">
+          <option value="l01_escape">Кордон</option><option value="l02_garbage">Свалка</option>
+          <option value="l09_deadcity">Мёртвый город</option><option value="l10_limansk">Лиманск</option><option value="pripyat">Припять (ЗП)</option><option value="l07_military">Армейские склады</option>
+        </select>
+        <button onclick="send('level',[document.getElementById('go-level').value])">переехать</button>
+      </div>
       <div class="row" style="margin-top:6px" title="сфера лучей вокруг тебя в игре — сверка запечки зрения (в игре — Scroll Lock)">
         <button onclick="send('probe',['on'])" title="снимок каждые 1,5 с, пока идёшь">эхолот вкл</button>
         <button onclick="send('probe',['off'])">выкл</button>
@@ -443,15 +450,22 @@ async function loadIndex(){
 // Уровень угадываем по самому бою: все vid меньше числа нод и все точки внутри рамки.
 // trace пока не пишет имя уровня — когда начнёт, это станет не нужно.
 function guessLevel(){
+  // игра пишет имя уровня в начале trace (varka_trace, событие level) — ему и верим
+  for(let i=allEvents.length-1; i>=0; i--){
+    const e = allEvents[i];
+    if(e.ev==='level' && levels[e.name]) return e.name;
+  }
+  // старые записи без имени: самый маленький уровень, куда влезает бой
   let maxVid = -1;
   for(const e of allEvents) if(e.vid!==undefined && e.vid>maxVid) maxVid = e.vid;
   const b = fightBounds();
+  let best = null;
   for(const [n,m] of Object.entries(levels)){
     if(maxVid >= m.count) continue;
     if(b && (b.x0 < m.box[0]-5 || b.x1 > m.box[3]+5 || b.z0 < m.box[2]-5 || b.z1 > m.box[5]+5)) continue;
-    return n;
+    if(!best || m.count < levels[best].count) best = n;
   }
-  return null;
+  return best;
 }
 
 async function pickLevel(choice){
@@ -1158,7 +1172,7 @@ async function poll(){
         t0 = allEvents.length ? allEvents[0].t : 0;
         tMax = allEvents.length ? allEvents[allEvents.length-1].t : 0;
         S = freshState();
-        if(restarted || !L) await pickLevel(levelChoice);
+        if(restarted || !L || (levelChoice==='auto' && guessLevel() && guessLevel()!==L.meta.name)) await pickLevel(levelChoice);
         if(!view) fitFight();
         if(isLive) playT = tMax;
         followNewMatch();

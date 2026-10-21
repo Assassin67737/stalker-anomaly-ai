@@ -95,6 +95,15 @@ end
 --                   (синусы от id и времени), без math.random — двойник обязан повторить бой
 --   импульс       — сглаженная производная: «нас давят» = мораль падает, и быстро
 --   состояние     — steady / shaken / broken с гистерезисом: не дребезжит на границе
+--
+-- ГРУППИРОВКА (v0.8, 21.10) — две разные вещи, поэтому два числа, а не один множитель на всё:
+--   фанатизм  z — часть морали, которой обстановка безразлична: цель = z + (1 − z) × цель.
+--                 Монолит (z 0.5) хуже «дрогнул» не бывает: цель не ниже 0.5, а сломлен — ниже 0.30
+--   выучка    d — обстановку видит как есть, но не паникует. Это то же, что даёт РАНГ, поэтому они
+--                 не перемножаются, а берётся бо́льшее: стойкость = max(d, ранг/мастер) → запас
+--                 (падает медленнее, встаёт быстрее). Выучка — преимущество при прочих равных;
+--                 выше её порога решает ранг, и легенда ИИГ = легенда одиночек (юзер, 21.10).
+--                 ИИГ — профи, не фанатики: z мал, d велик
 -- ============================================================================
 
 local M = {
@@ -113,6 +122,24 @@ local M = {
 	IMP_ALPHA = 0.3,                          -- сглаживание импульса
 	VETERAN = 12000, MASTER = 17500,          -- game_relations.ltx: veteran от 12000, master от 17500
 }
+
+-- фанатизм z и выучка d по группировкам (порядок по стойкости — от юзера: Монолит > Грех > ИИГ >
+-- наёмники заметно ниже; остальное — первая прикидка, править на полигоне)
+local FACTION = {
+	monolith = { z = 0.50, d = 0.60 },
+	greh     = { z = 0.35, d = 0.50 },
+	isg      = { z = 0.10, d = 0.80 },
+	killer   = { z = 0.00, d = 0.55 },
+	army     = { z = 0.05, d = 0.45 },
+	dolg     = { z = 0.15, d = 0.45 },
+	freedom  = { z = 0.10, d = 0.20 },
+	csky     = { z = 0.05, d = 0.35 },
+	stalker  = { z = 0.00, d = 0.20 },
+	ecolog   = { z = 0.00, d = 0.10 },
+	bandit   = { z = 0.00, d = 0.05 },
+	renegade = { z = 0.00, d = 0.00 },
+}
+local FACTION_DEFAULT = { z = 0, d = 0.2 }
 
 local moral = {}     -- [squad_id] = { val, stamp, init_w, cap_id, fog, res, imp, state, ... }
 local hit_info = {}  -- [npc_id]   = { t = time_global попадания, blind = стрелка не видел }
@@ -160,10 +187,14 @@ local function moral_init(squad)
 		w, sum_r, n = w + rank_w(r), sum_r + r, n + 1
 	end)
 	local cap_id = top_rank(squad)
+	local fac = FACTION[squad.player_id] or FACTION_DEFAULT
+	-- стойкость: выучка группировки или ранг — что больше (порог, а не произведение)
+	local steady = math.max(fac.d, clamp01((n > 0 and sum_r / n or 0) / M.MASTER))
 	local S = {
 		val = 1.0, stamp = time_global(), init_w = math.max(w, 1), cap_id = cap_id,
 		fog = 0, imp = 0, state = "steady",
-		res = 0.4 + 0.6 * clamp01((n > 0 and sum_r / n or 0) / M.MASTER),
+		res = 0.4 + 0.6 * steady,
+		fac = fac,
 	}
 	moral[squad.id] = S
 	if DEBUG then
@@ -208,8 +239,10 @@ local function moral_axes(squad, S, now)
 	local heavy = varka_intel and varka_intel.heavy_threat(squad) or 0
 
 	local spirit = M.W_INF * inf + M.W_CAP * cap + M.W_FOG * (1 - S.fog)
+	local situation = (M.COH_FLOOR + (1 - M.COH_FLOOR) * coh) * spirit * (1 - M.W_HEAVY * heavy)
+	local z = S.fac.z  -- фанатизм: эта доля морали от обстановки не зависит
 	return { coh = coh, inf = inf, cap = cap, fog = S.fog, near = pinned, wall = wall, heavy = heavy,
-		target = (M.COH_FLOOR + (1 - M.COH_FLOOR) * coh) * spirit * (1 - M.W_HEAVY * heavy) }
+		target = z + (1 - z) * situation }
 end
 
 local function update_moral(squad)
@@ -234,6 +267,7 @@ local function update_moral(squad)
 	target = clamp01(target + M.NOISE_AMP * math.exp(-z * z) * noise(squad.id, now))
 
 	-- асимметрия, согнутая запасом: богатый запасом падает медленнее и быстрее встаёт
+	-- (выучка группировки входит в запас при появлении — см. moral_init)
 	local rate = (target < cur) and M.DOWN * (1.5 - S.res) or M.UP * (0.5 + S.res)
 	local new = clamp01(cur + (target - cur) * math.min(1, rate * dt))
 
@@ -334,9 +368,11 @@ PRESETS.shturm = {
 -- v0.7: пресеты с пьесой на КОНТАКТЕ (varka_plays). Вне контакта — как ГРЕХ / ШТУРМ.
 --   front — ФРОНТ: линия с секторами огня, держат.
 --   bound — ПЕРЕКАТЫ: двойки, одна прикрывает, другая перебегает вперёд.
+--   cover — ИЗ УКРЫТИЯ (21.10): «держись здесь», бой ведёт ванильный axr_fight_from_cover.
 -- ----------------------------------------------------------------------------
 PRESETS.front = { name = "front", combat = "front", assign = PRESETS.greh.assign }
 PRESETS.bound = { name = "bound", combat = "bound", assign = PRESETS.shturm.assign }
+PRESETS.cover = { name = "cover", combat = "cover", assign = PRESETS.greh.assign }
 
 -- ============================================================================
 -- ПОСЛЕ БОЯ — перегруппировка (v0.5, 20.10.2026). Пьеса aswr_to_threat из конструктора:
@@ -698,7 +734,7 @@ local function trace_plan(key, plan, preset_name, moral_v)
 		varka_trace.emit(key, 0, "dir_moral", {
 			moral = moral_v, target = S.target or moral_v, imp = S.imp, st = S.state, res = S.res,
 			coh = ax.coh or 1, inf = ax.inf or 1, cap = ax.cap or 1, fog = ax.fog or 0, near = ax.near and 1 or 0,
-			wall = ax.wall or 0, heavy = ax.heavy or 0,
+			wall = ax.wall or 0, heavy = ax.heavy or 0, fz = S.fac.z, fd = S.fac.d,
 		})
 	end
 end

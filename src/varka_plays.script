@@ -1,4 +1,6 @@
--- varka_plays.script — v0.1: пьесы активной фазы боя (20.10.2026)
+-- varka_plays.script — v0.3: ИЗ УКРЫТИЯ — точки цепью, не кучей (21.10)
+-- v0.2: + ИЗ УКРЫТИЯ (пресет cover — ванильный axr_fight_from_cover, 21.10)
+-- v0.1: пьесы активной фазы боя (20.10.2026)
 --
 -- До этого дирижёр молчал, пока бойцы видят врага: роли работали только в поиске (враг пропал).
 -- Здесь — пьесы на КОНТАКТЕ (кто-то из отряда видит врага). Руки — жёсткий приказ дирижёра
@@ -143,7 +145,9 @@ end
 
 -- ===== ФРОНТ =====
 
-local function plan_front(key, p, list, threat)
+-- Линия поперёк направления на угрозу: каждому бойцу огневая точка через SPACING и свой сектор.
+-- fn(m, vid, look) — что делать с точкой (ФРОНТ — приказ, ИЗ УКРЫТИЯ — «держись здесь»).
+local function line_slots(list, threat, fn)
 	local c, fwd, right = axes(list, threat)
 	table.sort(list, function(a, b) return lateral(a.obj:position(), c, right) < lateral(b.obj:position(), c, right) end)
 	local cvid = level.vertex_id(c)
@@ -154,10 +158,48 @@ local function plan_front(key, p, list, threat)
 		local vid = firing_spot(step(cvid, right, off), threat, used)
 		used[#used+1] = level.vertex_position(vid)
 		local look = vec_set(threat):add(vector():set(right.x * off * 1.5, 0, right.z * off * 1.5))
-		order(p, m.id, vid, look)
+		fn(m, vid, look)
 	end
+end
+
+local function plan_front(key, p, list, threat)
+	line_slots(list, threat, function(m, vid, look) order(p, m.id, vid, look) end)
 	p.plan_t = time_global()
 	trace_slots(key, p)
+end
+
+-- ===== ИЗ УКРЫТИЯ (пресет cover, v0.2 — 21.10) =====
+-- Руки — не наш приказ, а ванильный модуль Alundaio axr_fight_from_cover (id 188118). Он стоит у
+-- КАЖДОГО сталкера и спит, пока у бойца не задана переменная fight_from_point (ваниль ставит её
+-- только компаньонам по «жди здесь»). Ставим её = «держись здесь»: модуль сам ищет укрытие в 1–10 м
+-- от точки (движковый best_cover), сидит/стоит по высоте укрытия, стреляет из поз state_mgr,
+-- раз в 3–8 с меняет точку. Точки — цепью, как во ФРОНТЕ, там, где отряд стоял в момент контакта:
+-- враг придёт сам. v0.3: раньше точкой было место бойца — все четверо в 3 м друг от друга, укрытия
+-- одни на всех, свои на линии огня (ванильный rx_ff «не стреляй» большую часть боя).
+
+local function set_cover_point(p, m, vid)
+	save_var(m.obj, "fight_from_point", vid)
+	p.ids[m.id], p.slots[m.id] = true, vid
+end
+
+local function plan_cover(key, p, list, threat)
+	if not next(p.ids) then
+		line_slots(list, threat, function(m, vid) set_cover_point(p, m, vid) end)
+		trace_slots(key, p)
+		return
+	end
+	local fresh = false
+	for _, m in ipairs(list) do  -- новенький в отряде — держится там, где стоит
+		if not p.ids[m.id] then set_cover_point(p, m, m.obj:level_vertex_id()); fresh = true end
+	end
+	if fresh then trace_slots(key, p) end
+end
+
+local function clear_cover(p)
+	for id in pairs(p.ids) do
+		local o = level.object_by_id(id)
+		if o then save_var(o, "fight_from_point", nil) end
+	end
 end
 
 -- ===== ПЕРЕКАТЫ (вперёд sign=1, назад sign=−1) =====
@@ -207,7 +249,8 @@ end
 function stop(key, reason)
 	local p = plays[key]
 	if not p then return end
-	for id in pairs(p.ids) do varka_cmd.set_dir_order(id, nil) end
+	if p.name == "cover" then clear_cover(p)
+	else for id in pairs(p.ids) do varka_cmd.set_dir_order(id, nil) end end
 	plays[key] = nil
 	cool[key] = cool[key] or {}
 	cool[key][p.name] = time_global() + COOL
@@ -231,7 +274,7 @@ local function cooling(key, name)
 end
 
 -- Вызывается дирижёром каждый тик отряда в бою. combat — пьеса пресета на контакте ("front" |
--- "bound" | nil), ms — состояние морали. Возвращает план { mode, roles } или nil.
+-- "bound" | "cover" | nil), ms — состояние морали. Возвращает план { mode, roles } или nil.
 function update(squad, key, threat_hint, ms, combat)
 	if not (varka_cmd and varka_cmd.set_dir_order and varka_eyes) then return nil end
 	local list = members(squad)
@@ -268,8 +311,11 @@ function update(squad, key, threat_hint, ms, combat)
 		if cooling(key, name) then return nil end
 		p = start(key, name, want == "withdraw" and ("morale " .. ms.state) or "contact", #list)
 		p.req = want
-		if name == "front" then plan_front(key, p, list, threat)
+		if name == "cover" then plan_cover(key, p, list, threat)
+		elseif name == "front" then plan_front(key, p, list, threat)
 		else plan_bound(key, p, list, threat, name == "withdraw" and -1 or 1) end
+	elseif p.name == "cover" then
+		plan_cover(key, p, list, threat)  -- новенький в отряде — тоже «держись здесь»
 	elseif p.name == "front" then
 		if now - (p.plan_t or 0) > REPLAN then plan_front(key, p, list, threat) end
 	else
@@ -284,7 +330,7 @@ function update(squad, key, threat_hint, ms, combat)
 
 	local roles = {}
 	for _, m in ipairs(list) do
-		if p.name == "front" then roles[m.id] = "front"
+		if p.name == "front" or p.name == "cover" then roles[m.id] = p.name
 		else roles[m.id] = p.name .. ((p.moving and p.moving[m.id]) and "_move" or "_cover") end
 	end
 	return { mode = p.name, roles = roles, threat = threat }

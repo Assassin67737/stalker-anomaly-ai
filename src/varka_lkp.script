@@ -482,7 +482,9 @@ local function npc_update(npc)
 			dtype=bd and DANGER_NAMES[bd:type()] or "",
 			kw=xrs_kill_wounded and xrs_kill_wounded.is_under_kill_wounded(npc) and 1 or 0,
 			aid=aid, aid2=aid2,                            -- действие GOAP: верхнее / внутри боя
-			hp=npc.health, wpn=wsec, wk=wkind
+			hp=npc.health, wpn=wsec, wk=wkind,
+			mag=(wi and IsWeapon(wi) and wi:get_ammo_in_magazine()) or -1,  -- видно перезарядку
+			cr=npc:body_state() == move.crouch and 1 or 0                    -- сидит ли (позиционка)
 		})
 	end
 

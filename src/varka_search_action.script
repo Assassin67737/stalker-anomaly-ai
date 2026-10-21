@@ -1,4 +1,11 @@
--- varka_search_action.script — v0.21: оружие при входе — object.idle вместо fire2 (краши 20.10)
+-- varka_search_action.script — v0.23: одно действие под ванильным id post_combat_wait (краш 20.10 найден)
+-- v0.23: КРАШ 0x1690F4400 / 0x140000942 = наши id 996 / 995. Убийца кричит «враг убит»
+--   (CAI_Stalker::Die → notify_on_wounded_or_killed → can_cry_enemy_is_wounded): движок делает
+--   switch по id текущего действия боевого планировщика, default = NODEFAULT (в релизе — без
+--   проверки границ) → чужой id = прыжок в мусор. Ваниль сама кладёт в бой только свои id.
+--   Лечение: freeze и search — режимы ОДНОГО действия под id 34 (action_post_combat_wait); ваниль
+--   (post_combat_idle.script) подменяет его тем же способом и с теми же условиями.
+-- v0.21: оружие при входе — object.idle вместо fire2 (краши 20.10)
 -- v0.20: глушилка уважает фазу «после боя» (присел, смотрит на угрозу)
 -- v0.19: + роли дирижёра (флангер в поиске, скаут в глушилке)
 -- v0.17: одна машина (взгляд + ноги + отъедание) + argmax + HOLD
@@ -26,9 +33,8 @@ local FLANK_RADIUS  = 12   -- радиус кольца укрытий вокр�
 local FLANK_K       = 12   -- сколько пеленгов по кольцу пробуем
 local FLANK_REFRESH = 3000 -- мс между пересчётами цели фланга (масса движется, LKP освежается)
 
-local PROPERTY_BELIEF      = 997
-local ACTION_BELIEF_SEARCH = 996
-local ACTION_VARKA_FREEZE  = 995  -- глушилка: перехват когда belief нет
+-- id действия — ванильный (см. v0.23): свой id в боевом планировщике роняет движок
+local ACTION_POST_COMBAT = stalker_ids.action_post_combat_wait  -- 34
 
 local FREEZE_LOG_RATE = 3000  -- мс между логами в freeze-режиме
 
@@ -259,7 +265,7 @@ end
 -- ===== ГЛУШИЛКА: action_varka_freeze =====
 --
 -- Перехватывает управление когда belief отсутствует (post_combat_wait, patrol и т.д. не нужны).
--- Precondition: enemy=true + PROPERTY_BELIEF=false + weight=0 → дешевле любой ванили.
+-- Режим диспетчера action_varka_post_combat (v0.23), когда belief нет: enemy=true + weight=0.
 -- Эффект: enemy=false (та же цель что у search-action).
 -- Поведение: NPC встаёт как вкопанный, смотрит на echo-точку если есть.
 -- Диагностика: VARKA-FREEZE в логе каждые 3с + HUD-флаш "[VARKA] FREEZE".
@@ -347,14 +353,9 @@ function action_varka_freeze:finalize()
 	if DEBUG then printf("VARKA-FREEZE: npc %s exited freeze", npc:id()) end
 end
 
--- ===== EVALUATOR =====
+-- ===== ЖИВ ЛИ BELIEF (был evaluator, v0.23 — проверка внутри диспетчера) =====
 
-class "evaluator_belief_search" (property_evaluator)
-function evaluator_belief_search:__init(storage, name) super(nil, name)
-	self.st = storage
-end
-function evaluator_belief_search:evaluate()
-	local npc = self.object
+local function belief_alive(npc)
 	if not npc:alive()  then return false end
 	if IsWounded(npc)   then return false end
 	local b = varka_lkp.get_belief(npc)
@@ -582,43 +583,77 @@ function action_varka_search:finalize()
 	if DEBUG then printf("VARKA-ACT: npc %s search complete", npc:id()) end
 end
 
+-- ===== ДИСПЕТЧЕР (v0.23): одно действие, два режима =====
+--
+-- Раньше поиск и глушилка были двумя действиями со своими id, и между ними переключал
+-- планировщик по свойству «belief жив». Теперь планировщик видит одно действие (id 34), а
+-- переключает оно само — тем же порядком, что движок: finalize старого режима → initialize
+-- нового. Сами режимы не менялись: это те же классы, их методы зовутся с self диспетчера
+-- (им нужны только self.object и self.st).
+
+local MODES = { search = action_varka_search, freeze = action_varka_freeze }
+
+local function mode_of(npc)
+	return belief_alive(npc) and "search" or "freeze"
+end
+
+class "action_varka_post_combat" (action_base)
+function action_varka_post_combat:__init(npc, storage, name) super(nil, name)
+	self.st = storage
+end
+
+function action_varka_post_combat:initialize()
+	self.mode = mode_of(self.object)
+	MODES[self.mode].initialize(self)
+end
+
+function action_varka_post_combat:execute()
+	local m = mode_of(self.object)
+	if m ~= self.mode then
+		MODES[self.mode].finalize(self)
+		self.mode = m
+		MODES[m].initialize(self)
+	end
+	MODES[self.mode].execute(self)
+end
+
+function action_varka_post_combat:finalize()
+	if self.mode then MODES[self.mode].finalize(self) end
+	self.mode = nil
+end
+
 -- ===== РЕГИСТРАЦИЯ =====
 
+-- true — подключено; false — попробовать на следующем апдейте
 local function add_belief_search(npc)
 	local manager = npc:motivation_action_manager()
-	if not manager then return end
+	if not manager then return false end
 	local combat_action = manager:action(stalker_ids.action_combat_planner)
 	local combat_planner = cast_planner(combat_action)
-	if not (combat_action and combat_planner) then return end
+	if not (combat_action and combat_planner) then return false end
+	-- Ванильное действие 34 удаляется (delete). Если оно сейчас идёт — подождать: удалить
+	-- текущее действие = та же дыра, что и краш.
+	if combat_planner:initialized() and combat_planner:current_action_id() == ACTION_POST_COMBAT then
+		return false
+	end
 
 	db.storage[npc:id()].varka_search_st = {}
 	local storage = db.storage[npc:id()].varka_search_st
 
-	combat_planner:add_evaluator(PROPERTY_BELIEF,
-		evaluator_belief_search(storage, "evaluator_belief_search"))
-
-	local action = action_varka_search(npc, storage, "action_varka_search")
+	-- условия — как у ванили (post_combat_idle.script) и как были у поиска/глушилки
+	combat_planner:remove_action(ACTION_POST_COMBAT)
+	local action = action_varka_post_combat(npc, storage, "action_varka_post_combat")
 	action:add_precondition(world_property(stalker_ids.property_enemy,              true))
 	action:add_precondition(world_property(stalker_ids.property_pure_enemy,         false))
 	action:add_precondition(world_property(stalker_ids.property_critically_wounded, false))
-	action:add_precondition(world_property(PROPERTY_BELIEF,                         true))
 	action:add_effect(world_property(stalker_ids.property_enemy, false))
 	action:set_weight(0)
-	combat_planner:add_action(ACTION_BELIEF_SEARCH, action)
-
-	-- ГЛУШИЛКА: freeze-action — перехватывает когда belief нет (вместо ванили)
-	local freeze = action_varka_freeze(npc, storage, "action_varka_freeze")
-	freeze:add_precondition(world_property(stalker_ids.property_enemy,              true))
-	freeze:add_precondition(world_property(stalker_ids.property_pure_enemy,         false))
-	freeze:add_precondition(world_property(stalker_ids.property_critically_wounded, false))
-	freeze:add_precondition(world_property(PROPERTY_BELIEF,                         false))
-	freeze:add_effect(world_property(stalker_ids.property_enemy, false))
-	freeze:set_weight(0)
-	combat_planner:add_action(ACTION_VARKA_FREEZE, freeze)
+	combat_planner:add_action(ACTION_POST_COMBAT, action)
 
 	if DEBUG then
-		printf("VARKA-ACT: npc %s — belief-search + freeze registered in GOAP", npc:id())
+		printf("VARKA-ACT: npc %s — belief-search + freeze registered in GOAP (id %s)", npc:id(), ACTION_POST_COMBAT)
 	end
+	return true
 end
 
 local function npc_update(npc)
@@ -626,8 +661,7 @@ local function npc_update(npc)
 	if character_community(npc) == "zombied" then return end
 	local id = npc:id()
 	if initialized[id] then return end
-	initialized[id] = true
-	add_belief_search(npc)
+	initialized[id] = add_belief_search(npc) or nil
 end
 
 local function npc_death(npc)

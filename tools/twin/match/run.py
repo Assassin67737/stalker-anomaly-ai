@@ -15,6 +15,7 @@
     "spectator": {"x": 30, "z": 40},     куда поставить игрока смотреть (рядом — иначе отряды уйдут в офлайн)
     "ghost": true,                       отряды нейтральны к игроку
     "speed": 1,                          time_factor на время матча
+    "hour": 10,                          перед серией перевести часы игры до этого часа (бои при свете)
     "sides": {
       "A": {"director": "shturm",        пресет | "off" (ваниль) | "default" | "random"
             "start": "advance",          advance — мягко идти к точке (бой важнее), hold — стоять
@@ -22,15 +23,17 @@
       "B": {...}
     }
   }
-  faction: freedom duty stalker bandit army monolith csky ecolog greh isg;  tier: novice advanced veteran
+  faction: freedom duty stalker bandit army monolith csky ecolog greh isg killer renegade;  tier: novice advanced veteran
+           (killer — наёмники, отряды merc_sim_squad_*; renegade — ренегаты)
   Точки — в метрах игры (x, z), как во вьювере под мышью; раннер сам находит ноду.
 
   Разброс (каждый матч заново, итог пишется в results.jsonl → setup):
     "faction": ["freedom","duty"]  "tier": "random" или список   "n": [3, 6]   "at": [{x,z}, {x,z}, ...]
     "swap": true — с вероятностью ½ стороны меняются местами спавна
-    "matchup": "random" — фракции и ранги сторон выбираются по правилам пар (pick_matchup): никогда
-                          одна фракция против себя; Грех — только против Монолита и ИИГ; ИИГ против
-                          остальных (кроме Монолита/Греха) — только на ступень ниже; Монолит — без ограничений
+    "matchup": "random" — фракции и ранги сторон выбираются по правилам пар (pick_matchup): только
+                          ВРАГИ по отношениям группировок (≤ -1000 в обе стороны; игра отвечает на
+                          команду rel, без игры — базовая матрица game_relations.ltx); ИИГ против
+                          всех, кроме Монолита и Греха, — на ступень ниже по рангу
   Вся локация (смарт-террейны — места, куда ходит симуляция; список игра выгружает сама, кэш levels/<уровень>_smarts.json):
     "zone": {"smart": "random", "r": 15}       точка матча — случайный смарт (или имя, или список имён)
     "at": {"smart_ring": [50, 120]}            спавн — смарт на таком расстоянии от точки; у B — с другой стороны
@@ -45,11 +48,12 @@
   python3 match/run.py matches/l07_square.json --n 20     серия (датасет): игра крутит матчи сама
   python3 match/run.py matches/l07_square.json --dry      только показать команды
 
-Уборка (поиск краша 20.10 — включаем по одной): --cleanup none | clear | clear2 | vanish | all (через запятую)
+Уборка: --cleanup none | clear | clear2 | vanish | all (через запятую). По умолчанию all (21.10): краш 20.10
+  оказался не от уборки (свои id в боевом планировщике), а выжившие прошлого матча влезали в следующий.
   clear  — чистка площадки перед спавном (чужие отряды, трупы, брошенное оружие)
   clear2 — повторная чистка перед стартом (только чужие отряды)
-  vanish — убрать выживших после матча (убить → удалить)
-  по умолчанию none: ничего не убираем, выжившие остаются на старом месте
+  vanish — убрать выживших после матча (без убийства: перевести в офлайн → удалить)
+  none   — ничего не убирать, выжившие остаются на старом месте
 """
 import argparse
 import json
@@ -71,7 +75,7 @@ TRACE = os.environ.get('VARKA_TRACE', '/mnt/games/ANOMALY_DEV/appdata/logs/varka
 SERVER = os.environ.get('VARKA_SERVER', 'http://localhost:8766')
 RUNS = os.path.join(HERE, 'runs')
 RESULTS = os.path.join(HERE, 'results.jsonl')
-RANDOM_DIRECTORS = ['shturm', 'greh', 'front', 'bound', 'off']
+RANDOM_DIRECTORS = ['shturm', 'greh', 'front', 'bound', 'cover', 'off']
 RUN_STAMP = time.strftime('%H%M%S')
 TIERS = ['novice', 'advanced', 'veteran']
 
@@ -152,15 +156,73 @@ def place(spec, setup, smarts, rng, lvl=None):
     return zone
 
 
-FACTIONS = ['stalker', 'bandit', 'army', 'freedom', 'duty', 'csky', 'ecolog', 'monolith', 'greh', 'isg']
+FACTIONS = ['stalker', 'bandit', 'army', 'freedom', 'duty', 'csky', 'ecolog', 'monolith', 'greh', 'isg',
+            'killer', 'renegade']
+COMMUNITY = {'duty': 'dolg'}         # имя в спеке → группировка в игре (остальные совпадают)
+SQUAD_PREFIX = {'killer': 'merc'}    # имя в спеке → префикс секции отряда <префикс>_sim_squad_<ранг>
+ENEMY = -1000                        # game_relations.script: ENEMIES
+RELATIONS_LTX = '/mnt/games/ANOMALY_DEV/tools/_unpacked/configs/creatures/game_relations.ltx'
+RELATIONS = {}                       # (группировка, группировка) → отношение; заполняет load_relations
+
+
+def relations_from_ltx():
+    """Базовая матрица из конфига (такой она бывает в начале новой игры)."""
+    names, rel = [], {}
+    for line in open(RELATIONS_LTX, encoding='latin-1'):
+        line = line.split(';')[0]
+        if line.strip().startswith('communities') and '=' in line and not names:
+            parts = [p.strip() for p in line.split('=', 1)[1].split(',')]
+            names = parts[0::2]
+        elif '=' in line and names:
+            row, vals = line.split('=', 1)
+            vals = [v.strip() for v in vals.split(',') if v.strip()]
+            if row.strip() in names and len(vals) == len(names):
+                for col, v in zip(names, vals):
+                    rel[(row.strip(), col)] = int(v)
+    return rel
+
+
+def load_relations(game):
+    """Отношения из живой игры (в Anomaly они меняются по ходу игры); без игры — из конфига."""
+    comms = [COMMUNITY.get(f, f) for f in FACTIONS]
+    base = relations_from_ltx()
+    if game.dry:
+        RELATIONS.update(base)
+        return 'конфиг'
+    try:
+        info = game.call('rel', *comms)
+    except (RuntimeError, TimeoutError) as e:   # старый varka_cmd без rel — конфиг
+        print(f'  отношения: игра не ответила ({e}) — беру game_relations.ltx')
+        RELATIONS.update(base)
+        return 'конфиг'
+    for item in info.split(';'):
+        pair, v = item.rsplit(':', 1)
+        a, b = pair.split('>')
+        RELATIONS[(a, b)] = int(float(v))
+    diff = [f'{a}>{b} {base.get((a, b))}→{v}' for (a, b), v in RELATIONS.items() if base.get((a, b)) != v]
+    if diff:
+        print('  отношения отличаются от конфига: ' + ', '.join(sorted(diff)))
+    return 'игра'
+
+
+def enemies(fa, fb):
+    ca, cb = COMMUNITY.get(fa, fa), COMMUNITY.get(fb, fb)
+    return RELATIONS.get((ca, cb), 0) <= ENEMY and RELATIONS.get((cb, ca), 0) <= ENEMY
+
+
+def enemy_pairs():
+    return [(a, b) for i, a in enumerate(FACTIONS) for b in FACTIONS[i + 1:] if enemies(a, b)]
 
 
 def pick_matchup(rng):
-    """Пара (фракция, ранг) для A и B по правилам юзера (20.10)."""
+    """Пара (фракция, ранг) для A и B: только враги по отношениям группировок (21.10) + ранги ИИГ."""
+    pairs = enemy_pairs()
+    if not pairs:
+        raise RuntimeError('нет ни одной пары врагов — отношения не загружены?')
     while True:
-        fa, fb = rng.sample(FACTIONS, 2)
-        if 'greh' in (fa, fb) and not ({fa, fb} - {'greh'}) <= {'monolith', 'isg'}:
-            continue                                     # Грех воюет только с Монолитом и ИИГ
+        fa, fb = rng.choice(pairs)
+        if rng.random() < 0.5:
+            fa, fb = fb, fa
         ta, tb = rng.randrange(3), rng.randrange(3)
         for me, other, set_me in ((fa, fb, 'a'), (fb, fa, 'b')):
             if me == 'isg' and other not in ('monolith', 'greh'):
@@ -354,7 +416,7 @@ def run_one(spec, lvl, game, rng, tag):
         directors[s] = setup[s]['director']
         sides[s] = []
         for q in setup[s]['squads']:
-            section = f"{q['faction']}_sim_squad_{q.get('tier', 'advanced')}"
+            section = f"{SQUAD_PREFIX.get(q['faction'], q['faction'])}_sim_squad_{q.get('tier', 'advanced')}"
             vid = lvl.node(q['at']['x'], q['at']['z'])
             info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0)
             sides[s].append(int(info.split(':')[1]))
@@ -407,7 +469,7 @@ def run_one(spec, lvl, game, rng, tag):
     game.read()
 
     if 'vanish' in CLEANUP:
-        for sq in every:  # убрать выживших, чтобы следующий матч был чистым (убить → удалить: живых ваниль не удаляет)
+        for sq in every:  # убрать выживших, чтобы следующий матч был чистым (без убийства: офлайн → удалить)
             try:
                 game.call('vanish', f'sq:{sq}')
             except RuntimeError:
@@ -450,7 +512,7 @@ def main():
     ap.add_argument('--pause', type=float, default=5, help='секунд между матчами')
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--dry', action='store_true')
-    ap.add_argument('--cleanup', default='none', help='none | clear,clear2,vanish | all')
+    ap.add_argument('--cleanup', default='all', help='none | clear,clear2,vanish | all')
     args = ap.parse_args()
     CLEANUP.clear()
     CLEANUP.update({'clear', 'clear2', 'vanish'} if args.cleanup == 'all'
@@ -462,9 +524,31 @@ def main():
     lvl = Level(spec['level'])
     rng = random.Random(args.seed)
     game = Game(args.dry)
-    results = []
+    if spec.get('matchup') == 'random':
+        src = load_relations(game)
+        print(f'пары врагов ({src}): ' + ', '.join(f'{a}–{b}' for a, b in enemy_pairs()))
+    if 'hour' in spec:  # серия при свете: часы игры вперёд до этого часа (один раз)
+        print('часы игры: ' + game.call('hour', spec['hour']))
+    results, fails = [], 0
     for i in range(args.n):
-        r = run_one(spec, lvl, game, rng, i + 1)
+        r = None
+        try:
+            for _ in range(10):  # точка у края карты, второй стороне негде встать — другая точка
+                try:
+                    r = run_one(spec, lvl, game, rng, i + 1)
+                    break
+                except RuntimeError as e:
+                    if 'нет места' not in str(e):
+                        raise
+                    print(f'  {e} — другая точка')
+            fails = 0
+        except (RuntimeError, TimeoutError, OSError) as e:
+            # один сбойный матч не роняет серию (ночной прогон); три подряд — игра, скорее всего, упала
+            fails += 1
+            print(f'  СБОЙ матча #{i + 1} ({fails} подряд): {e}')
+            if fails >= 3:
+                print('три сбоя подряд — серия остановлена (игра жива? сервер запущен?)')
+                break
         if r:
             results.append(r)
         if i + 1 < args.n:

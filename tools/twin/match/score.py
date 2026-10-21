@@ -89,6 +89,18 @@ def score(events):
             hits[s][0] += who_side.get(e['npc']) == s
     ff = {s: (v[0] / v[1] if v[1] else 0) for s, v in hits.items()}
 
+    # посторонние (21.10): по бойцам матча попадает кто-то не из матча — выживший прошлого матча,
+    # местный отряд. Такой матч не чистый: счёт в нём — не заслуга сторон.
+    foreign = {'A': 0, 'B': 0}
+    for e in inside:
+        if e['ev'] == 'hit' and e['npc'] in who_side and e.get('who') not in who_side \
+                and e.get('who') not in (None, e['npc']):
+            foreign[who_side[e['npc']]] += 1
+        # смерть не от бойца матча (выброс, аномалия, посторонний) — тоже грязь
+        if e['ev'] == 'death' and e['npc'] in who_side and e.get('killer') not in who_side \
+                and e.get('killer') not in (None, e['npc']):
+            foreign[who_side[e['npc']]] += 1
+
     dur = max(end.get('dur', 0), 1e-6)
     ctrl = {'A': end.get('ctrl_a', 0) / dur, 'B': end.get('ctrl_b', 0) / dur}
     if end['reason'] == 'eliminated':
@@ -112,6 +124,7 @@ def score(events):
         'start_n': {s: sum(1 for x in who_side.values() if x == s) for s in 'AB'},
         'ctrl': {k: round(v, 3) for k, v in ctrl.items()}, 'broken': {k: round(v, 3) for k, v in broken.items()},
         'ff': {k: round(v, 3) for k, v in ff.items()}, 'hits': {s: hits[s][1] for s in 'AB'},
+        'foreign_hits': foreign, 'clean': not any(foreign.values()),
     }
 
 
@@ -124,6 +137,9 @@ def show(r):
     print(f"  точка {r['ctrl']['A']:.0%}/{r['ctrl']['B']:.0%}, сломлены {r['broken']['A']:.0%}/{r['broken']['B']:.0%}, "
           f"попаданий {r['hits']['A']}/{r['hits']['B']}, по своим {r['ff']['A']:.0%}/{r['ff']['B']:.0%}")
     print('  слагаемые счёта A: ' + ', '.join(f'{k} {v:+.2f}' for k, v in r['terms'].items()))
+    if not r.get('clean', True):
+        fh = r['foreign_hits']
+        print(f"  ГРЯЗНЫЙ: посторонние (попадания и убийства) по A {fh['A']}, по B {fh['B']} — счёт не чистый")
 
 
 if __name__ == '__main__':

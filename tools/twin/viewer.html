@@ -161,6 +161,7 @@ details[open]>summary::before{content:'▾ '}
     <div class="box" style="border-top:1px solid #222;border-bottom:none">
       <div class="row" style="margin-bottom:6px">
         <button id="live-btn" class="on" onclick="goLive()">● LIVE</button>
+        <button id="follow-btn" class="on" onclick="toggleFollow()" title="новый матч — карта сама переезжает к его точке">⌖ матч</button>
         <button id="play-btn" onclick="togglePlay()">▶</button>
         <select id="speed"><option>1</option><option selected>4</option><option>16</option></select>×
       </div>
@@ -996,7 +997,7 @@ const ACTION_NAMES = {
   // внутри боя / опасности
   996:'поиск по вере', 995:'глушилка', 16:'целится', 17:'готовится', 19:'стреляет', 20:'отходит', 21:'в укрытие', 22:'выглядывает',
   23:'держит позицию', 24:'сближается', 25:'обходит', 26:'ищет врага', 28:'внезапная атака', 29:'стреляет вслепую',
-  30:'к раненому', 32:'над раненым', 33:'добивает', 34:'ждёт после боя', 36:'тяжело ранен',
+  30:'к раненому', 32:'над раненым', 33:'добивает', 34:'VARKA: поиск/глушилка', 36:'тяжело ранен',
   70:'неясная опасность', 71:'опасность с направления', 72:'граната', 73:'звук', 74:'в укрытие (опасн.)', 75:'озирается',
   76:'ищет (опасн.)', 77:'в укрытие', 78:'выглядывает', 79:'держит', 80:'обходит', 81:'ищет', 82:'от гранаты', 83:'ждёт взрыва', 84:'после взрыва', 85:'озирается', 86:'ищет',
 };
@@ -1098,6 +1099,26 @@ function setButtons(){
   document.getElementById('play-btn').textContent = isPlaying ? '❚❚' : '▶';
 }
 function goLive(){ isLive = true; isPlaying = false; playT = tMax; setButtons(); refresh(); }
+
+// Следить за матчем (21.10): начался новый матч (передислокация) — карта сама переезжает к его
+// точке, ±80 м вокруг (юзер: ±130 — слишком далеко). Руками двигать можно — до
+// следующего матча.
+let followMatch = true, followedId = null;
+function toggleFollow(){
+  followMatch = !followMatch;
+  document.getElementById('follow-btn').className = followMatch ? 'on' : '';
+  if(followMatch){ followedId = null; followNewMatch(); }
+}
+function followNewMatch(){
+  if(!followMatch || !isLive || !cv.width) return;
+  let m = null;
+  for(let i = allEvents.length - 1; i >= 0; i--){
+    if(allEvents[i].ev === 'match_start'){ m = allEvents[i]; break; }
+  }
+  if(!m || m.id === followedId) return;
+  followedId = m.id;
+  fitBox(m.zx - 80, m.zx + 80, m.zz - 80, m.zz + 80);
+}
 function onScrub(v){ isLive = false; playT = v; setButtons(); refresh(); }
 function togglePlay(){
   isLive = false;
@@ -1140,6 +1161,7 @@ async function poll(){
         if(restarted || !L) await pickLevel(levelChoice);
         if(!view) fitFight();
         if(isLive) playT = tMax;
+        followNewMatch();
         refresh();
         autoSelectSpawned(); updateSelInfo(); if(sent.length) renderCmdLog();
       }

@@ -437,6 +437,37 @@ CMD.cam = function(a)
 	return true, "ok"
 end
 
+-- rel <группировка>... — отношения группировок, как их видит игра сейчас (не ltx: в Anomaly они
+-- меняются по ходу игры). Ответ: "a>b:число;..." для каждой упорядоченной пары; ≤ -1000 — враги.
+CMD.rel = function(a)
+	local out = {}
+	for _, x in ipairs(a) do
+		for _, y in ipairs(a) do
+			if x ~= y then
+				out[#out + 1] = x .. ">" .. y .. ":" .. relation_registry.community_relation(x, y)
+			end
+		end
+	end
+	return true, table.concat(out, ";")
+end
+
+-- hour <0..23> — перевести часы игры вперёд до этого часа (как сон в ванили). Для серий матчей:
+-- ночью бойцы почти слепые, и счёт меряет темноту, а не тактику.
+CMD.hour = function(a)
+	local h = tonumber(a[1])
+	if not (h and h >= 0 and h < 24) then return false, "нужен час 0..23" end
+	local cur = level.get_time_hours() + level.get_time_minutes() / 60
+	local dh = (h - cur) % 24
+	level.change_game_time(0, math.floor(dh), math.floor((dh % 1) * 60))
+	return true, string.format("%.1f → %d", cur, h)
+end
+
+-- quit — закрыть игру (ночной прогон: перед выключением компьютера, чтобы лог дописался)
+CMD.quit = function(a)
+	exec_console_cmd("quit")
+	return true, "quit"
+end
+
 -- probe on|off|once — эхолот сверки зрения (varka_probe)
 CMD.probe = function(a)
 	if not varka_probe then return false, "нет varka_probe" end

@@ -1,4 +1,16 @@
--- varka_weapons.script — v0.1: выбор ствола по дистанции с гистерезисом (20.10.2026)
+-- varka_weapons.script — v0.4: патроны у сталкеров бесконечны — пустой магазин = перезарядка (21.10.2026)
+-- v0.4: полигон 21.10 (Долг против ренегатов) — пистолеты на 75 м. Причина: сталкеры воюют с
+--   бесконечными патронами (движок: eTraderFlagInfiniteAmmo у всех сталкеров, перезарядка сама
+--   досоздаёт патроны, коробок в рюкзаке нет — они появляются только на трупе). Проверка «есть ли
+--   запасные патроны» всегда отвечала «нет» → каждая перезарядка выглядела как «патроны кончились»
+--   → смена на пистолет на любой дистанции. Пустой магазин больше не минус вообще.
+-- v0.3: «последний довод» — пистолет, когда перезаряжаться негде (21.10.2026)
+-- v0.2: перезарядка вместо смены, пистолет — запасной (21.10.2026)
+-- v0.2: полигон 21.10 — бойцы меняли автомат на пистолет на 4–13 м и так и воевали (экологи — почти
+--   весь бой). Две причины: пустой магазин давал −0.5 (вместо перезарядки — смена на пистолет), а
+--   на ближней дистанции пистолет был «не хуже» автомата, и гистерезис держал его. Теперь пустой
+--   магазин — минус, только если запасных патронов нет; у класса есть мощность (POWER).
+-- v0.1: выбор ствола по дистанции с гистерезисом (20.10.2026)
 --
 -- Как в Anomaly: движок спрашивает Lua (_g.update_best_weapon → колбэк npc_on_choose_weapon),
 -- а если никто не ответил — сам пересчитывает «эффективность» всех стволов КАЖДЫЙ раз. Проверку
@@ -7,7 +19,7 @@
 -- (полигон 20.10: подобрал второй автомат — и вместо стрельбы смена за сменой).
 --
 -- Здесь: у каждого класса своя рабочая дистанция; ствол меняется, только если новый заметно лучше
--- на текущей дистанции до врага И с прошлой смены прошло SWITCH_HOLD. Пустой магазин — минус.
+-- на текущей дистанции до врага И с прошлой смены прошло SWITCH_HOLD. Пустой магазин — не минус (v0.4).
 -- Без врага — держим, что в руках. Если оружие вообще одно — это не лечится: обрез с дробью на
 -- 100 м — задача дирижёра (роль ближнего боя), не этого скрипта.
 
@@ -21,9 +33,19 @@ local RANGE = {
 	w_pistol  = { 0, 0, 20, 45 },
 	w_smg     = { 0, 0, 30, 60 },
 	w_shotgun = { 0, 0, 15, 35 },
-	w_rifle   = { 3, 8, 120, 250 },
+	w_rifle   = { 0, 0, 120, 250 },
 	w_sniper  = { 15, 40, 400, 800 },
 	launcher  = { 20, 35, 150, 300 },
+}
+
+-- мощность класса: при равной дистанции автомат лучше пистолета; пистолет — запасной ствол
+local POWER = {
+	w_pistol  = 0.6,
+	w_smg     = 0.85,
+	w_shotgun = 1,
+	w_rifle   = 1,
+	w_sniper  = 1,
+	launcher  = 1,
 }
 
 local state = {}  -- [npc_id] = { id = выбранный ствол, since, check }
@@ -48,11 +70,31 @@ local function fit(kind, d)
 	return 1 - (d - r[3]) / (r[4] - r[3])
 end
 
-local function score(wpn, d)
-	local s = fit(kind_of(wpn), d)
-	if wpn.get_ammo_in_magazine and wpn:get_ammo_in_magazine() == 0 then s = s - 0.5 end
-	return s
+-- патроны не учитываем: у живого сталкера они бесконечны (v0.4), пустой магазин — это перезарядка
+local function score(npc, wpn, d)
+	local k = kind_of(wpn)
+	return fit(k, d) * (POWER[k] or 1)
 end
+
+-- ===== ПОСЛЕДНИЙ ДОВОД (v0.3, 21.10 — идея юзера) =====
+-- Магазин основного пуст, враг виден и близко, укрыться негде: перезаряжаться на открытом месте —
+-- смерть, пистолет достаётся быстрее. Угроза прошла — сразу обратно на основной ствол (он пуст —
+-- движок перезарядит). Укрытие рядом есть — пистолет не нужен: перезарядка (уйти за укрытие — дело
+-- будущего микрослоя, не этого скрипта).
+local SIDEARM_D     = 25    -- м: враг ближе — угроза прямая
+local SIDEARM_COVER = 6     -- м: спрятанной от врага ноды нет ближе — «укрыться негде»
+local SIDEARM_CALM  = 2500  -- мс: врага не видно столько — угроза прошла
+local SIDEARM_FAR   = 35    -- м: враг дальше — угроза прошла
+
+local function find_sidearm(npc)
+	local out
+	npc:iterate_inventory(function(_, item)
+		if not out and IsWeapon(item) and kind_of(item) == "w_pistol" then out = item end
+	end, npc)
+	return out
+end
+
+local function held(o, id) return o and o:parent() and o:parent():id() == id end
 
 local function choose(npc, cur_wpn, flags)
 	if not (npc and npc:alive()) then return end
@@ -63,39 +105,74 @@ local function choose(npc, cur_wpn, flags)
 	-- кэш: пока свежо — отвечаем тем же
 	if now < st.check and st.id then
 		local o = level.object_by_id(st.id)
-		if o and o:parent() and o:parent():id() == id then flags.gun_id = st.id end
+		if held(o, id) then flags.gun_id = st.id end
 		return
 	end
 	st.check = now + CACHE_MS
 
 	local be = npc:best_enemy()
 	local cur = cur_wpn and IsWeapon(cur_wpn) and cur_wpn or nil
-	if not be then  -- без врага не дёргаемся
-		st.id = cur and cur:id() or st.id
-		if st.id then flags.gun_id = st.id end
-		return
+	local d = be and npc:position():distance_to(be:position())
+	local force = false  -- сменить без выдержки SWITCH_HOLD
+
+	-- последний довод: держим пистолет, пока угроза не прошла
+	if st.sidearm then
+		local o = level.object_by_id(st.sidearm)
+		if be and npc:see(be) then st.seen = now end
+		local calm = not be or d > SIDEARM_FAR or now - st.seen > SIDEARM_CALM
+		if held(o, id) and not calm then
+			st.id = st.sidearm
+			flags.gun_id = st.id
+			return
+		end
+		if varka_trace then
+			varka_trace.emit(0, id, "wpn_sidearm_end", { why = calm and "calm" or "lost", d = d or -1 })
+		end
+		st.sidearm, force = nil, true
+	elseif be and cur and kind_of(cur) ~= "w_pistol" and (cur:get_ammo_in_magazine() or 0) == 0
+		and d < SIDEARM_D and npc:see(be) then
+		local cover = varka_eyes and varka_eyes.hidden_spot(npc:level_vertex_id(), be:position(), SIDEARM_COVER)
+		local p = not cover and find_sidearm(npc)
+		if p then
+			st.sidearm, st.seen, st.since = p:id(), now, now
+			st.id = p:id()
+			flags.gun_id = st.id
+			if varka_trace then
+				varka_trace.emit(0, id, "wpn_sidearm", { from = cur:section(), to = p:section(), d = d })
+			end
+			return
+		end
 	end
 
-	local d = npc:position():distance_to(be:position())
+	if not be then
+		-- без врага не дёргаемся — кроме пистолета в руках: после боя боец возвращается к
+		-- основному стволу (пустой — движок перезарядит)
+		if not (cur and kind_of(cur) == "w_pistol") then
+			st.id = cur and cur:id() or st.id
+			if st.id then flags.gun_id = st.id end
+			return
+		end
+		d, force = 20, true
+	end
+
 	local best, best_s = nil, -1
 	npc:iterate_inventory(function(_, item)
 		if IsWeapon(item) and not IsMelee(item) and not IsGrenade(item) then
-			local s = score(item, d)
+			local s = score(npc, item, d)
 			if s > best_s then best, best_s = item, s end
 		end
 	end, npc)
 	if not best then return end
 
-	local cur_s = cur and score(cur, d) or -1
+	local cur_s = cur and score(npc, cur, d) or -1
 	local keep = cur and best:id() ~= cur:id()
-		and (best_s < cur_s + MARGIN or now - st.since < SWITCH_HOLD)
-		and cur_s > -0.4                       -- текущий не пустой — терпим
+		and (best_s < cur_s + MARGIN or (now - st.since < SWITCH_HOLD and not force))
 	local pick = keep and cur or best
 	if not cur or pick:id() ~= cur:id() then
 		st.since = now
 		if varka_trace then
 			varka_trace.emit(0, id, "wpn_switch", { from = cur and cur:section() or "", to = pick:section(),
-				d = d, s_from = cur_s, s_to = score(pick, d) })
+				d = d, s_from = cur_s, s_to = score(npc, pick, d) })
 		end
 	end
 	st.id = pick:id()

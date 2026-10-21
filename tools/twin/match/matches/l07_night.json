@@ -1,0 +1,57 @@
+{
+  "id": "l07_night",
+  "level": "l07_military",
+  "limit_s": 300,
+  "zone": {
+    "smart": "random",
+    "r": 15
+  },
+  "spectator": "zone",
+  "clear_r": 150,
+  "ghost": true,
+  "sides": {
+    "A": {
+      "director": "random",
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "tier": "random",
+          "n": [
+            3,
+            5
+          ],
+          "at": {
+            "smart_ring": [
+              50,
+              120
+            ]
+          }
+        }
+      ]
+    },
+    "B": {
+      "director": "random",
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "tier": "random",
+          "n": [
+            3,
+            5
+          ],
+          "at": {
+            "smart_ring": [
+              50,
+              120
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "matchup": "random",
+  "hour": 10,
+  "speed": 1
+}

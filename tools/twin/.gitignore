@@ -6,3 +6,9 @@ match/runs*/
 match/results.jsonl
 match/.runner.lock
 __pycache__/
+# двойник: пересобирается bake_nav.py / bake_mesh.py, исходники уровня распаковываются converter.exe
+levels/*_nav.bin
+levels/*_mesh.bin
+levels/src/
+vision/librays.so
+sim/out/

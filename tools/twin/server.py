@@ -2,21 +2,36 @@
 """Мост Anomaly ⇄ наша игра. Запусти: python3 tools/twin/server.py [путь/к/trace.jsonl]
 Открой: http://localhost:8766/viewer.html
 
+Двойник вместо игры (пульт генерала, 21.10):  python3 tools/twin/server.py --twin [sim/scen/kotel1.lua]
+  → http://localhost:8766/viewer3d.html. Сервер сам запускает sim/live.lua; протокол команд тот же.
+
 Туда-к-нам: отдаёт trace игры (GET /log). Без аргумента — живой, с аргументом — повтор.
 От-нас-туда: творческий режим (POST /cmd) дописывает команды в файл, который читает
 gamedata/scripts/varka_cmd.script. Ответ на команду приходит в trace (cmd_ok / cmd_fail).
 """
+import atexit
 import http.server
 import json
 import os
+import subprocess
 import sys
 import threading
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGS = "/mnt/games/ANOMALY_DEV/appdata/logs"
-LOG = sys.argv[1] if len(sys.argv) > 1 else os.path.join(LOGS, "varka_trace.jsonl")
-CMD = os.path.join(LOGS, "varka_cmd.txt")
+TWIN = "--twin" in sys.argv
+args = [a for a in sys.argv[1:] if a != "--twin"]
+if TWIN:
+    SCEN = os.path.abspath(args[0]) if args else os.path.join(HERE, "sim", "scen", "kotel1.lua")
+    os.makedirs(os.path.join(HERE, "sim", "out"), exist_ok=True)
+    # второй двойник на другом порту (тесты) пишет в свои файлы — не мешает идущему котлу
+    tag = "" if os.environ.get("PORT", "8766") == "8766" else "_" + os.environ["PORT"]
+    LOG = os.path.join(HERE, "sim", "out", f"live{tag}.jsonl")
+    CMD = os.path.join(HERE, "sim", "out", f"live_cmd{tag}.txt")
+else:
+    LOG = args[0] if args else os.path.join(LOGS, "varka_trace.jsonl")
+    CMD = os.path.join(LOGS, "varka_cmd.txt")
 PORT = int(os.environ.get("PORT", 8766))
 
 # Файл команд: первая строка — id сессии (игра по нему понимает, что счёт начался заново)
@@ -78,6 +93,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 os.chdir(HERE)
+if TWIN:
+    live = subprocess.Popen(["luajit", os.path.join(HERE, "sim", "live.lua"), SCEN, LOG, CMD])
+    atexit.register(live.terminate)
+    print(f"двойник: {SCEN} → http://localhost:{PORT}/viewer3d.html")
 print(f"наша игра → http://localhost:{PORT}/viewer.html")
 print(f"trace:   {LOG}")
 print(f"команды: {CMD}")

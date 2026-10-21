@@ -19,6 +19,10 @@
 //       rays = N × (ox,oy,oz, dx,dy,dz, range). Ответ: N × (dist f32, tri i32), tri = -1 мимо.
 //
 // Сборка: gcc -O3 -fopenmp -o rays rays.c -lm
+// Библиотека для двойника (LuaJIT FFI, sim/): gcc -O3 -fPIC -shared -DRAYS_LIB -o librays.so rays.c -lm
+//   int   rays_load(const char *cform)                       0 = ок; строит дерево
+//   float rays_cast(ox,oy,oz, dx,dy,dz, range)                дистанция до стены или -1 (dir — единичный)
+//   int   rays_clear(ax,ay,az, bx,by,bz)                      1 — отрезок a→b свободен (линия видимости)
 
 #include <math.h>
 #include <stdint.h>
@@ -202,6 +206,29 @@ static void *slurp(const char *path, size_t *n) {
 	return b;
 }
 
+#ifdef RAYS_LIB
+int rays_load(const char *path) {
+	load_cform(path);
+	build_bvh();
+	return 0;
+}
+
+float rays_cast(float ox, float oy, float oz, float dx, float dy, float dz, float range) {
+	float p[3] = {ox, oy, oz}, d[3] = {dx, dy, dz};
+	return cast(p, d, range, NULL);
+}
+
+// Задние грани луч не ловит (как движок), поэтому стену «изнутри» он не видит. Для видимости между
+// бойцами пускаем в обе стороны: стена между ними закрывает хотя бы один из двух лучей.
+int rays_clear(float ax, float ay, float az, float bx, float by, float bz) {
+	float d[3] = {bx - ax, by - ay, bz - az};
+	float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	if (len < 1e-4f) return 1;
+	for (int k = 0; k < 3; k++) d[k] /= len;
+	float a[3] = {ax, ay, az}, b[3] = {bx, by, bz}, back[3] = {-d[0], -d[1], -d[2]};
+	return cast(a, d, len, NULL) < 0 && cast(b, back, len, NULL) < 0;
+}
+#else
 int main(int argc, char **argv) {
 	if (argc < 5) die("usage: rays pano|probe <cform> <in> <out> [ndirs range]");
 	load_cform(argv[2]);
@@ -247,3 +274,4 @@ int main(int argc, char **argv) {
 	fclose(out);
 	return 0;
 }
+#endif

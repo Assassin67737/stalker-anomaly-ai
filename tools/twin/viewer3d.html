@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VARKA — 3D</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#d0d0d0;font-family:'Courier New',monospace;font-size:12px;
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#top{display:flex;flex:1;overflow:hidden}
+#wrap{flex:1;position:relative}
+#wrap canvas{display:block;width:100%;height:100%}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;transform:translate(-50%,-100%);white-space:nowrap;font-size:11px;
+     text-shadow:0 0 3px #000,0 0 3px #000;line-height:1.15;text-align:center}
+.lbl .hp{height:3px;background:#333;margin:1px auto 0;width:34px}
+.lbl .hp i{display:block;height:3px}
+.lbl.sel{font-weight:bold;font-size:12px}
+#side{width:310px;border-left:1px solid #222;background:#0d0d0d;display:flex;flex-direction:column;overflow:hidden}
+#side h3{font-size:11px;color:#777;padding:6px 8px 3px;font-weight:normal;letter-spacing:1px}
+#match,#selinfo{padding:2px 8px 6px;line-height:1.45;border-bottom:1px solid #1c1c1c}
+#roster{padding:2px 8px 6px;border-bottom:1px solid #1c1c1c;line-height:1.4}
+#roster div{cursor:pointer}
+#roster div:hover{background:#1a1a1a}
+#evlog{flex:1;overflow-y:auto;padding:2px 8px;line-height:1.4;font-size:11px}
+#bar{display:flex;gap:6px;align-items:center;padding:5px 8px;border-top:1px solid #222;background:#0d0d0d;flex-wrap:wrap}
+#bar button,#bar select{background:#161616;color:#ccc;border:1px solid #333;padding:3px 7px;font:inherit;cursor:pointer}
+#bar button.on{background:#264653;color:#fff;border-color:#3d7a8f}
+#scrub{flex:1;min-width:200px}
+#run{max-width:520px}
+label{cursor:pointer;user-select:none}
+#help{position:absolute;left:8px;bottom:8px;color:#666;font-size:11px;line-height:1.4;pointer-events:none}
+#status{position:absolute;left:8px;top:8px;color:#888;font-size:11px;pointer-events:none}
+.A{color:#4fc3f7}.B{color:#ff8a65}
+#gen-h,#gen{display:none}
+body.twin #gen-h,body.twin #gen{display:block}
+#gen{padding:2px 8px 8px;line-height:1.5;border-bottom:1px solid #1c1c1c}
+#gen button{background:#161616;color:#ccc;border:1px solid #333;padding:2px 6px;font:inherit;cursor:pointer;margin:1px}
+#gen button.on{background:#264653;color:#fff;border-color:#3d7a8f}
+#gen .sq{cursor:pointer;padding:1px 3px}
+#gen .sq:hover{background:#1a1a1a}
+#gen .sq.sel{background:#2a2a1a;outline:1px solid #665}
+#gen .g1{color:#ff5252}#gen .g2{color:#ffd740}#gen .g3{color:#69f0ae}
+#gen .hint{color:#777;font-size:11px}
+#draft{position:absolute;right:8px;top:8px;color:#ffd740;font-size:12px;pointer-events:none;text-shadow:0 0 3px #000;text-align:right}
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="wrap">
+    <div id="labels"></div>
+    <div id="status">загрузка…</div>
+    <div id="draft"></div>
+    <div id="help">ЛКМ — вращать · ПКМ — двигать · колесо — к курсору · WASD — лететь, Q/E — ниже/выше, Shift — быстрее<br>
+      клик по бойцу — выбрать · двойной клик / F — третье лицо · V — глаза · Tab — следующий боец · Esc — отпустить<br>
+      T — сверху · M — к бою · пробел — ▶ · ←/→ — ±1 с (Shift ±5)</div>
+  </div>
+  <div id="side">
+    <h3 id="gen-h">ГЕНЕРАЛ</h3><div id="gen"></div>
+    <h3>МАТЧ</h3><div id="match">—</div>
+    <h3>БОЙЦЫ</h3><div id="roster"></div>
+    <h3>ВЫБРАН</h3><div id="selinfo">клик по бойцу</div>
+    <h3>СОБЫТИЯ</h3><div id="evlog"></div>
+  </div>
+</div>
+<div id="bar">
+  <select id="run" title="запись матча (match/results.jsonl)"></select>
+  <button id="play">▶</button>
+  <select id="speed"><option value="0.5">×0.5</option><option value="1" selected>×1</option>
+    <option value="2">×2</option><option value="4">×4</option><option value="8">×8</option></select>
+  <input type="range" id="scrub" min="0" max="0" value="0" step="50">
+  <span id="tlabel">0.0 с</span>
+  <label><input type="checkbox" id="ly-trail" checked> следы</label>
+  <label><input type="checkbox" id="ly-sight" checked> взгляд на врага</label>
+  <label><input type="checkbox" id="ly-hit" checked> попадания</label>
+  <label><input type="checkbox" id="ly-slot" checked> точки дирижёра</label>
+  <button id="follow">F третье лицо</button>
+  <button id="eyes">V глаза</button>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.6/build/index.module.js"
+} }
+</script>
+<script type="module">
+// 3D-вьювер записи матча (21.10.2026). Геометрия — level.cform (bake_mesh.py), то же, по чему
+// движок пускает лучи зрения и пули. Запись — кусок trace (match/runs/*.jsonl) или живой /log.
+//   viewer3d.html?run=match/runs/<файл>.jsonl     повтор матча
+//   viewer3d.html                                 живой trace игры (server.py без аргумента)
+// Координаты игры левые (x вправо, y вверх, z вперёд), three.js — правые: z берём с минусом,
+// тогда сверху карта лежит как во 2D-вьювере (x вправо, z вверх).
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MeshBVH } from 'three-mesh-bvh';
+
+const W = (x, y, z) => new THREE.Vector3(x, y, -z);
+const qs = new URLSearchParams(location.search);
+const RUN = qs.get('run');
+const LEVEL = qs.get('level') || 'l07_military';
+
+const FACTIONS = { stalker:'#4CAF50', bandit:'#FF9800', army:'#8BC34A', military:'#8BC34A', monolith:'#9C27B0',
+  freedom:'#2196F3', csky:'#00BCD4', dolg:'#F44336', killer:'#EF5350', ecolog:'#26A69A', greh:'#EF9A9A',
+  isg:'#B0BEC5', renegade:'#A1887F', zombied:'#607D8B' };
+const SIDE_COL = { A:'#4fc3f7', B:'#ff8a65' };
+const WK = { w_pistol:'пист', w_smg:'ПП', w_shotgun:'дробь', w_rifle:'автомат', w_sniper:'снайп', w_explosive:'грант', w_knife:'нож' };
+const ACTION_NAMES = {
+  88:'симуляция', 89:'бой', 90:'аномалия', 91:'опасность', 87:'смерть', 2:'подбирает', 142:'труп рядом', 147:'помогает раненому',
+  188111:'компаньон', 188112:'добивает', 188113:'опасность (скрипт)', 188115:'ПАНИКА', 188118:'бой из укрытия',
+  188202:'приказ', 188204:'приказ сквозь бой', 188206:'перегруппировка', 18803:'не стреляет: свои на линии', 18815:'поворот к врагу', 18816:'поворот',
+  16:'целится', 17:'готовится', 19:'стреляет', 20:'отходит', 21:'в укрытие', 22:'выглядывает', 23:'держит позицию', 24:'сближается',
+  25:'обходит', 26:'ищет врага', 27:'от гранаты', 28:'внезапная атака', 29:'стреляет вслепую', 34:'VARKA: поиск/глушилка', 36:'тяжело ранен', 39:'кидает гранату',
+  // двойник (sim/sim.lua)
+  9001:'двойник: по приказу', 9002:'двойник: в укрытие', 9003:'двойник: бой из укрытия', 9004:'двойник: держит',
+  9005:'двойник: перезарядка', 9006:'двойник: свой на линии → шаг вбок', 9007:'двойник: к последнему месту врага', 9008:'двойник: на огневую точку (держит район)',
+};
+function rankLetter(r){ return r<3500?'N':r<6500?'T':r<9000?'E':r<12000?'P':r<14500?'V':r<17500?'X':r<27000?'M':'L'; }
+function actName(s){ if(s.aid==null||s.aid<0) return ''; const a = ACTION_NAMES[s.aid]||('#'+s.aid);
+  return s.aid2!=null&&s.aid2>=0 ? `${a}: ${ACTION_NAMES[s.aid2]||'#'+s.aid2}` : a; }
+const $ = id => document.getElementById(id);
+const status = t => $('status').textContent = t;
+
+// ─── сцена ───────────────────────────────────────────────────────────────────────────────────
+const wrap = $('wrap');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+wrap.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0e1114');
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 4000);
+scene.add(new THREE.HemisphereLight('#ffffff', '#445', 1.6));   // для бойцов; земле свет не нужен — у неё свой шейдер
+const sunL = new THREE.DirectionalLight('#ffffff', 1.4); sunL.position.set(0.45, 0.8, -0.35); scene.add(sunL);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.zoomToCursor = true;            // колесо — туда, куда показывает мышь, а не только к точке вращения
+controls.screenSpacePanning = false;     // ПКМ двигает по земле, а не по экрану
+controls.maxPolarAngle = Math.PI * 0.495;
+function resize(){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+// Земля и стены: нормаль считаем в пикселе по производным позиции (у вершин cform нормалей нет,
+// а сглаживать нельзя — угол дома должен быть углом). Полы светлее стен, по полу — горизонтали
+// через 1 м (тонкие) и 5 м (заметнее): видно этажи и рельеф.
+const terrainMat = new THREE.ShaderMaterial({
+  side: THREE.DoubleSide,
+  uniforms: { sun: { value: new THREE.Vector3(0.45, 0.8, 0.35).normalize() }, fogc: { value: new THREE.Color('#0e1114') } },
+  vertexShader: `varying vec3 vW;
+    void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  fragmentShader: `varying vec3 vW; uniform vec3 sun; uniform vec3 fogc;
+    void main(){
+      vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
+      if(dot(n, cameraPosition - vW) < 0.0) n = -n;
+      float flo = smoothstep(0.55, 0.8, n.y);
+      vec3 c = mix(vec3(0.50, 0.47, 0.43), vec3(0.40, 0.44, 0.36), flo);
+      float h1 = abs(fract(vW.y + 0.5) - 0.5), h5 = abs(fract(vW.y / 5.0 + 0.5) - 0.5) * 5.0;
+      float aa = fwidth(vW.y) * 1.2 + 1e-4;
+      c *= 1.0 - flo * (0.10 * (1.0 - smoothstep(0.0, aa, h1)) + 0.22 * (1.0 - smoothstep(0.0, aa * 1.5, h5)));
+      float l = 0.42 + 0.5 * max(dot(n, sun), 0.0) + 0.12 * n.y;
+      float d = length(cameraPosition - vW);
+      gl_FragColor = vec4(mix(c * l, fogc, 1.0 - exp(-d * 0.0022)), 1.0);
+    }`,
+});
+
+async function loadMesh(name){
+  status(`геометрия ${name}…`);
+  const r = await fetch(`levels/${name}_mesh.bin`);
+  if(!r.ok) throw new Error(`нет levels/${name}_mesh.bin — запусти bake_mesh.py`);
+  const buf = await r.arrayBuffer();
+  const dv = new DataView(buf);
+  const nv = dv.getUint32(4, true), nt = dv.getUint32(8, true);
+  const lo = [0,1,2].map(i => dv.getFloat32(12 + i*4, true)), hi = [0,1,2].map(i => dv.getFloat32(24 + i*4, true));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Uint16Array(buf, 36, nv * 3), 3, true));
+  // индексы после вершин u16 могут начинаться не с кратного 4 адреса — копия выравнивает
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf.slice(36 + nv * 6, 36 + nv * 6 + nt * 12)), 1));
+  // доля 0…1 → метры: масштаб и сдвиг на меше (z с минусом — см. W)
+  const m = new THREE.Mesh(g, terrainMat);
+  m.scale.set(hi[0] - lo[0], hi[1] - lo[1], -(hi[2] - lo[2]));
+  m.position.set(lo[0], lo[1], -lo[2]);
+  m.frustumCulled = false;
+  scene.add(m);
+  levelRaw = { buf, nv, nt, lo, hi };
+  return { nv, nt };
+}
+
+// Клик по земле (пульт генерала): копия геометрии в метрах + дерево MeshBVH. Строится один раз
+// по требованию — на 2.8 млн треугольников это пара секунд.
+let levelRaw = null, pickMesh = null;
+function buildPick(){
+  if(pickMesh || !levelRaw) return pickMesh;
+  const { buf, nv, nt, lo, hi } = levelRaw;
+  const q = new Uint16Array(buf, 36, nv * 3), f = new Float32Array(nv * 3);
+  for(let i = 0; i < nv; i++){
+    f[i*3]   = lo[0] + q[i*3]   / 65535 * (hi[0] - lo[0]);
+    f[i*3+1] = lo[1] + q[i*3+1] / 65535 * (hi[1] - lo[1]);
+    f[i*3+2] = -(lo[2] + q[i*3+2] / 65535 * (hi[2] - lo[2]));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(f, 3));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf.slice(36 + nv * 6, 36 + nv * 6 + nt * 12)), 1));
+  g.boundsTree = new MeshBVH(g);
+  pickMesh = { g };
+  return pickMesh;
+}
+// луч из камеры через точку экрана → точка на земле в координатах игры или null
+function groundAt(clientX, clientY){
+  const pm = buildPick(); if(!pm) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((clientX - r.left) / r.width * 2 - 1, -(clientY - r.top) / r.height * 2 + 1), camera);
+  const h = pm.g.boundsTree.raycastFirst(ray.ray, THREE.DoubleSide);
+  return h ? { x: h.point.x, y: h.point.y, z: -h.point.z } : null;
+}
+
+// ─── запись ──────────────────────────────────────────────────────────────────────────────────
+let events = [], tracks = {}, deaths = {}, hits = [], matches = [], keyEv = [], slotsEv = [];
+// двойник (живой пульт): отряды, их приказы, пауза/скорость
+let twin = false, squads = {}, orders = {}, simState = { paused: true, speed: 1, over: '' };
+let t0 = 0, tMax = 0, T = 0, playing = false;
+
+function ingest(text){
+  events = [];
+  for(const line of text.split('\n')){
+    if(!line.trim()) continue;
+    try{ const e = JSON.parse(line); if(e.t != null) events.push(e); }catch(_){}
+  }
+  tracks = {}; deaths = {}; hits = []; matches = []; keyEv = []; slotsEv = [];
+  squads = {}; orders = {};
+  for(const e of events){
+    const ev = e.ev;
+    if(ev === 'sim_state'){ simState = e; if(!RUN) twin = true; continue; }
+    if(ev === 'squad'){ squads[e.sq] = e; continue; }
+    if(ev === 'order'){
+      const key = e.npc ? 'n' + e.npc : e.sq;            // личный приказ бойцу — отдельно от отрядного
+      orders[key] = (e.state === 'go' || e.state === 'wait') ? e : null;
+      keyEv.push(e); continue;
+    }
+    if(ev === 'cmd_fail'){ keyEv.push(e); continue; }
+    if(ev === 'npc_pos') (tracks[e.npc] ||= []).push(e);
+    else if(ev === 'hit') hits.push(e);
+    else if(ev === 'death'){ deaths[e.npc] = e; keyEv.push(e); }
+    else if(ev === 'match_start'){
+      matches.push({ start: e, end: null, side: sideMap(e) }); keyEv.push(e);
+    } else if(ev === 'match_end'){ const m = matches[matches.length - 1]; if(m) m.end = e; keyEv.push(e); }
+    else if(ev === 'play_slots' || ev === 'play_end' || ev === 'match_clear') slotsEv.push(e);
+    if(['wpn_switch','wpn_sidearm','wpn_sidearm_end','play_start','play_end','regroup_start','holdout_start',
+        'kw_fire','bark','intel','freeze_enter','search_start'].includes(ev)) keyEv.push(e);
+  }
+  t0 = events.length ? events[0].t : 0;
+  tMax = events.length ? events[events.length - 1].t : 0;
+  const sc = $('scrub'); sc.min = t0; sc.max = tMax;
+}
+function sideMap(e){
+  const s = {};
+  for(const k of ['a','b']) for(const q of String(e[k]).split(',')) if(q.trim()) s[+q] = k.toUpperCase();
+  return s;
+}
+function matchAt(t){ let m = null; for(const x of matches) if(x.start.t <= t) m = x; return m; }
+
+// последний индекс с e.t <= t
+function bsearch(arr, t){ let lo = 0, hi = arr.length - 1, r = -1;
+  while(lo <= hi){ const mid = (lo + hi) >> 1; if(arr[mid].t <= t){ r = mid; lo = mid + 1; } else hi = mid - 1; } return r; }
+
+// состояние бойца на момент t: позиция — между соседними снимками (снимок раз в ~0.55 с),
+// остальное — из последнего снимка
+function npcAt(id, t){
+  const tr = tracks[id];
+  if(!tr) return null;
+  const i = bsearch(tr, t);
+  if(i < 0) return null;
+  const a = tr[i], dead = deaths[id] && deaths[id].t <= t;
+  if(!dead && t - a.t > 3000) return null;           // пропал (убран после матча, ушёл в офлайн)
+  if(dead && t - deaths[id].t > 90000) return null;
+  const b = tr[i + 1];
+  let k = 0;
+  if(b && !dead && b.t - a.t < 2000) k = (t - a.t) / (b.t - a.t);
+  const L = (p, q) => p + (q - p) * k;
+  return { ...a, x: b ? L(a.px, b.px) : a.px, y: b ? L(a.py, b.py) : a.py, z: b ? L(a.pz, b.pz) : a.pz,
+           fx: b ? L(a.dx, b.dx) : a.dx, fz: b ? L(a.dz, b.dz) : a.dz, dead };
+}
+
+// ─── бойцы ───────────────────────────────────────────────────────────────────────────────────
+const npcObj = {};
+const bodyGeo = new THREE.CapsuleGeometry(0.28, 1.15, 4, 10);
+const headGeo = new THREE.ConeGeometry(0.12, 0.55, 8).rotateX(Math.PI / 2);   // нос = куда смотрит
+const ringGeo = new THREE.RingGeometry(0.45, 0.6, 24).rotateX(-Math.PI / 2);
+const selGeo = new THREE.RingGeometry(0.75, 0.9, 32).rotateX(-Math.PI / 2);
+function makeNpc(id, s){
+  const g = new THREE.Group();
+  const col = new THREE.Color(FACTIONS[s.comm] || '#aaa');
+  const body = new THREE.Mesh(bodyGeo, new THREE.MeshLambertMaterial({ color: col }));
+  const nose = new THREE.Mesh(headGeo, new THREE.MeshBasicMaterial({ color: '#fff' }));
+  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: '#888', side: THREE.DoubleSide }));
+  const sel = new THREE.Mesh(selGeo, new THREE.MeshBasicMaterial({ color: '#ffeb3b', side: THREE.DoubleSide }));
+  ring.position.y = 0.05; sel.position.y = 0.06; sel.visible = false;
+  body.userData.npc = +id;
+  g.add(body, nose, ring, sel);
+  const lbl = document.createElement('div'); lbl.className = 'lbl';
+  $('labels').appendChild(lbl);
+  scene.add(g);
+  return (npcObj[id] = { g, body, nose, ring, sel, lbl, col });
+}
+function eyeH(s){ return s.cr ? 1.05 : 1.6; }
+function placeNpc(o, s, side){
+  o.g.visible = true;
+  o.g.position.copy(W(s.x, s.y, s.z));
+  const yaw = Math.atan2(s.fx, s.fz);               // dx,dz игры → поворот в three (z с минусом)
+  if(s.dead){
+    o.body.rotation.set(0, 0, Math.PI / 2); o.body.position.set(0, 0.3, 0); o.body.scale.set(1, 1, 1);
+    o.body.material.color.set('#555'); o.nose.visible = false;
+  } else {
+    const h = s.cr ? 0.62 : 1;
+    o.body.rotation.set(0, 0, 0); o.body.scale.set(1, h, 1); o.body.position.set(0, 0.86 * h, 0);
+    o.body.material.color.copy(o.col).multiplyScalar(s.hp < 0.3 ? 0.55 : 1);
+    o.nose.visible = true; o.nose.position.set(0, eyeH(s), 0);
+    o.nose.rotation.set(0, Math.PI - yaw, 0);
+    o.nose.translateZ(0.3);
+  }
+  o.ring.material.color.set(side ? SIDE_COL[side] : '#666');
+}
+
+// ─── линии: следы, взгляд, попадания ───────────────────────────────────────────────────────
+function dynLines(color, opacity, maxSeg){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxSeg * 6), 3));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(maxSeg * 6), 3));
+  const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthTest: true }));
+  l.frustumCulled = false; scene.add(l);
+  let n = 0;
+  return { l, reset(){ n = 0; },
+    add(a, b, c){ if(n >= maxSeg) return; const p = g.attributes.position.array, q = g.attributes.color.array;
+      p.set([a.x, a.y, a.z, b.x, b.y, b.z], n * 6); q.set([c.r, c.g, c.b, c.r, c.g, c.b], n * 6); n++; },
+    done(){ g.setDrawRange(0, n * 2); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; } };
+}
+const trailL = dynLines(0, 0.55, 20000), sightL = dynLines(0, 0.35, 400), hitL = dynLines(0, 0.95, 400);
+const orderL = dynLines(0, 0.9, 600), draftL = dynLines(0, 1, 200);
+const G_COL = { 1: new THREE.Color('#ff5252'), 2: new THREE.Color('#ffd740'), 3: new THREE.Color('#69f0ae') };
+const markGroup = new THREE.Group(); scene.add(markGroup);
+const markGeo = new THREE.SphereGeometry(0.35, 10, 8);
+const markMat = { 1: new THREE.MeshBasicMaterial({ color: G_COL[1] }), 2: new THREE.MeshBasicMaterial({ color: G_COL[2] }),
+                  3: new THREE.MeshBasicMaterial({ color: G_COL[3] }) };
+const slotGroup = new THREE.Group(); scene.add(slotGroup);
+const slotGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.2, 6);
+const slotMat = { A: new THREE.MeshBasicMaterial({ color: SIDE_COL.A }), B: new THREE.MeshBasicMaterial({ color: SIDE_COL.B }),
+                  X: new THREE.MeshBasicMaterial({ color: '#ccc' }) };
+const zoneRing = new THREE.Mesh(new THREE.RingGeometry(1, 1.04, 96).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.45, side: THREE.DoubleSide }));
+scene.add(zoneRing);
+
+// ─── кадр ────────────────────────────────────────────────────────────────────────────────────
+let selId = null, follow = false, eyes = false;
+const v3 = new THREE.Vector3();
+function frame(){
+  const m = matchAt(T);
+  const side = m ? m.side : {};
+  const st = {};
+  for(const id in tracks){
+    const s = npcAt(+id, T);
+    const o = npcObj[id];
+    if(!s){ if(o){ o.g.visible = false; o.lbl.style.display = 'none'; } continue; }
+    st[id] = s;
+    placeNpc(o || makeNpc(id, s), s, side[s.sq]);
+  }
+
+  // следы — последние 15 с
+  trailL.reset();
+  if($('ly-trail').checked) for(const id in st){
+    const tr = tracks[id], i = bsearch(tr, T), c = new THREE.Color(SIDE_COL[side[st[id].sq]] || '#777');
+    for(let j = Math.max(1, i - 30); j <= i; j++){
+      if(tr[j].t < T - 15000 || tr[j].t - tr[j-1].t > 2000) continue;
+      trailL.add(W(tr[j-1].px, tr[j-1].py + 0.1, tr[j-1].pz), W(tr[j].px, tr[j].py + 0.1, tr[j].pz), c);
+    }
+  }
+  trailL.done();
+
+  // взгляд: от глаз к главному врагу, только если видит (bsee)
+  sightL.reset();
+  if($('ly-sight').checked) for(const id in st){
+    const s = st[id], e = st[s.be];
+    if(s.dead || !s.bsee || !e || e.dead) continue;
+    if(eyes && (+id === selId || s.be === selId)) continue;
+    sightL.add(W(s.x, s.y + eyeH(s), s.z), W(e.x, e.y + 1.2, e.z), new THREE.Color(SIDE_COL[side[s.sq]] || '#aaa'));
+  }
+  sightL.done();
+
+  // попадания за последние 1.5 с: от стрелка к цели, цвет стороны стрелка
+  hitL.reset();
+  if($('ly-hit').checked){
+    for(let i = bsearch(hits, T); i >= 0 && hits[i].t > T - 1500; i--){
+      const h = hits[i], a = st[h.who] || npcAt(h.who, h.t), b = st[h.npc] || npcAt(h.npc, h.t);
+      if(!a || !b || eyes && (h.who === selId || h.npc === selId)) continue;
+      const c = new THREE.Color(SIDE_COL[side[a.sq]] || '#fff').lerp(new THREE.Color('#fff'), 0.35);
+      hitL.add(W(a.x, a.y + eyeH(a), a.z), W(b.x, b.y + 1.2, b.z), c);
+    }
+  }
+  hitL.done();
+
+  // точки дирижёра (play_slots) — столбики цвета стороны, пока розыгрыш идёт
+  slotGroup.clear();
+  if($('ly-slot').checked){
+    const cur = {};
+    for(let i = 0; i < slotsEv.length && slotsEv[i].t <= T; i++){
+      const e = slotsEv[i];
+      if(e.ev === 'match_clear'){ for(const k in cur) delete cur[k]; }
+      else if(e.ev === 'play_end') delete cur[e.sq];
+      else cur[e.sq] = e;
+    }
+    for(const sq in cur){
+      const col = slotMat[side[sq]] || slotMat.X;
+      for(const part of String(cur[sq].slots).split(';')){
+        const [id, x, z] = part.split(':');
+        if(!id) continue;
+        const who = st[id];
+        const y = who ? who.y : (Object.values(st)[0]?.y ?? 0);
+        const p = new THREE.Mesh(slotGeo, col); p.position.copy(W(+x, y + 1.1, +z)); slotGroup.add(p);
+      }
+    }
+  }
+
+  // пульт: приказы отрядов (ждущие — тусклые) и черновик маршрута
+  orderL.reset(); draftL.reset(); markGroup.clear();
+  if(twin){
+    const routeLines = (L, pts, from, dim) => {
+      let prev = from;
+      for(const p of pts){
+        const c = G_COL[p.g].clone().multiplyScalar(dim ? 0.45 : 1);
+        if(prev) L.add(W(prev.x, prev.y + 0.4, prev.z), W(p.x, p.y + 0.4, p.z), c);
+        const mk = new THREE.Mesh(markGeo, markMat[p.g]); mk.position.copy(W(p.x, p.y + 0.4, p.z)); markGroup.add(mk);
+        prev = p;
+      }
+    };
+    for(const key in orders){
+      const o = orders[key]; if(!o) continue;
+      const pts = o.route.split(';').map(t => { const [x, y, z, g] = t.split(',').map(Number); return { x, y, z, g }; });
+      const from = o.npc ? st[o.npc] : squadCenter(st, o.sq);
+      if(o.npc && (!from || from.dead)) continue;
+      routeLines(orderL, pts, from, o.state === 'wait');
+    }
+    if(draft) routeLines(draftL, draft.pts, draft.npc ? st[draft.npc] : squadCenter(st, draft.sq), false);
+  }
+  orderL.done(); draftL.done();
+
+  // зона матча
+  if(m && !(m.end && T > m.end.t + 5000)){
+    const ys = Object.values(st).map(s => s.y);
+    const y = ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : 0;
+    zoneRing.visible = true; zoneRing.position.copy(W(m.start.zx, y + 0.3, m.start.zz));
+    zoneRing.scale.setScalar(m.start.zr || 15);
+  } else zoneRing.visible = false;
+
+  // камера за бойцом / глазами бойца
+  const ss = selId != null ? st[selId] : null;
+  if(ss && eyes && !ss.dead){
+    const eye = W(ss.x, ss.y + eyeH(ss), ss.z);
+    camera.position.copy(eye);
+    camera.lookAt(W(ss.x + ss.fx, ss.y + eyeH(ss) - 0.05, ss.z + ss.fz));
+    for(const id in npcObj) npcObj[id].g.visible = npcObj[id].g.visible && +id !== selId;
+  } else if(ss && follow){
+    const p = W(ss.x, ss.y + 1.3, ss.z);
+    v3.copy(p).sub(controls.target);
+    controls.target.add(v3); camera.position.add(v3);
+  }
+
+  labels(st, side);
+  panel(st, side, m);
+}
+
+function labels(st, side){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  for(const id in npcObj){
+    const o = npcObj[id], s = st[id];
+    if(!s || !o.g.visible){ o.lbl.style.display = 'none'; continue; }
+    v3.copy(W(s.x, s.y + (s.dead ? 0.8 : 2.15), s.z)).project(camera);
+    if(v3.z > 1 || Math.abs(v3.x) > 1.1 || Math.abs(v3.y) > 1.1){ o.lbl.style.display = 'none'; continue; }
+    o.lbl.style.display = '';
+    o.lbl.style.left = ((v3.x + 1) / 2 * w) + 'px';
+    o.lbl.style.top = ((1 - v3.y) / 2 * h) + 'px';
+    o.lbl.className = 'lbl' + (+id === selId ? ' sel' : '');
+    o.sel.visible = +id === selId;
+    const hc = s.hp > 0.6 ? '#66bb6a' : s.hp > 0.3 ? '#ffb74d' : '#ef5350';
+    const sd = side[s.sq];
+    o.lbl.style.color = s.dead ? '#777' : (SIDE_COL[sd] || '#bbb');
+    o.lbl.innerHTML = s.dead ? '✝' :
+      `${rankLetter(s.rank)} ${WK[s.wk] || s.wk || '—'}${s.mag === 0 ? ' ⟳' : ''}${s.cr ? ' ▾' : ''}` +
+      `<div class="hp"><i style="width:${Math.round(s.hp * 100)}%;background:${hc}"></i></div>`;
+  }
+}
+
+function squadCenter(st, sq){
+  let x = 0, y = 0, z = 0, n = 0;
+  for(const id in st){ const s = st[id]; if(s.sq === sq && !s.dead){ x += s.x; y += s.y; z += s.z; n++; } }
+  return n ? { x: x / n, y: y / n, z: z / n } : null;
+}
+
+// ─── пульт генерала ─────────────────────────────────────────────────────────────────────────
+// Отряд → маршрут (клики по земле) с поводком на каждом отрезке → Enter. Сигнал A/B/C — приказ
+// ждёт, пока не нажмёшь «пуск» этой буквы. Всё уходит в двойник командами (sim/live.lua).
+let selSq = null, draft = null, curG = 2, curCode = '';
+const CODES = ['', 'A', 'B', 'C'];
+async function send(cmd, args = []){
+  try{ await fetch('/cmd', { method: 'POST', body: JSON.stringify({ cmd, args }) }); }
+  catch(e){ status('команда не ушла: ' + e.message); }
+}
+function genPanel(st){
+  const sqs = Object.values(squads).sort((a, b) => (a.side > b.side) - (a.side < b.side) || a.sq - b.sq);
+  const alive = sq => Object.values(st).filter(s => s.sq === sq && !s.dead).length;
+  const ost = sq => { const o = orders[sq]; return !o ? '<span class="hint">стоит</span>' :
+    o.state === 'wait' ? `<span class="g2">ждёт ${o.code}</span>` : '<span class="g3">идёт</span>'; };
+  const st2 = simState.over ? `конец: ${simState.over}` : simState.paused ? '⏸ пауза' : `▶ ×${simState.speed}`;
+  $('gen').innerHTML =
+    `<div>${st2} <button data-a="pp">${simState.paused ? '▶ пуск' : '⏸ пауза'}</button>` +
+    `<button data-a="slow">−</button><button data-a="fast">+</button><button data-a="restart">заново</button></div>` +
+    sqs.map(q => `<div class="sq ${q.side}${q.sq === selSq ? ' sel' : ''}" data-sq="${q.sq}">${q.sq === selSq ? '▶' : '·'} ${q.side === 'A' ? 'ТВОЙ' : 'враг'} ${q.name || q.sq} ` +
+      `${alive(q.sq)}/${q.n} — ${ost(q.sq)}</div>`).join('') +
+    `<div style="margin-top:4px">поводок: ${[1, 2, 3].map(g => `<button data-g="${g}" class="${curG === g ? 'on' : ''}"><span class="g${g}">g${g}</span></button>`).join('')}` +
+    ` сигнал: <button data-a="code">${curCode || '—'}</button></div>` +
+    `<div><button data-a="route" class="${draft && !draft.npc ? 'on' : ''}">R отряду</button>` +
+    `<button data-a="route1" class="${draft && draft.npc ? 'on' : ''}">⇧R бойцу</button><button data-a="send">Enter отдать</button></div>` +
+    `<div><button data-a="hold">H держать отряд</button><button data-a="hold1">⇧H держать бойца</button></div>` +
+    `<div>пуск: <button data-a="goA">Z — A</button><button data-a="goB">X — B</button><button data-a="goC">C — C</button></div>` +
+    `<div class="hint">g1 любой ценой · g2 по обстановке (укрытие по дороге) · g3 замысел (район)</div>`;
+}
+function genAction(a){
+  if(a === 'pp') send(simState.paused ? 'resume' : 'pause');
+  else if(a === 'slow') send('speed', [Math.max(0.25, simState.speed / 2)]);
+  else if(a === 'fast') send('speed', [Math.min(8, simState.speed * 2)]);
+  else if(a === 'restart'){ draft = null; send('restart'); }
+  else if(a === 'code') curCode = CODES[(CODES.indexOf(curCode) + 1) % CODES.length];
+  else if(a === 'route' || a === 'route1'){
+    if(a === 'route' && selSq == null) return status('сначала выбери отряд (клик по бойцу или по строке отряда)');
+    if(a === 'route1' && selId == null) return status('сначала выбери бойца (клик по нему)');
+    draft = draft ? null : (a === 'route1' ? { sq: selSq, npc: selId, pts: [] } : { sq: selSq, pts: [] }); if(draft){ status('строю дерево для кликов…'); setTimeout(() => { buildPick(); status('маршрут: клики по земле; 1/2/3 — поводок, Enter — отдать, Backspace — назад, Esc — отмена'); }, 30); } }
+  else if(a === 'send'){
+    if(!draft || !draft.pts.length) return;
+    const r = draft.pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)},${p.g}`).join(';');
+    if(draft.npc) send('order_npc', [draft.npc, r, curCode]); else send('order', [draft.sq, r, curCode]);
+    draft = null;
+  }
+  else if(a === 'hold'){ if(selSq != null) send('hold', [selSq]); }
+  else if(a === 'hold1'){ if(selId != null) send('hold_npc', [selId]); }
+  else if(a.startsWith('go')) send('go', [a.slice(2)]);
+  lastPanel = 0;
+}
+$('gen').onclick = e => {
+  const b = e.target.closest('button'), row = e.target.closest('[data-sq]');
+  if(b && b.dataset.g){ curG = +b.dataset.g; lastPanel = 0; return; }
+  if(b && b.dataset.a) return genAction(b.dataset.a);
+  if(row){ selSq = +row.dataset.sq; if(draft) draft.sq = selSq; lastPanel = 0; }
+};
+function draftText(){
+  if(!twin) return '';
+  const name = selSq != null ? (squads[selSq]?.name || selSq) : '—';
+  return draft ? `маршрут для ${draft.npc ? 'бойца #' + draft.npc : '«' + (squads[draft.sq]?.name || draft.sq) + '»'}: точек ${draft.pts.length}, следующий отрезок g${curG}` +
+    `${curCode ? ', сигнал ' + curCode : ''}<br>клик — точка · 1/2/3 — поводок · Enter — отдать · Backspace — назад · Esc — отмена`
+    : `отряд: ${name} · R — маршрут`;
+}
+
+let lastPanel = 0;
+function panel(st, side, m){
+  const now = performance.now(); if(now - lastPanel < 150) return; lastPanel = now;
+  if(twin){ genPanel(st); $('draft').innerHTML = draftText(); }
+  $('tlabel').textContent = `${((T - t0) / 1000).toFixed(1)} / ${((tMax - t0) / 1000).toFixed(1)} с`;
+  $('scrub').value = T;
+  if(m){
+    const s = m.start, e = m.end && m.end.t <= T ? m.end : null;
+    $('match').innerHTML = `${s.id}<br>${((T - s.t) / 1000).toFixed(0)} с из ${s.limit}` +
+      (e ? `<br>конец: ${e.reason}, живы A ${e.alive_a} / B ${e.alive_b}` : '');
+  }
+  const rows = Object.entries(st).filter(([, s]) => side[s.sq])
+    .sort((a, b) => (side[a[1].sq] > side[b[1].sq]) - (side[a[1].sq] < side[b[1].sq]) || a[1].dead - b[1].dead);
+  $('roster').innerHTML = rows.map(([id, s]) =>
+    `<div data-id="${id}" class="${side[s.sq]}" style="${s.dead ? 'opacity:.4' : ''}">${+id === selId ? '▶' : ' '} ${side[s.sq]} ` +
+    `${s.comm} ${rankLetter(s.rank)} ${WK[s.wk] || '—'} ${s.dead ? '✝' : Math.round(s.hp * 100) + '%'} ${s.dead ? '' : actName(s)}</div>`).join('');
+  const s = selId != null ? st[selId] : null;
+  if(s){
+    const e = st[s.be];
+    const d = e ? Math.hypot(e.x - s.x, e.z - s.z).toFixed(0) + ' м' : '—';
+    const seenBy = Object.values(st).filter(o => !o.dead && o.bsee && o.be === selId).length;
+    $('selinfo').innerHTML = `#${selId} ${s.comm} ${rankLetter(s.rank)} (${s.rank}), сторона ${side[s.sq] || '?'}<br>` +
+      `ствол ${s.wpn || '—'} (${WK[s.wk] || s.wk || '—'}), магазин ${s.mag}<br>` +
+      `${s.dead ? 'убит' : (s.cr ? 'сидит' : 'стоит') + ', здоровье ' + Math.round(s.hp * 100) + '%'}<br>` +
+      `действие: ${actName(s) || '—'}<br>враг #${s.be} ${s.bsee ? 'ВИДИТ' : 'не видит'}, ${d}<br>его видят врагов: ${seenBy}`;
+  }
+  const i = bsearch(keyEv, T);
+  const out = [];
+  for(let j = i; j >= 0 && out.length < 40; j--) out.push(fmtEv(keyEv[j], side));
+  $('evlog').innerHTML = out.join('');
+}
+function fmtEv(e, side){
+  const ts = `<span style="color:#555">${((e.t - t0) / 1000).toFixed(1)}</span> `;
+  const who = id => { const tr = tracks[id]; const s = tr && tr[0]; return s ? `<span class="${side[s.sq] || ''}">#${String(id).slice(-4)}</span>` : '#' + id; };
+  switch(e.ev){
+    case 'death': return `<div>${ts}✝ ${who(e.npc)} ← ${who(e.killer)}</div>`;
+    case 'wpn_sidearm': return `<div>${ts}${who(e.npc)} на пистолет ${e.to}, ${e.d.toFixed(0)} м</div>`;
+    case 'wpn_sidearm_end': return `<div>${ts}${who(e.npc)} пистолет убран (${e.why})</div>`;
+    case 'wpn_switch': return `<div>${ts}${who(e.npc)} ствол → ${e.to} (${e.d} м)</div>`;
+    case 'match_start': return `<div style="color:#fff">${ts}═ матч ${e.id}</div>`;
+    case 'match_end': return `<div style="color:#fff">${ts}═ конец: ${e.reason}</div>`;
+    case 'play_start': return `<div>${ts}отряд …${String(e.sq).slice(-3)}: розыгрыш ${e.play} (${e.reason})</div>`;
+    case 'play_end': return `<div>${ts}отряд …${String(e.sq).slice(-3)}: розыгрыш окончен</div>`;
+    case 'kw_fire': return `<div>${ts}${who(e.npc)} добивает ${who(e.victim)}</div>`;
+    case 'bark': return `<div style="color:#777">${ts}${who(e.npc)}: ${e.theme}</div>`;
+    case 'order': return `<div style="color:#ffd740">${ts}${squads[e.sq]?.name || e.sq}: ${{go:'приказ пошёл', wait:'приказ ждёт сигнала ' + e.code, done:'приказ выполнен', hold:'держать место'}[e.state] || e.state}</div>`;
+    case 'cmd_fail': return `<div style="color:#ff5252">${ts}команда ${e.cmd} не прошла: ${e.why}</div>`;
+    case 'intel': return `<div style="color:#777">${ts}${who(e.npc)} опознал ствол ${who(e.enemy)}: ${e.cls || e.sec || ''}</div>`;
+    default: return `<div style="color:#666">${ts}${e.ev}</div>`;
+  }
+}
+
+// ─── управление ──────────────────────────────────────────────────────────────────────────────
+function setT(t){ T = Math.max(t0, Math.min(tMax, t)); }
+// к бою: рамка вокруг точки матча и всех его бойцов (на момент T, иначе — на старте матча)
+function toMatch(){
+  const m = matchAt(T) || matches[0];
+  const pts = [];
+  for(const id in tracks){
+    const s = npcAt(+id, T) || (m && npcAt(+id, m.start.t + 1000));
+    if(s && (!m || m.side[s.sq])) pts.push([s.x, s.y, s.z]);
+  }
+  if(m) pts.push([m.start.zx, pts.length ? pts[0][1] : 0, m.start.zz]);
+  if(!pts.length) return;
+  const mn = [0, 1, 2].map(i => Math.min(...pts.map(p => p[i]))), mx = [0, 1, 2].map(i => Math.max(...pts.map(p => p[i])));
+  const c = [0, 1, 2].map(i => (mn[i] + mx[i]) / 2);
+  const r = Math.max(25, Math.hypot(mx[0] - mn[0], mx[2] - mn[2]) * 0.6);
+  controls.target.copy(W(c[0], mn[1], c[2]));
+  camera.position.copy(W(c[0], mn[1] + r * 1.1, c[2] - r * 0.75));   // с юга, под ~55°
+  eyes = false; setBtn();
+}
+function topView(){
+  const t = controls.target;
+  camera.position.set(t.x, t.y + 120, t.z + 0.01);
+  eyes = false; setBtn();
+}
+function setBtn(){
+  $('follow').className = follow ? 'on' : ''; $('eyes').className = eyes ? 'on' : '';
+  $('selinfo').style.color = selId != null ? '' : '#666';
+  $('play').textContent = playing ? '❚❚' : '▶';
+  controls.enabled = !eyes;
+}
+function select(id){ selId = id; if(id == null){ follow = false; eyes = false; } setBtn(); }
+// третье лицо: точка вращения — грудь бойца, камера за плечом; дальше её можно крутить мышью,
+// а смещение сохраняется — камера едет вместе с бойцом
+function thirdPerson(on){
+  if(selId == null) return;
+  follow = on; eyes = false;
+  const s = npcAt(selId, T);
+  if(on && s){
+    const f = Math.hypot(s.fx, s.fz) > 0.01 ? [s.fx / Math.hypot(s.fx, s.fz), s.fz / Math.hypot(s.fx, s.fz)] : [0, 1];
+    controls.target.copy(W(s.x, s.y + 1.3, s.z));
+    camera.position.copy(W(s.x - f[0] * 5 + f[1] * 1.2, s.y + 2.8, s.z - f[1] * 5 - f[0] * 1.2));
+  }
+  setBtn();
+}
+// Tab — следующий живой боец матча (Shift — предыдущий)
+function cycle(dir){
+  const m = matchAt(T);
+  const ids = Object.keys(tracks).map(Number).filter(id => { const s = npcAt(id, T); return s && !s.dead && (!m || m.side[s.sq]); })
+    .sort((a, b) => { const sa = npcAt(a, T), sb = npcAt(b, T); return (m ? (m.side[sa.sq] > m.side[sb.sq]) - (m.side[sa.sq] < m.side[sb.sq]) : 0) || a - b; });
+  if(!ids.length) return;
+  const i = ids.indexOf(selId);
+  select(ids[(i + dir + ids.length) % ids.length]);
+  if(eyes) setBtn(); else thirdPerson(true);
+}
+$('play').onclick = () => { if(!playing && T >= tMax) T = t0; playing = !playing; setBtn(); };
+$('scrub').oninput = e => { setT(+e.target.value); };
+$('follow').onclick = () => thirdPerson(!follow);
+$('eyes').onclick = () => { if(selId != null){ eyes = !eyes; if(!eyes) thirdPerson(true); setBtn(); } };
+$('roster').onclick = e => { const d = e.target.closest('[data-id]'); if(d) select(+d.dataset.id); };
+// Кнопки не берут фокус: иначе пробел «нажимает» последнюю нажатую (например, «заново»), а
+// выпадающий список, оставшись в фокусе, глотает WASD. Клик по сцене снимает фокус с чего угодно.
+addEventListener('mousedown', e => { if(e.target.closest('button')) e.preventDefault(); });
+renderer.domElement.addEventListener('pointerdown', () => document.activeElement?.blur?.());
+$('run').addEventListener('change', e => e.target.blur());
+// клавиши — по физической кнопке (e.code), так они работают и в русской раскладке
+const held = new Set();
+const FLY = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE'];
+addEventListener('keydown', e => {
+  if(e.target.tagName === 'SELECT') return;
+  const c = e.code;
+  if(FLY.includes(c)){ held.add(c); if(follow || eyes){ follow = false; eyes = false; setBtn(); } return; }
+  if(twin){
+    if(c === 'Space'){ e.preventDefault(); return genAction('pp'); }
+    if(c === 'KeyR') return genAction(e.shiftKey ? 'route1' : 'route');
+    if(c === 'Enter'){ e.preventDefault(); return genAction('send'); }
+    if(c === 'Backspace' && draft){ e.preventDefault(); draft.pts.pop(); lastPanel = 0; return; }
+    if(c === 'Escape' && draft){ draft = null; lastPanel = 0; return; }
+    if(c === 'Digit1' || c === 'Digit2' || c === 'Digit3'){ curG = +c.slice(-1); lastPanel = 0; return; }
+    if(c === 'KeyG') return genAction('code');
+    if(c === 'KeyH') return genAction(e.shiftKey ? 'hold1' : 'hold');
+    if(c === 'KeyZ') return genAction('goA');
+    if(c === 'KeyX') return genAction('goB');
+    if(c === 'KeyC') return genAction('goC');
+    if(c === 'BracketLeft') return genAction('slow');
+    if(c === 'BracketRight') return genAction('fast');
+  }
+  if(c === 'Space'){ e.preventDefault(); $('play').onclick(); }
+  else if(c === 'ArrowRight'){ e.preventDefault(); setT(T + (e.shiftKey ? 5000 : 1000)); }
+  else if(c === 'ArrowLeft'){ e.preventDefault(); setT(T - (e.shiftKey ? 5000 : 1000)); }
+  else if(c === 'Tab'){ e.preventDefault(); cycle(e.shiftKey ? -1 : 1); }
+  else if(c === 'KeyF'){ $('follow').onclick(); }
+  else if(c === 'KeyV'){ $('eyes').onclick(); }
+  else if(c === 'KeyT'){ follow = false; topView(); }
+  else if(c === 'KeyM'){ follow = false; toMatch(); }
+  else if(c === 'Escape'){ select(null); }
+});
+addEventListener('keyup', e => held.delete(e.code));
+addEventListener('blur', () => held.clear());
+// полёт: вперёд/вбок — по земле в сторону взгляда камеры, Q/E — вниз/вверх; скорость растёт с
+// расстоянием до точки вращения (вблизи — шагом, издалека — быстро)
+function fly(dt){
+  if(!held.size) return;
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0;
+  if(fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
+  fwd.normalize();
+  const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+  const v = new THREE.Vector3();
+  if(held.has('KeyW')) v.add(fwd); if(held.has('KeyS')) v.sub(fwd);
+  if(held.has('KeyD')) v.add(right); if(held.has('KeyA')) v.sub(right);
+  if(held.has('KeyE')) v.y += 1; if(held.has('KeyQ')) v.y -= 1;
+  const speed = Math.max(6, camera.position.distanceTo(controls.target) * 0.9) * (held.has('ShiftLeft') || held.has('ShiftRight') ? 4 : 1);
+  v.multiplyScalar(speed * dt / 1000);
+  camera.position.add(v); controls.target.add(v);
+}
+addEventListener('keydown', e => { if(e.code.startsWith('Shift')) held.add(e.code); });
+// клик (без протяжки) — выбрать бойца
+const ray = new THREE.Raycaster(); let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if(!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4 || e.button !== 0) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
+  if(twin && draft){
+    const p = groundAt(e.clientX, e.clientY);
+    if(p){ draft.pts.push({ ...p, g: curG }); lastPanel = 0; }
+    return;
+  }
+  const bodies = Object.values(npcObj).filter(o => o.g.visible).map(o => o.body);
+  const hit = ray.intersectObjects(bodies)[0];
+  select(hit ? hit.object.userData.npc : null);
+  if(twin && hit){ const s = npcAt(hit.object.userData.npc, T); if(s){ selSq = s.sq; lastPanel = 0; } }
+});
+renderer.domElement.addEventListener('dblclick', () => { if(selId != null && !draft) thirdPerson(true); });
+
+// ─── список записей ─────────────────────────────────────────────────────────────────────────
+async function fillRuns(){
+  const sel = $('run');
+  sel.innerHTML = `<option value="">живой trace игры</option>`;
+  try{
+    const txt = await (await fetch('match/results.jsonl?t=' + Date.now())).text();
+    const rs = txt.split('\n').filter(Boolean).map(l => { try{ return JSON.parse(l); }catch(_){ return null; } }).filter(Boolean).reverse();
+    for(const r of rs){
+      const a = r.setup.A.squads[0], b = r.setup.B.squads[0];
+      const o = document.createElement('option');
+      o.value = 'match/' + r.run;
+      o.textContent = `#${r.id.split('-').pop()} ${r.directors.A} ${a.faction} ${a.tier}×${a.n} vs ${r.directors.B} ${b.faction} ${b.tier}×${b.n} → ${r.score_a > 0 ? '+' : ''}${r.score_a.toFixed(2)} ${r.reason} [${r.spec}]`;
+      sel.appendChild(o);
+    }
+  }catch(_){}
+  // бои двойника: sim/out/*.jsonl (список папки отдаёт сам сервер)
+  try{
+    const html = await (await fetch('sim/out/?t=' + Date.now())).text();
+    const files = [...html.matchAll(/href="([^"]+\.jsonl)"/g)].map(m => decodeURIComponent(m[1])).sort().reverse();
+    for(const f of files){
+      const o = document.createElement('option');
+      o.value = 'sim/out/' + f; o.textContent = `ДВОЙНИК: ${f}`;
+      sel.insertBefore(o, sel.children[1] || null);
+    }
+  }catch(_){}
+  sel.value = RUN || '';
+  sel.onchange = () => { location.search = sel.value ? '?run=' + encodeURIComponent(sel.value) : ''; };
+}
+
+let liveLen = 0;
+async function loadTrace(){
+  const r = await fetch(RUN ? RUN : '/log?t=' + Date.now());
+  if(!r.ok || r.status === 204) return false;
+  const text = await r.text();
+  if(text.length === liveLen) return false;
+  const restarted = text.length < liveLen;
+  liveLen = text.length;
+  const atEnd = T >= tMax - 1000;
+  ingest(text);
+  if(restarted) T = t0;
+  if(!RUN && atEnd && !twin) T = tMax;
+  if(twin) document.body.classList.add('twin');
+  return true;
+}
+
+let last = performance.now();
+function loop(now){
+  const dt = now - last; last = now;
+  if(playing){ setT(T + dt * +$('speed').value); if(T >= tMax){ playing = false; setBtn(); } }
+  else if(twin){
+    // живой двойник: время идёт само, на ~0.3 с позади последнего снимка; отстали — догоняем
+    if(simState.paused || simState.over) T = tMax;
+    else { T = Math.min(T + dt * simState.speed, tMax - 50); if(T < tMax - 1500) T = tMax - 300; }
+  }
+  if(!eyes){ fly(dt); controls.update(); }
+  frame();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+(async () => {
+  resize();
+  try{
+    const info = await loadMesh(LEVEL);
+    await fillRuns();
+    await loadTrace();
+    T = RUN ? t0 : tMax;
+    if(RUN && matches[0]) T = matches[0].start.t;
+    toMatch();
+    status(`${LEVEL}: ${(info.nt / 1e6).toFixed(2)} млн треугольников · ${RUN || 'живой trace'} · событий ${events.length}`);
+    if(!RUN) setInterval(loadTrace, twin ? 250 : 1000);
+    if(twin){ toMatch(); $('help').innerHTML += '<br><b>ПУЛЬТ</b>: клик по бойцу — он и его отряд · R — маршрут отряду, Shift+R — бойцу · 1/2/3 — поводок · G — сигнал · Enter — отдать · H / Shift+H — держать · Z/X/C — пуск A/B/C · пробел — пауза · [ ] — скорость'; }
+    requestAnimationFrame(loop);
+  }catch(e){ status('ошибка: ' + e.message); console.error(e); }
+})();
+</script>
+</body>
+</html>

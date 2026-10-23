@@ -9,7 +9,8 @@
 Формат матча (matches/*.json):
   {
     "id": "l07_square",                  имя матча
-    "level": "l07_military",             уровень (запечённый в levels/)
+    "level": "l07_military",             уровень (запечённый в levels/); "here" — где сейчас стоит игра
+                                         (спек на смартах годится для любой локи)
     "limit_s": 300,                      лимит времени
     "zone": {"x": 40, "z": 10, "r": 15}, точка-задача: держит тот, у кого в радиусе только свои
     "spectator": {"x": 30, "z": 40},     куда поставить игрока смотреть (рядом — иначе отряды уйдут в офлайн)
@@ -31,12 +32,17 @@
   Разброс (каждый матч заново, итог пишется в results.jsonl → setup):
     "faction": ["freedom","duty"]  "tier": "random" или список   "n": [3, 6]   "at": [{x,z}, {x,z}, ...]
     "swap": true — с вероятностью ½ стороны меняются местами спавна
+    "even": true — ранг и численность поровну обеим сторонам, все сочетания по кругу (ровная раздача за серию)
     "matchup": "random" — фракции и ранги сторон выбираются по правилам пар (pick_matchup): только
                           ВРАГИ по отношениям группировок (≤ -1000 в обе стороны; игра отвечает на
                           команду rel, без игры — базовая матрица game_relations.ltx); ИИГ против
                           всех, кроме Монолита и Греха, — на ступень ниже по рангу
+    "matchup": "ranks", "balance": 3 — бои по рангам (21.10): пара врагов, у стороны своя численность
+                          (n: [1, 4]) и один из 8 рангов (новичок … легенда); состав, где одна сторона
+                          сильнее другой больше чем в balance раз, отбрасывается. Сила — power()
   Вся локация (смарт-террейны — места, куда ходит симуляция; список игра выгружает сама, кэш levels/<уровень>_smarts.json):
     "zone": {"smart": "random", "r": 15}       точка матча — случайный смарт (или имя, или список имён)
+    "zone": {..., "defend": [смарты]}          выпал смарт из списка — сторона A рождается на точке (оборона), B атакует
     "at": {"smart_ring": [50, 120]}            спавн — смарт на таком расстоянии от точки; у B — с другой стороны
     "spectator": "zone"                         игрок встаёт на точку (с g_god on — безопасно)
     "spectator": {"aside": 30}                  игрок сбоку от боя: в 30 м от точки поперёк линии A→B
@@ -59,10 +65,12 @@
   none   — ничего не убирать, выжившие остаются на старом месте
 """
 import argparse
+import glob
 import json
 import math
 import os
 import random
+import re
 import sys
 import time
 import urllib.request
@@ -120,6 +128,12 @@ def place(spec, setup, smarts, rng, lvl=None):
         pick_name = rng.choice(pick_from)
         sm = next(s for s in smarts if s['name'] == pick_name)
         zone.update(x=sm['x'], z=sm['z'], name=sm['name'])
+    # оборона (23.10): точка из списка zone.defend — сторона A рождается на ней (тоннель Агропрома 6_4: у костра),
+    # B идёт с кольца. Случайно выпавший тоннель без этого — спавн наверху, дороги вниз не нашли, тайм-аут (011929-5).
+    if zone.get('name') and zone['name'] in spec['zone'].get('defend', []):
+        for q in setup['A']['squads']:
+            q['at'] = {'x': zone['x'], 'z': zone['z'], 'smart': zone['name']}
+        zone['defend'] = True
     ang_a = None
     for side in ('A', 'B'):
         for q in setup[side]['squads']:
@@ -147,7 +161,9 @@ def place(spec, setup, smarts, rng, lvl=None):
                         else ang_a + math.pi + rng.uniform(-math.pi / 3, math.pi / 3)
                     d = rng.uniform(*ring)
                     x, z = zone['x'] + d * math.cos(a), zone['z'] + d * math.sin(a)
-                    if lvl.has_node(x, z):
+                    # 23.10: не дальше NEAR_SMART от какого-нибудь смарта — иначе спавн за периметром (011929-5)
+                    near = not smarts or min(math.hypot(sm['x'] - x, sm['z'] - z) for sm in smarts) <= NEAR_SMART
+                    if near and lvl.has_node(x, z):
                         q['at'] = {'x': x, 'z': z, 'smart': None}
                         break
                 else:
@@ -157,6 +173,9 @@ def place(spec, setup, smarts, rng, lvl=None):
             if side == 'A':
                 ang_a = a
     return zone
+
+
+NEAR_SMART = 70  # м: случайная точка спавна на кольце — не дальше от ближайшего смарта
 
 
 def aside_point(zone, setup, dist, lvl):
@@ -255,7 +274,97 @@ def pick_matchup(rng):
             return (fa, TIERS[ta]), (fb, TIERS[tb])
 
 
-def setup_of(spec, rng):
+# ---------- бои по рангам (21.10): 1–4 на 1–4, перевес — да, избиение — нет ----------
+
+RANKS = ['novice', 'trainee', 'experienced', 'professional', 'veteran', 'expert', 'master', 'legend']
+RANK_VALUE = [1750, 5000, 7750, 10500, 13250, 16000, 22250, 30000]  # середины полос rating (game_relations.ltx)
+RANK_STEP = 1.3      # вес бойца: ступень ранга сильнее прошлой в 1.3 раза (новичок 1 … легенда 6.3)
+BALANCE = 3          # сильная сторона сильнее слабой не больше чем во столько раз (спек: "balance")
+UNPACKED = '/mnt/games/ANOMALY_DEV/tools/_unpacked/configs'
+PROFILES = {}        # группировка → [(секция бойца, ранг от, ранг до)]; заполняет load_profiles
+
+
+def power(rank, n):
+    """Сила стороны: сумма весов бойцов × √численности. Числа давят, но не в квадрат: по Ланчестеру
+    квадрат — когда все стреляют во всех сразу, а у нас укрытия и бой по очереди."""
+    return n * RANK_STEP ** rank * math.sqrt(n)
+
+
+def load_profiles():
+    """Секции бойцов sim_default_<…>_<N>: группировка (spawn_sections) и полоса ранга профиля
+    (character_desc). Профиль даёт костюм; оружие игра выдаёт по рангу, а ранг раннер ставит сам."""
+    ranges = {}
+    for fn in glob.glob(os.path.join(UNPACKED, 'gameplay', 'profiles', 'character_desc_*.xml')):
+        t = open(fn, encoding='latin-1').read()
+        c, r = re.search(r'<class>([^<]+)</class>', t), re.search(r'<rank min="(\d+)" max="(\d+)"', t)
+        if c and r:
+            ranges[c.group(1)] = (int(r.group(1)), int(r.group(2)))
+    sec, cur = {}, None
+    for fn in glob.glob(os.path.join(UNPACKED, 'creatures', 'spawn_sections_*.ltx')):
+        for line in open(fn, encoding='latin-1'):
+            line = line.split(';')[0].strip()
+            m = re.match(r'\[(sim_default_[a-z]+_\d+)\](?::(\S+))?', line)
+            if m:
+                cur = sec[m.group(1)] = {'parent': m.group(2)}
+            elif line.startswith('['):
+                cur = None
+            elif cur is not None and '=' in line:
+                k, v = (s.strip() for s in line.split('=', 1))
+                if k in ('community', 'character_profile'):
+                    cur[k] = v
+    for name, s in sec.items():
+        comm = s.get('community') or sec.get(s.get('parent'), {}).get('community')
+        prof = s.get('character_profile', name)
+        if comm and prof in ranges:
+            PROFILES.setdefault(comm, []).append((name, *ranges[prof]))
+
+
+def profile_for(faction, rank):
+    """Секция бойца, в чью полосу ранга попадает нужный; если ни в чью — ближайшая."""
+    v = RANK_VALUE[rank]
+    cands = PROFILES.get(COMMUNITY.get(faction, faction))
+    if not cands:
+        raise RuntimeError(f'нет профилей бойцов для {faction}')
+    return min(cands, key=lambda p: (max(p[1] - v, v - p[2], 0), abs((p[1] + p[2]) / 2 - v)))[0]
+
+
+def pick_ranked(spec, out, rng):
+    """Бой по рангам: пара врагов, у каждой стороны своя численность и ранг. Составы, где одна сторона
+    сильнее другой больше чем в balance раз, отбрасываем и тянем заново (4 легенды на новичка — не бой)."""
+    fa, fb = rng.choice(enemy_pairs())
+    if rng.random() < 0.5:
+        fa, fb = fb, fa
+    lim = spec.get('balance', BALANCE)
+    ns = []
+    for s in ('A', 'B'):
+        n = spec['sides'][s]['squads'][0].get('n', [1, 4])
+        ns.append(n if isinstance(n, list) else [n, n])
+    while True:
+        na, nb = rng.randint(*ns[0]), rng.randint(*ns[1])
+        ra, rb = rng.randrange(len(RANKS)), rng.randrange(len(RANKS))
+        pa, pb = power(ra, na), power(rb, nb)
+        if max(pa, pb) / min(pa, pb) <= lim:
+            break
+    for q, f, r, n, p in ((out['A']['squads'][0], fa, ra, na, pa), (out['B']['squads'][0], fb, rb, nb, pb)):
+        q.update(faction=f, tier='advanced', rank=RANKS[r], n=n, member=profile_for(f, r), power=round(p, 2))
+
+
+EVEN_ORDER = []   # «even»: очередь сочетаний (ранг, численность), перемешанная блоками
+
+
+def even_combo(spec, rng, idx):
+    """Ровная раздача (23.10, юзер): все сочетания ранг × численность по кругу, блок за блоком в случайном порядке —
+    за ночь каждого поровну, а не как выпадет. Обе стороны получают одно и то же."""
+    lo, hi = spec['sides']['A']['squads'][0].get('n', [3, 5])
+    combos = [(t, n) for t in TIERS for n in range(lo, hi + 1)]
+    while len(EVEN_ORDER) < idx:
+        block = combos[:]
+        rng.shuffle(block)
+        EVEN_ORDER.extend(block)
+    return EVEN_ORDER[idx - 1]
+
+
+def setup_of(spec, rng, idx=1):
     """Конкретный матч из спека с разбросом: кто, сколько, какого ранга, откуда."""
     out = {}
     for s in ('A', 'B'):
@@ -276,6 +385,20 @@ def setup_of(spec, rng):
             q['faction'], q['tier'] = fa, ta
         for q in out['B']['squads']:
             q['faction'], q['tier'] = fb, tb
+    if spec.get('matchup') == 'ranks':
+        pick_ranked(spec, out, rng)
+    if spec.get('even'):   # ранг и численность — поровну обеим сторонам (поправка ИСГ из pick_matchup остаётся)
+        tier, n = even_combo(spec, rng, idx)
+        ta = tb = TIERS.index(tier)
+        fa, fb = out['A']['squads'][0]['faction'], out['B']['squads'][0]['faction']
+        if fa == 'isg' and fb not in ('monolith', 'greh') and ta > 0:
+            ta -= 1
+        if fb == 'isg' and fa not in ('monolith', 'greh') and tb > 0:
+            tb -= 1
+        for q in out['A']['squads']:
+            q['tier'], q['n'] = TIERS[ta], n
+        for q in out['B']['squads']:
+            q['tier'], q['n'] = TIERS[tb], n
     if spec.get('swap') and rng.random() < 0.5:  # стороны меняются местами спавна
         a, b = out['A']['squads'], out['B']['squads']
         for qa, qb in zip(a, b):
@@ -287,8 +410,12 @@ def setup_of(spec, rng):
 
 class Level:
     def __init__(self, name):
+        self.name = name
         self.meta = json.load(open(os.path.join(TWIN, 'levels', name + '.json')))
         self.vid = Image.open(os.path.join(TWIN, 'levels', name + '_vid.png')).convert('RGB').load()
+        # нижняя нода клетки — первый этаж (23.10: точка/спавн на крыше → отряд застревал на лестнице)
+        g = os.path.join(TWIN, 'levels', name + '_ground.png')
+        self.ground = Image.open(g).convert('RGB').load() if os.path.exists(g) else self.vid
         self.info = Image.open(os.path.join(TWIN, 'levels', name + '.png')).convert('RGBA').load()
 
     def y(self, x, z):
@@ -298,8 +425,10 @@ class Level:
         j = min(max(m['h'] - 1 - round((z - m['box'][2]) / m['cell']), 0), m['h'] - 1)
         return m['box'][1] + self.info[i, j][0] / 255 * (m['box'][4] - m['box'][1])
 
-    def node(self, x, z, search=6):
+    def node(self, x, z, search=6, top=False):
+        """Нода в клетке (x, z): нижняя (первый этаж), с top=True — верхняя (вид сверху)."""
         m = self.meta
+        img = self.vid if top else self.ground
         i0 = round((x - m['box'][0]) / m['cell'])
         j0 = m['h'] - 1 - round((z - m['box'][2]) / m['cell'])
         for rad in range(search + 1):  # ближайшая клетка с нодой, кольцами
@@ -309,7 +438,7 @@ class Level:
                         continue
                     i, j = i0 + di, j0 + dj
                     if 0 <= i < m['w'] and 0 <= j < m['h']:
-                        r, g, b = self.vid[i, j]
+                        r, g, b = img[i, j]
                         k = (r << 16 | g << 8 | b) - 1
                         if k >= 0:
                             return k
@@ -403,15 +532,15 @@ CLEANUP = set()   # что из уборки включено (--cleanup)
 
 
 def run_one(spec, lvl, game, rng, tag):
-    setup = setup_of(spec, rng)
-    smarts = load_smarts(game, lvl, spec['level']) if ('smart' in spec['zone'] or any(
+    setup = setup_of(spec, rng, tag)
+    smarts = load_smarts(game, lvl, lvl.name) if ('smart' in spec['zone'] or any(
         isinstance(q.get('at'), dict) and 'smart_ring' in q['at']
         for s in ('A', 'B') for q in spec['sides'][s]['squads'])) else []
     zone = place(spec, setup, smarts, rng, lvl)
     zone_vid = lvl.node(zone['x'], zone['z'])
     sides, directors = {}, {}
 
-    print(f"матч {spec['id']} #{tag}" + (f"  точка: {zone['name']}" if zone.get('name') else ''))
+    print(f"матч {spec['id']} #{tag}  {lvl.name}" + (f"  точка: {zone['name']}" if zone.get('name') else ''))
     sp = spec.get('spectator')
     eye = None  # где стоит зритель сбоку — туда же камера
     if sp == 'zone':
@@ -444,11 +573,15 @@ def run_one(spec, lvl, game, rng, tag):
         for q in setup[s]['squads']:
             section = f"{SQUAD_PREFIX.get(q['faction'], q['faction'])}_sim_squad_{q.get('tier', 'advanced')}"
             vid = lvl.node(q['at']['x'], q['at']['z'])
-            info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0)
+            rank = (q['member'], RANK_VALUE[RANKS.index(q['rank'])]) if q.get('rank') else ()  # бой по рангам
+            info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0, *rank)
             sides[s].append(int(info.split(':')[1]))
     every = sides['A'] + sides['B']
-    desc = lambda s: ' + '.join(f"{q['faction']} {q['tier']} ×{q['n']}" for q in setup[s]['squads'])
+    desc = lambda s: ' + '.join(f"{q['faction']} {q.get('rank', q['tier'])} ×{q['n']}" for q in setup[s]['squads'])
     print(f"  A {directors['A']} [{desc('A')}] {sides['A']}   B {directors['B']} [{desc('B')}] {sides['B']}")
+    pa, pb = setup['A']['squads'][0].get('power'), setup['B']['squads'][0].get('power')
+    if pa:
+        print(f"  сила A {pa} : B {pb}  (перевес ×{max(pa, pb) / min(pa, pb):.1f})")
 
     # все отряды должны выйти в онлайн, иначе стравить не получится
     if not game.dry:
@@ -506,7 +639,8 @@ def run_one(spec, lvl, game, rng, tag):
     # кусок trace этого матча — датасет для двойника
     os.makedirs(RUNS, exist_ok=True)
     stamp = time.strftime('%Y%m%d_%H%M%S')
-    path = os.path.join(RUNS, f"{spec['id']}_{stamp}_{tag}.jsonl")
+    where = f"_{lvl.name}" if spec.get('level', 'here') == 'here' else ''  # спек «здесь» играется на разных локах
+    path = os.path.join(RUNS, f"{spec['id']}{where}_{stamp}_{tag}.jsonl")
     with open(path, 'w', encoding='utf-8') as f:
         for e in game.buf:
             f.write(json.dumps(e, ensure_ascii=False) + '\n')
@@ -514,7 +648,7 @@ def run_one(spec, lvl, game, rng, tag):
 
     r = scoring.score(scoring.load(path))
     r.update(directors=directors, setup=setup, zone=zone, run=os.path.relpath(path, HERE), spec=spec['id'],
-             cvars=spec.get('cvars'))
+             cvars=spec.get('cvars'), level=lvl.name)
     with open(RESULTS, 'a', encoding='utf-8') as f:
         f.write(json.dumps(r, ensure_ascii=False) + '\n')
     scoring.show(r)
@@ -561,6 +695,14 @@ def series(spec, lvl, game, rng, args):
     return results
 
 
+def level_of(spec, game):
+    """Уровень серии: из спека или "here" — спрашиваем игру, где она сейчас (команда level без имени)."""
+    name = spec.get('level', 'here')
+    if name != 'here':
+        return name
+    return 'l07_military' if game.dry else game.call('level')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('spec')
@@ -577,12 +719,17 @@ def main():
 
     lock = None if args.dry else single_instance()  # noqa: F841 — держим файл открытым до конца
     spec = json.load(open(args.spec, encoding='utf-8'))
-    lvl = Level(spec['level'])
     rng = random.Random(args.seed)
     game = Game(args.dry)
-    if spec.get('matchup') == 'random':
+    lvl = Level(level_of(spec, game))
+    print('уровень: ' + lvl.name)
+    if spec.get('matchup') in ('random', 'ranks'):
         src = load_relations(game)
         print(f'пары врагов ({src}): ' + ', '.join(f'{a}–{b}' for a, b in enemy_pairs()))
+    if spec.get('matchup') == 'ranks':
+        load_profiles()
+        print(f"бои по рангам: перевес сил не больше ×{spec.get('balance', BALANCE)}; "
+              f"профилей бойцов: {sum(map(len, PROFILES.values()))}")
     if 'hour' in spec:  # серия при свете: часы игры вперёд до этого часа (один раз)
         print('часы игры: ' + game.call('hour', spec['hour']))
     restore = {}

@@ -10,3 +10,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# арт игры (нашивки) — каждый запекает из своей установки: tools/twin/bake_ui.py
+tools/twin/assets/

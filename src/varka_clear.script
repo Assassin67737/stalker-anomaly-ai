@@ -1,0 +1,222 @@
+-- varka_clear.script — РУКИ веры v2 (22.10.2026): ЗАГЛЯНУТЬ и ДЕРЖАТЬ КРАЙ поверх боя
+--
+-- Мозг — varka_belief (облако отряда, тени, щели, роли). Здесь тело — в ГЛАВНОМ планировщике, как
+-- жёсткий приказ varka_cmd (188204): бой, опасность и A-Life уступают, пока у бойца есть роль.
+--
+-- Почему не в боевом подпланировщике (id 34, где жил старый поиск). Замер 29 боёв Агропрома (22.10):
+-- пока цель есть, но не видна, бойцы в ванильных «в укрытие» 24%, «выглядывает» 13%, «ищет врага» 11%,
+-- «обходит» 10%; наше 34 — ни разу. Оно приходится на время, когда цели нет вообще, а без цели облаку
+-- не из чего родиться. Рук не было.
+--
+-- Роль есть, пока у отряда живое облако, а боец жив, не ранен, не видит свою цель и не под приказом
+-- (varka_belief.role). Увидел врага — роли нет, стреляет ванильный бой. Граната рядом — уступаем.
+-- Обе роли начинаются ЗАСАДОЙ У УГЛА (деталь II порядка, 22.10, юзер: «гусиным шагом вдоль стены к углу
+-- и ждать, нацелившись на место выхода»). Точку засады выбирает мозг (varka_belief.ambush_of): вычищенная
+-- клетка у щели, откуда щель видна сидя, стена — со стороны тени. Фазы рук:
+--   approach — гусиным шагом (sneak) к точке засады, ствол в щель;
+--   wait     — сидит (hide), целится в щель. hold ждёт, пока роль жива. peek ждёт своё терпение;
+--   step     — терпение кончилось (только peek): гусиным шагом в саму щель, взгляд в гущу тени; дальше
+--              тень отступает, мозг даёт новую щель. После шага WAIT_COOLDOWN без новых засад — иначе
+--              боец сидел бы у каждой клетки края.
+-- Точки засады нет (тень ещё никто не видел, у щели нет вычищенного угла) — сразу step к щели;
+-- hold без засады — идёт, пока щель не видна, и садится там (как было).
+-- Терпение у каждого своё: PATIENCE_MS + разброс по id (детерминированно, без math.random) — два бойца,
+-- ждущих друг друга у углов, не срываются в один миг (мультик Диснея — idea-corner-ambush).
+-- 22.10: гусиный шаг вместо полного роста (raid): заглядывающий получал пулю чаще ванили (22% против 18%).
+--
+-- ОКНО ПЕРВОГО ВЫСТРЕЛА (22.10, после 11 боёв): нашёл цель из роли — FIRST_SHOT_MS бьёт с места сам,
+-- сидя (он и так присевший), потом ванильный бой. Замер: находка из веры видит врага первой вдвое чаще
+-- ванили (враг видел раньше 12% против 24%), а попадает в первые 3 с реже (10% против 18%) —
+-- ванильная реакция («внезапная атака», бег в укрытие) съедала фору.
+--
+-- id: 188209 оценщик, 188210 действие (188201–188208 заняты: приказы, перегруппировка, добивание).
+
+local EVA_CLEAR, ACT_CLEAR = 188209, 188210
+local EVA_HARD   = 188203   -- жёсткий приказ varka_cmd: главнее веры
+local ARRIVE_SQR = 4        -- м², дошёл
+local MOVE_MS    = 500      -- как часто пересматриваем ноги и позу
+local RETARGET   = 3        -- м: цель роли сдвинулась дальше — пост заново
+local FIRST_SHOT_MS = 2500  -- мс: окно первого выстрела
+local PATIENCE_MS  = 12000  -- мс: сколько ждёт у угла заглядывающий (основа)
+local PATIENCE_JIT = 6000   -- мс: разброс терпения по бойцам
+local WAIT_COOLDOWN = 20000 -- мс после шага за угол без новых засад
+
+local function patience(id) return PATIENCE_MS + (id * 7919 % 1000) / 1000 * PATIENCE_JIT end
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), ev, f) end
+end
+
+-- Окно открывает оценщик, а не действие: в кадр, когда боец увидел цель, роль уже пропала, и без
+-- окна планировщик отдал бы его бою раньше, чем действие успеет выстрелить. Фора — только тому,
+-- кто был в наших руках (varka_clear_active); окно одно на заход, сбрасывается в finalize.
+local function first_shot(npc, st)
+	local be = npc:best_enemy()
+	if not (be and npc:see(be)) then return false end
+	local now = time_global()
+	if not st.varka_clear_fire then
+		if not st.varka_clear_active then return false end
+		st.varka_clear_fire = now + FIRST_SHOT_MS
+	end
+	return now < st.varka_clear_fire
+end
+
+class "eva_varka_clear" (property_evaluator)
+function eva_varka_clear:__init(name) super(nil, name) end
+function eva_varka_clear:evaluate()
+	local npc = self.object
+	if not npc:alive() or IsWounded(npc) then return false end
+	local bd = npc:best_danger()
+	if bd and bd:type() == danger_object.grenade then return false end
+	local st = db.storage[npc:id()]
+	if st and first_shot(npc, st) then return true end
+	-- 23.10: видит врага, окно первого выстрела позади — отдать бой ванили. Раньше роль держала его у нас:
+	-- видит и молчит (бой 223518-6, Монолит: 24% времени «вижу врага» здесь, выстрел в 6%).
+	local be = npc:best_enemy()
+	if be and npc:see(be) then return false end
+	return varka_belief.role(npc) ~= nil
+end
+
+class "act_varka_clear" (action_base)
+function act_varka_clear:__init(name) super(nil, name) end
+
+function act_varka_clear:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	npc:set_path_type(game_object.level_path)
+	self.next_move, self.kind, self.tx, self.tz, self.post, self.firing = 0, nil, nil, nil, nil, nil
+	self.phase, self.wait_until, self.no_wait_until, self.amb = nil, nil, 0, nil
+	db.storage[npc:id()].varka_clear_active = true
+	emit(npc, "clear_start", {})
+end
+
+function act_varka_clear:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	-- окно первого выстрела: бьём с места, на посту — сидя
+	local st = db.storage[npc:id()]
+	local be = npc:best_enemy()
+	if st and st.varka_clear_fire and be and npc:see(be) then
+		if not self.firing then
+			self.firing = true
+			emit(npc, "clear_fire", { enemy = be:id(), role = self.kind or "" })
+		end
+		local wpn = npc:active_item()
+		local sniper = wpn and IsWeapon(wpn) and ini_sys:r_string_ex(wpn:section(), "kind") == "w_sniper"
+		local state = sniper and "hide_sniper_fire" or "hide_fire"
+		state_mgr.set_state(npc, state, nil, nil, { look_object = be }, { fast_set = true })
+		utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_clear")
+		return
+	end
+	-- 23.10: окно кончилось или цель скрылась — снять огонь. Иначе hide_fire висит (роли может не быть,
+	-- и ниже состояние не перезапишется) и state_mgr лупит по цели сквозь стену (бой 223518-7: бандит
+	-- стрелял «по памяти», пуля в препятствие в 4.9 м, пока ему под ноги летела РГД-5).
+	if self.firing then
+		self.firing = nil
+		state_mgr.set_state(npc, "hide", nil, nil, nil)
+	end
+	local r = varka_belief.role(npc)
+	if not r then return end
+	local now = time_global()
+	-- роль сменилась или её цель уехала — заново: с засады, если у щели есть угол (заглядывающему —
+	-- если не только что шагал за угол)
+	if r.kind ~= self.kind or not self.tx or (r.x - self.tx) ^ 2 + (r.z - self.tz) ^ 2 > RETARGET * RETARGET then
+		self.kind, self.tx, self.tz, self.post, self.wait_until = r.kind, r.x, r.z, nil, nil
+		-- точка засады фиксируется на всю роль: мозг пересчитывает её раз в секунду, и сидящий у угла
+		-- пересаживался бы на соседнюю клетку
+		local ambush = r.avid and (r.kind == "hold" or now >= self.no_wait_until)
+		self.amb = ambush and { vid = r.avid, pos = vector():set(r.ax, r.ay, r.az) } or nil
+		self.phase = ambush and "approach" or "step"
+		emit(npc, "clear_role", { role = r.kind, phase = self.phase, tx = r.x, tz = r.z, lx = r.deep.x, lz = r.deep.z,
+		                          ax = r.ax or 0, az = r.az or 0 })
+		self.next_move = 0
+	end
+	if now < self.next_move then return end
+	self.next_move = now + MOVE_MS
+
+	if self.phase == "approach" then
+		-- к углу гусиным шагом, ствол в щель
+		if npc:position():distance_to_sqr(self.amb.pos) > ARRIVE_SQR then
+			state_mgr.set_state(npc, "sneak", nil, nil, { look_position = r.look })
+			utils_obj.send_to_nearest_accessible_vertex(npc, self.amb.vid, "varka_clear")
+			return
+		end
+		self.phase = "wait"
+		self.wait_until = r.kind == "peek" and now + patience(npc:id()) or nil
+		emit(npc, "clear_post", { role = r.kind, wait = self.wait_until and (self.wait_until - now) or -1 })
+	end
+
+	if self.phase == "wait" then
+		-- сидит у угла, целится в место выхода
+		if self.wait_until and now >= self.wait_until then
+			self.phase = "step"
+			self.no_wait_until = now + WAIT_COOLDOWN
+			emit(npc, "clear_step", {})
+		else
+			state_mgr.set_state(npc, "hide", nil, nil, { look_position = r.look })
+			utils_obj.send_to_nearest_accessible_vertex(npc, self.amb.vid, "varka_clear")
+			return
+		end
+	end
+
+	if r.kind == "hold" then
+		-- ДЕРЖАТЬ КРАЙ без угла: идём, пока щель не видна; увидели — пост здесь, сидя, ствол в щель
+		if not self.post and varka_belief.sees_point(npc, r.look) then
+			self.post = npc:level_vertex_id()
+			emit(npc, "clear_post", { role = "hold", wait = -1 })
+		end
+		state_mgr.set_state(npc, self.post and "hide" or "sneak", nil, nil, { look_position = r.look })
+		utils_obj.send_to_nearest_accessible_vertex(npc, self.post or r.vid, "varka_clear")
+	else
+		-- ШАГ ЗА УГОЛ: гусиным шагом в щель, взгляд в гущу тени; дошли — сидим, целимся туда
+		local far = npc:position():distance_to_sqr(vector():set(r.x, r.y, r.z)) > ARRIVE_SQR
+		state_mgr.set_state(npc, far and "sneak" or "hide", nil, nil, { look_position = r.deep })
+		utils_obj.send_to_nearest_accessible_vertex(npc, far and r.vid or npc:level_vertex_id(), "varka_clear")
+	end
+end
+
+function act_varka_clear:finalize()
+	local npc = self.object
+	local st = db.storage[npc:id()]
+	if st then st.varka_clear_active, st.varka_clear_fire = nil, nil end
+	emit(npc, "clear_end", {})
+	action_base.finalize(self)
+end
+
+-- Встраивание — как varka_cmd.hook_npc. После него: условие «нет жёсткого приказа» ссылается на
+-- его оценщик 188203, а условие на несуществующий оценщик — падение движка.
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+	manager:add_evaluator(EVA_CLEAR, eva_varka_clear("eva_varka_clear"))
+	local act = act_varka_clear("act_varka_clear")
+	act:add_precondition(wp(stalker_ids.property_alive, true))
+	act:add_precondition(wp(EVA_CLEAR, true))
+	if varka_cmd then act:add_precondition(wp(EVA_HARD, false)) end
+	act:add_effect(wp(EVA_CLEAR, false))
+	manager:add_action(ACT_CLEAR, act)
+	-- уступают вере те же, кто уступает жёсткому приказу (только действия, которые есть у всех)
+	local yield = { xr_actions_id.alife, xr_actions_id.state_mgr + 2,
+		stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	for _, id in ipairs(yield) do
+		manager:action(id):add_precondition(wp(EVA_CLEAR, false))
+	end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local st = db.storage[npc:id()]
+	-- флаг в db.storage: после офлайна боец приходит с новым планировщиком — встраиваемся заново
+	if not st or st.varka_clear_hooked then return end
+	if varka_cmd and not st.varka_cmd_hooked then return end  -- ждём приказы (см. выше)
+	st.varka_clear_hooked = true
+	hook_npc(npc)
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+end

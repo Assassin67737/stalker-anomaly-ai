@@ -1,0 +1,992 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VARKA Конструктор</title>
+<style>
+:root {
+  --bg: #12140f;
+  --bg2: #1a1d16;
+  --panel: #1e211a;
+  --line: #3a3f33;
+  --text: #e4e2d6;
+  --dim: #8e8c7e;
+  --accent: #c8b45a;
+  --danger: #d0604f;
+}
+* { box-sizing: border-box; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.35 "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace; overflow: hidden; }
+#app { display: flex; height: 100%; }
+#board { position: relative; flex: 1; overflow: hidden; touch-action: none;
+  background: radial-gradient(circle at center, var(--bg2) 0%, var(--bg) 70%); }
+#table { position: absolute; border: 1px dashed var(--line); border-radius: 50%; pointer-events: none; }
+#tableHint { position: absolute; color: var(--dim); opacity: .5; pointer-events: none; text-align: center; width: 320px; }
+
+/* --- примитивы на кольце --- */
+.prim { position: absolute; transform: translate(-50%, -50%); padding: 3px 8px; border-radius: 4px;
+  border: 1px solid var(--c); color: var(--c); background: #0e100c; cursor: grab; user-select: none;
+  white-space: nowrap; font-size: 11.5px; letter-spacing: .02em; }
+.prim:hover { background: var(--c); color: #0e100c; z-index: 5; }
+.prim.none { border-style: dashed; opacity: .6; }
+.prim.lua::after { content: "•"; margin-left: 4px; opacity: .7; }
+.catlabel { position: absolute; transform: translate(-50%, -50%); font-size: 10px; letter-spacing: .15em;
+  color: var(--c); opacity: .55; pointer-events: none; white-space: nowrap; }
+
+/* --- детали на столе --- */
+.piece { position: absolute; min-width: 120px; max-width: 380px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px #0008; z-index: 10; }
+.piece.sel { border-color: var(--accent); }
+.piece.fixed .ph { color: var(--accent); }
+.piece.drop { outline: 2px solid var(--accent); }
+.ph { display: flex; gap: 6px; align-items: center; padding: 3px 6px; cursor: move; color: var(--dim);
+  border-bottom: 1px solid var(--line); font-size: 11px; user-select: none; }
+.ph .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph button { background: none; border: 0; color: var(--dim); cursor: pointer; font: inherit; padding: 0 2px; }
+.ph button:hover { color: var(--danger); }
+.pb { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 6px; }
+.it { padding: 2px 6px; border-radius: 3px; border: 1px solid var(--c); color: var(--c); cursor: grab;
+  user-select: none; font-size: 11.5px; white-space: nowrap; }
+.it.ref { border-style: double; border-width: 3px; padding: 0 5px; }
+.it.ins { box-shadow: -3px 0 0 var(--accent); }
+.it .pr { color: var(--text); opacity: .8; margin-left: 4px; }
+.jn { color: var(--dim); cursor: pointer; padding: 0 2px; user-select: none; font-weight: bold; }
+.jn:hover { color: var(--accent); }
+.jn.phase { color: var(--accent); font-weight: normal; letter-spacing: .05em; }
+.brk { flex-basis: 100%; height: 0; border-top: 1px dashed var(--line); margin: 3px 0 1px; }
+#pass .formula, .card .fm { white-space: pre-line; }
+
+.ghost { position: fixed; pointer-events: none; z-index: 1000; opacity: .85; transform: translate(-50%, -50%); }
+
+/* --- сквад --- */
+.sq { display: flex; gap: 3px; flex-wrap: wrap; padding: 4px 6px 0; }
+.mem { font-size: 10.5px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--line); color: var(--dim);
+  cursor: pointer; user-select: none; }
+.mem.cap { border-color: var(--accent); color: var(--accent); }
+.mem.init { border-color: #ff8a5c; color: #ff8a5c; }
+.mem.hl { background: var(--text); color: #0e100c; }
+.it .who { font-size: 10px; margin-right: 4px; color: var(--text); opacity: .9; }
+.it.dim { opacity: .2; }
+#pop { position: fixed; z-index: 1500; background: #0b0c09; border: 1px solid var(--accent); border-radius: 6px;
+  padding: 8px; width: 250px; display: none; box-shadow: 0 6px 20px #000a; }
+#pop .t { color: var(--accent); margin-bottom: 6px; }
+#pop .l { color: var(--dim); font-size: 10px; letter-spacing: .1em; margin: 8px 0 4px; }
+#pop input { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 4px 6px; border-radius: 4px; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; cursor: pointer; font-size: 11px; color: var(--dim); user-select: none; }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip.on.ini { border-color: #ff8a5c; color: #ff8a5c; }
+.lanes { background: var(--bg); border-radius: 4px; padding: 6px; font-size: 11px; }
+.lane { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.lane:last-child { border-bottom: 0; }
+.lane b { color: var(--text); }
+.lane span { color: var(--dim); }
+#tip { position: fixed; z-index: 2000; max-width: 300px; background: #0b0c09; border: 1px solid var(--line);
+  padding: 6px 8px; border-radius: 4px; font-size: 11.5px; pointer-events: none; display: none; }
+#tip b { color: var(--accent); }
+#tip code { color: var(--dim); }
+
+/* --- панель --- */
+#side { width: 340px; border-left: 1px solid var(--line); background: var(--panel); display: flex;
+  flex-direction: column; overflow: hidden; }
+#side h2 { font-size: 11px; letter-spacing: .15em; color: var(--dim); margin: 12px 12px 6px; font-weight: normal; }
+.tools { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.btn { background: none; border: 1px solid var(--line); color: var(--text); padding: 4px 8px; border-radius: 4px;
+  cursor: pointer; font: inherit; font-size: 11.5px; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+#lib { overflow-y: auto; max-height: 34%; padding: 0 8px; }
+.lib { padding: 4px 6px; border-radius: 4px; cursor: grab; display: flex; gap: 6px; align-items: baseline; user-select: none; }
+.lib:hover { background: var(--bg2); }
+.lib.sel { background: var(--bg2); outline: 1px solid var(--accent); }
+.lib .st { font-size: 10px; color: var(--dim); }
+.lib .st.f { color: var(--accent); }
+.lib .fm { color: var(--dim); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+#pass { flex: 1; overflow-y: auto; padding: 0 12px 16px; border-top: 1px solid var(--line); }
+#pass label { display: block; color: var(--dim); font-size: 10.5px; letter-spacing: .08em; margin: 10px 0 3px; }
+#pass input, #pass textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  font: inherit; padding: 5px 6px; border-radius: 4px; }
+#pass textarea { min-height: 54px; resize: vertical; }
+#pass .formula { background: var(--bg); padding: 6px; border-radius: 4px; color: var(--accent); word-break: break-word; }
+.facs { display: flex; flex-wrap: wrap; gap: 4px; }
+.fac { border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; cursor: pointer; font-size: 11px; color: var(--dim); user-select: none; }
+.fac.on { border-color: var(--accent); color: var(--accent); }
+.empty { color: var(--dim); padding: 12px; font-size: 12px; }
+#cards { width: 300px; border-right: 1px solid var(--line); background: var(--panel); display: flex;
+  flex-direction: column; overflow: hidden; }
+#cards h2 { font-size: 11px; letter-spacing: .15em; color: var(--accent); margin: 12px 12px 6px; font-weight: normal; }
+#cardList { flex: 1; overflow-y: auto; padding: 0 10px 12px; }
+.card { display: block; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px;
+  padding: 7px 9px; margin-bottom: 8px; cursor: grab; background: var(--bg2); user-select: none; }
+.card:hover { border-color: var(--accent); }
+.card.sel { outline: 1px solid var(--accent); }
+.card .n { color: var(--accent); font-weight: bold; }
+.card .fm { display: block; white-space: normal; color: var(--text); opacity: .8; margin: 4px 0; font-size: 11px; }
+.card .meta { color: var(--dim); font-size: 10.5px; }
+.card .row { display: flex; gap: 6px; margin-top: 6px; }
+.card .row button { background: none; border: 1px solid var(--line); color: var(--dim); font: inherit; font-size: 10.5px;
+  padding: 1px 6px; border-radius: 3px; cursor: pointer; }
+.card .row button:hover { color: var(--accent); border-color: var(--accent); }
+.card .row button.del:hover { color: var(--danger); border-color: var(--danger); }
+.ph button.fx:hover { color: var(--accent); }
+.ord { display: inline-block; min-width: 22px; text-align: center; font-size: 10px; padding: 0 4px; border-radius: 3px;
+  border: 1px solid var(--accent); color: var(--accent); margin-right: 6px; }
+.ord.manual { background: var(--accent); color: #0e100c; }
+.ordhead { font-size: 10px; letter-spacing: .15em; color: var(--dim); margin: 10px 2px 6px; }
+.ordbtns { display: flex; gap: 4px; flex-wrap: wrap; }
+.ordbtns .btn.on { border-color: var(--accent); color: var(--accent); }
+.ordnote { color: var(--dim); font-size: 10.5px; margin-top: 4px; }
+.legend { color: var(--dim); font-size: 10.5px; padding: 8px 12px; border-top: 1px solid var(--line); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="cards">
+    <h2>КАРТОТЕКА ◆</h2>
+    <div id="cardList"></div>
+  </div>
+  <div id="board">
+    <div id="table"></div>
+    <div id="tableHint">тащи примитивы сюда<br>стыкуй — получится деталь</div>
+  </div>
+  <div id="side">
+    <div class="tools">
+      <button class="btn" id="bExport">экспорт .json</button>
+      <button class="btn" id="bMerge" title="добавить детали из файла к тем, что уже есть">импорт +</button>
+      <button class="btn" id="bImport" title="заменить всё содержимым файла">импорт ⟳</button>
+      <button class="btn" id="bClear">очистить стол</button>
+      <input type="file" id="fImport" accept=".json,application/json" hidden>
+    </div>
+    <h2>НА СТОЛЕ ◇</h2>
+    <div id="lib"></div>
+    <h2>ПАСПОРТ</h2>
+    <div id="pass"></div>
+    <div class="legend">
+      стык: клик по знаку между блоками —
+      <b>→</b> потом · <b>+</b> вместе · <b>·</b> на/в · <b>//</b> новая фаза<br>
+      клик по блоку — кто делает + параметр<br>
+      клик по №бойцу на детали — подсветить его шаги<br>
+      деталь из списка можно тащить на стол как блок<br>
+      порядок: I — кольцо · II — деталь · III — пресет<br>
+      пунктир — движок не умеет · <b>•</b> — нужен Lua-слой
+    </div>
+  </div>
+</div>
+<div id="tip"></div>
+<div id="pop"></div>
+
+<script>
+// ================================================================
+//  ПРИМИТИВЫ ПЕРВОГО ПОРЯДКА — правь этот список сам.
+//  avail: 'engine' = движок умеет напрямую, 'lua' = нужен наш слой, 'none' = пока нельзя
+// ================================================================
+const CATS = {
+  move:  { name: 'ДВИЖЕНИЕ',    c: '#6fb3ff' },
+  body:  { name: 'ПОЗА',        c: '#b48cff' },
+  eye:   { name: 'ВЗГЛЯД',      c: '#ffd166' },
+  fire:  { name: 'ОГОНЬ',       c: '#ff6b6b' },
+  sense: { name: 'ВОСПРИЯТИЕ',  c: '#4ecdc4' },
+  know:  { name: 'ЗНАНИЕ',      c: '#f4a261' },
+  state: { name: 'СОСТОЯНИЕ',   c: '#f2efe4' },
+  comm:  { name: 'СВЯЗЬ/ОТРЯД', c: '#e07bd0' },
+  place: { name: 'МЕСТО/ЦЕЛЬ',  c: '#8bd17c' },
+  time:  { name: 'ВРЕМЯ/УСЛОВИЕ', c: '#b0ada0' },
+};
+
+const PRIMS = [
+  { id: 'go',      cat: 'move',  label: 'ИДТИ',          avail: 'engine', api: 'npc:send_to_vertex(lvid)', hint: 'Переместиться к точке шагом.' },
+  { id: 'run',     cat: 'move',  label: 'БЕЖАТЬ',        avail: 'engine', api: 'state_mgr: sprint / assault', hint: 'Быстро, громко, заметно.' },
+  { id: 'sneak',   cat: 'move',  label: 'КРАСТЬСЯ',      avail: 'engine', api: 'state_mgr: sneak', hint: 'Медленно и тихо.' },
+  { id: 'freeze',  cat: 'move',  label: 'ЗАМЕРЕТЬ',      avail: 'lua',    api: 'стоп движения в GOAP-action', hint: 'Не двигаться вообще.' },
+
+  { id: 'stand',   cat: 'body',  label: 'СТОЯ',          avail: 'engine', api: 'set_body_state(stand)', hint: 'Обзор и скорость, большой силуэт.' },
+  { id: 'crouch',  cat: 'body',  label: 'ПРИСЕД',        avail: 'engine', api: 'set_body_state(crouch)', hint: 'Баланс: меньше силуэт, можно двигаться.' },
+  { id: 'prone',   cat: 'body',  label: 'ЛЁЖА',          avail: 'none',   api: 'нет стойки у NPC', hint: 'Максимум стабильности, ноль мобильности.' },
+
+  { id: 'look',    cat: 'eye',   label: 'СМОТРЕТЬ',      avail: 'engine', api: 'npc:set_sight(look.fire_point, pos)', hint: 'Взгляд в одну точку.' },
+  { id: 'sweep',   cat: 'eye',   label: 'ВОДИТЬ ДУГОЙ',  avail: 'lua',    api: 'веер в search_action', hint: 'Сканировать сектор, а не точку.' },
+  { id: 'glance',  cat: 'eye',   label: 'ОГЛЯНУТЬСЯ',    avail: 'lua',    api: 'set_sight назад на N мс', hint: 'Короткий взгляд за спину.' },
+
+  { id: 'shoot',   cat: 'fire',  label: 'ОГОНЬ ПО ТЕЛУ', avail: 'engine', api: 'set_item(fire1) по врагу', hint: 'Стрелять в видимую цель.' },
+  { id: 'pour',    cat: 'fire',  label: 'ОГОНЬ ПО ЗОНЕ', avail: 'lua',    api: 'fire1 + set_sight в точку', hint: 'Стрелять туда, где он может быть.' },
+  { id: 'hold',    cat: 'fire',  label: 'НЕ СТРЕЛЯТЬ',   avail: 'lua',    api: 'блок fire', hint: 'Молчать, не выдавать себя.' },
+  { id: 'reload',  cat: 'fire',  label: 'ПЕРЕЗАРЯДКА',   avail: 'engine', api: 'движок (сам)', hint: 'Окно уязвимости.' },
+
+  { id: 'see',     cat: 'sense', label: 'ВИДЕТЬ',        avail: 'engine', api: 'memory_visible_objects()', hint: 'Прямой визуальный контакт.' },
+  { id: 'hear',    cat: 'sense', label: 'СЛЫШАТЬ',       avail: 'engine', api: 'memory_sound_objects()', hint: 'Звук: выстрел, шаги.' },
+  { id: 'lose',    cat: 'sense', label: 'ПОТЕРЯТЬ ИЗ ВИДУ', avail: 'engine', api: 'memory_time() стареет', hint: 'Был — и нет.' },
+  { id: 'hit',     cat: 'sense', label: 'ПОЛУЧИТЬ ПОПАДАНИЕ', avail: 'engine', api: 'memory_hit_objects()', hint: 'По мне попали.' },
+  { id: 'corpse',  cat: 'sense', label: 'НАЙТИ ТРУП СВОЕГО', avail: 'lua', api: 'канал в varka_alert', hint: 'Улика: здесь был враг.' },
+
+  { id: 'belief',  cat: 'know',  label: 'ВЕРА',          avail: 'lua',    api: 'varka_lkp (облако)', hint: 'Где он, по-моему, сейчас.' },
+  { id: 'clear',   cat: 'know',  label: 'ОТМЕТИТЬ ЧИСТО', avail: 'lua',   api: 'mark_checked', hint: 'Тут его нет — вычеркнуть.' },
+  { id: 'forget',  cat: 'know',  label: 'ЗАБЫТЬ',        avail: 'lua',    api: 'belief fade / kill', hint: 'Вера погасла.' },
+
+  { id: 'morale',  cat: 'state', label: 'МОРАЛЬ',        avail: 'none',   api: 'нет в живом коде (была в varka_director, парковка)', hint: 'Держится / ломается / бежит. Число, которое читают условия.' },
+  { id: 'health',  cat: 'state', label: 'ЗДОРОВЬЕ',      avail: 'engine', api: 'npc.health (0..1)', hint: 'Сколько жизни осталось.' },
+  { id: 'ammo',    cat: 'state', label: 'ПАТРОНЫ',       avail: 'engine', api: 'item:get_ammo_in_magazine()', hint: 'Только магазин: запас у NPC фактически бесконечен. Пусто → перезарядка.' },
+
+  { id: 'shout',   cat: 'comm',  label: 'КРИКНУТЬ',      avail: 'lua',    api: 'звук + запись в чужую веру', hint: 'Выкрик = передача веры (вон он / чисто).' },
+  { id: 'heard',   cat: 'comm',  label: 'УСЛЫШАТЬ СВОЕГО', avail: 'lua',  api: 'приём по каналу', hint: 'Принять чужое знание.' },
+  { id: 'order',   cat: 'comm',  label: 'ПРИКАЗ',        avail: 'none',   api: 'нет (дирижёр в парковке)', hint: 'Кэп назначает задачу бойцу.' },
+  { id: 'claim',   cat: 'comm',  label: 'ЗАНЯТЬ',        avail: 'lua',    api: 'varka_lots claim', hint: 'Застолбить точку/сектор за собой.' },
+  { id: 'release', cat: 'comm',  label: 'ОСВОБОДИТЬ',    avail: 'lua',    api: 'varka_lots release', hint: 'Отдать точку другим.' },
+
+  { id: 'node',    cat: 'place', label: 'ТОЧКА',         avail: 'engine', api: 'level.vertex_*', hint: 'Нода навмеша.' },
+  { id: 'cover',   cat: 'place', label: 'УКРЫТИЕ',       avail: 'engine', api: 'best_cover / high_cover_in_direction', hint: 'Защищает от пуль.' },
+  { id: 'conceal', cat: 'place', label: 'СКРЫТИЕ',       avail: 'none',   api: 'нет (тень/куст не запечены)', hint: 'Прячет от глаз, не от пуль.' },
+  { id: 'sector',  cat: 'place', label: 'СЕКТОР',        avail: 'lua',    api: 'дуга лота', hint: 'Кусок 360°.' },
+  { id: 'dead',    cat: 'place', label: 'МЁРТВАЯ ЗОНА',  avail: 'lua',    api: 'нода без видимости с занятых', hint: 'Что отсюда не простреливается.' },
+  { id: 'enemy',   cat: 'place', label: 'ВРАГ',          avail: 'engine', api: 'best_enemy()', hint: 'Цель.' },
+  { id: 'ally',    cat: 'place', label: 'СОЮЗНИК',       avail: 'engine', api: 'squad_members()', hint: 'Свой боец.' },
+  { id: 'cap',     cat: 'place', label: 'КЭП',           avail: 'engine', api: 'commander_id()', hint: 'Командир сквада.' },
+
+  { id: 'wait',    cat: 'time',  label: 'ЖДАТЬ',         avail: 'lua',    api: 'таймер', hint: 'N секунд.' },
+  { id: 'while',   cat: 'time',  label: 'ПОКА',          avail: 'lua',    api: 'условие продолжения', hint: 'Делать, пока условие верно.' },
+  { id: 'if',      cat: 'time',  label: 'ЕСЛИ',          avail: 'lua',    api: 'ветка', hint: 'Только при условии.' },
+  { id: 'repeat',  cat: 'time',  label: 'ПОВТОРЯТЬ',     avail: 'lua',    api: 'цикл', hint: 'Снова и снова.' },
+];
+
+const FACTIONS = ['Одиночки', 'Долг', 'Свобода', 'Бандиты', 'Наёмники', 'Военные', 'Монолит',
+  'Экологи', 'Чистое Небо', 'Ренегаты', 'ИИГ', 'Грех', 'Мутанты'];
+
+const LINKS = { then: '→', and: '+', on: '·', phase: '//' };
+const LINK_ORDER = ['then', 'and', 'on', 'phase'];
+// фаза: стык 'phase' начинает новый абзац; имя фазы — it.phase (у первого блока — имя первой фазы)
+
+// ================================================================
+//  СОСТОЯНИЕ
+// ================================================================
+const STORE = 'varka-constructor-v1';
+let state = { pieces: [] };   // piece: {id, dx, dy, items:[{p|d, link, param}], name, real, theory, who[], when, notes, fixed}
+let selId = null;
+let hl = null;      // подсветка бойца: {id, m}
+let popAt = null;   // открытый попап: {id, idx, x, y}
+
+const P = Object.fromEntries(PRIMS.map(p => [p.id, p]));
+const $ = s => document.querySelector(s);
+const board = $('#board'), tip = $('#tip');
+
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(STORE)); if (s && s.pieces) state = s; } catch (e) {}
+}
+function save() {
+  try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+}
+const uid = () => Math.random().toString(36).slice(2, 9);
+const piece = id => state.pieces.find(p => p.id === id);
+
+function pieceName(pc) { return pc.name || ('деталь #' + pc.id.slice(0, 3)); }
+
+// ПОРЯДКИ: I — примитив на кольце, II — деталь из примитивов, III — пресет, выше — что угодно.
+// По составу: деталь на один порядок выше самой старшей вложенной детали.
+// pc.order (если задан руками) перекрывает расчёт.
+const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI'];
+const ORDER_NAME = { 2: 'ДЕТАЛИ', 3: 'ПРЕСЕТЫ' };
+function autoOrder(pc, seen = new Set()) {
+  if (seen.has(pc.id)) return 2;
+  seen.add(pc.id);
+  let o = 2;
+  for (const it of pc.items) {
+    const ref = it.d && piece(it.d);
+    if (ref) o = Math.max(o, orderOf(ref, seen) + 1);
+  }
+  return o;
+}
+function orderOf(pc, seen) { return pc.order || autoOrder(pc, seen); }
+function ordBadge(pc) {
+  const b = document.createElement('span');
+  b.className = 'ord' + (pc.order ? ' manual' : '');
+  b.textContent = ROMAN[orderOf(pc)] || orderOf(pc);
+  b.title = pc.order ? 'порядок задан вручную' : 'порядок по составу';
+  return b;
+}
+
+function itemLabel(it) {
+  if (it.d) { const pc = piece(it.d); return '«' + (pc ? pieceName(pc) : '???') + '»'; }
+  return P[it.p] ? P[it.p].label : it.p;
+}
+function itemColor(it) {
+  if (it.d) return 'var(--accent)';
+  return P[it.p] ? CATS[P[it.p].cat].c : 'var(--dim)';
+}
+function joint(it, i) {
+  if (!i) return it.phase ? '// ' + it.phase + '\n' : '';
+  if (it.link === 'phase') return '\n//' + (it.phase ? ' ' + it.phase : '') + '\n';
+  return ' ' + LINKS[it.link || 'then'] + ' ';
+}
+function formula(pc) {
+  return pc.items.map((it, i) =>
+    joint(it, i) + (whoLabel(it) ? whoLabel(it) + ':' : '') + itemLabel(it) + (it.param ? ' [' + it.param + ']' : '')
+  ).join('');
+}
+
+// ================================================================
+//  СКВАД
+//  pc.squad = {size, cap, init, trigger} — номера №1..№size.
+//  cap / init — это ПРИЗНАКИ, висят на номере (кэп может быть и инициатором).
+//  it.who = ['all'] | ['cap'] | ['init'] | ['rest'] | ['1','3'] ... ; пусто = все.
+//  'rest' = все, кроме инициатора.
+// ================================================================
+const TRIGGERS = { see: 'увидел врага', hear: 'услышал', hit: 'получил пулю', corpse: 'нашёл труп', heard: 'крик своего', lose: 'потерял из виду' };
+const WHO_SPECIAL = [['all', '∀ ВСЕ'], ['cap', '★ КЭП'], ['init', '⚡ ИНИЦИАТОР'], ['rest', 'ОСТАЛЬНЫЕ']];
+
+function squadOf(pc) {
+  pc.squad ||= { size: 4, cap: 1, init: null, trigger: null };
+  return pc.squad;
+}
+function whoLabel(it) {
+  const w = it.who || [];
+  if (!w.length) return '';
+  const nums = w.filter(x => /^\d+$/.test(x));
+  const out = w.filter(x => !/^\d+$/.test(x)).map(x => ({ all: '∀', cap: '★', init: '⚡', rest: 'ост' })[x]);
+  if (nums.length) out.push('№' + nums.join(','));
+  return out.join(' ');
+}
+// делает ли боец m этот шаг
+function doesIt(pc, it, m) {
+  const w = it.who || [], sq = pc.squad || {};
+  if (!w.length || w.includes('all')) return true;
+  return w.includes(String(m)) || (w.includes('cap') && sq.cap === m) ||
+    (w.includes('init') && sq.init === m) || (w.includes('rest') && sq.init !== m);
+}
+
+// деталь A содержит B (прямо или глубже)?
+function contains(aId, bId, seen = new Set()) {
+  if (aId === bId) return true;
+  if (seen.has(aId)) return false;
+  seen.add(aId);
+  const a = piece(aId);
+  return !!a && a.items.some(it => it.d && contains(it.d, bId, seen));
+}
+
+// ================================================================
+//  ГЕОМЕТРИЯ КОЛЬЦА
+// ================================================================
+function geom() {
+  const w = board.clientWidth, h = board.clientHeight;
+  const R = Math.min(w, h) / 2 - 40;
+  // кольцо — эллипс: по ширине тянем, сколько позволяет доска
+  return { cx: w / 2, cy: h / 2, R, kx: Math.max(1, Math.min((w / 2 - 70) / R, 1.35)) };
+}
+
+function drawRing() {
+  board.querySelectorAll('.prim, .catlabel').forEach(e => e.remove());
+  const { cx, cy, R, kx } = geom();
+  const n = PRIMS.length;
+  const catStart = {}, placed = [];
+  PRIMS.forEach((p, i) => {
+    const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+    const el = document.createElement('div');
+    el.className = 'prim ' + p.avail;
+    el.textContent = p.label;
+    el.style.setProperty('--c', CATS[p.cat].c);
+    el.dataset.prim = p.id;
+    board.appendChild(el);
+    // налезает на уже поставленные — двигаем внутрь кольца, пока не освободится место
+    for (let r = R; r > R - 140; r -= 12) {
+      el.style.left = cx + Math.cos(a) * r * kx + 'px';
+      el.style.top = cy + Math.sin(a) * r + 'px';
+      const b = el.getBoundingClientRect();
+      if (!placed.some(o => b.left < o.right + 4 && b.right > o.left - 4 && b.top < o.bottom + 3 && b.bottom > o.top - 3)) break;
+    }
+    placed.push(el.getBoundingClientRect());
+    (catStart[p.cat] ||= []).push(a);
+  });
+  for (const [cat, angs] of Object.entries(catStart)) {
+    const a = angs[Math.floor(angs.length / 2)];
+    const el = document.createElement('div');
+    el.className = 'catlabel';
+    el.textContent = CATS[cat].name;
+    el.style.setProperty('--c', CATS[cat].c);
+    el.style.left = cx + Math.cos(a) * (R - 82) * kx + 'px';
+    el.style.top = cy + Math.sin(a) * (R - 82) + 'px';
+    board.appendChild(el);
+  }
+  const t = $('#table'), rr = R - 100;
+  Object.assign(t.style, { left: cx - rr * kx + 'px', top: cy - rr + 'px', width: rr * 2 * kx + 'px', height: rr * 2 + 'px' });
+  const hint = $('#tableHint');
+  hint.style.left = cx - 160 + 'px'; hint.style.top = cy - 16 + 'px';
+  hint.style.display = state.pieces.some(p => !p.fixed) ? 'none' : '';
+}
+
+// ================================================================
+//  РЕНДЕР ДЕТАЛЕЙ
+// ================================================================
+function drawPieces() {
+  board.querySelectorAll('.piece').forEach(e => e.remove());
+  const { cx, cy } = geom();
+  for (const pc of state.pieces.filter(p => !p.fixed)) {
+    const el = document.createElement('div');
+    el.className = 'piece' + (pc.id === selId ? ' sel' : '') + (pc.fixed ? ' fixed' : '');
+    el.dataset.piece = pc.id;
+    el.style.left = cx + pc.dx + 'px';
+    el.style.top = cy + pc.dy + 'px';
+
+    const ph = document.createElement('div');
+    ph.className = 'ph';
+    ph.innerHTML = `<span class="nm"></span><button class="fx" title="зафиксировать → в картотеку">◆</button><button title="удалить">×</button>`;
+    ph.querySelector('.nm').textContent = (pc.fixed ? '◆ ' : '') + pieceName(pc);
+    ph.prepend(ordBadge(pc));
+    ph.querySelector('.fx').onclick = e => { e.stopPropagation(); fixPiece(pc.id); };
+    ph.querySelector('button:not(.fx)').onclick = e => { e.stopPropagation(); removePiece(pc.id); };
+    el.appendChild(ph);
+
+    if (pc.squad) {
+      const sq = document.createElement('div');
+      sq.className = 'sq';
+      for (let m = 1; m <= pc.squad.size; m++) {
+        const t = document.createElement('span');
+        t.className = 'mem' + (pc.squad.cap === m ? ' cap' : '') + (pc.squad.init === m ? ' init' : '') +
+          (hl && hl.id === pc.id && hl.m === m ? ' hl' : '');
+        t.textContent = '№' + m + (pc.squad.cap === m ? '★' : '') + (pc.squad.init === m ? '⚡' : '');
+        t.title = 'подсветить шаги №' + m;
+        t.onpointerdown = e => e.stopPropagation();
+        t.onclick = e => { e.stopPropagation(); hl = hl && hl.id === pc.id && hl.m === m ? null : { id: pc.id, m }; drawPieces(); };
+        sq.appendChild(t);
+      }
+      el.appendChild(sq);
+    }
+
+    const pb = document.createElement('div');
+    pb.className = 'pb';
+    pc.items.forEach((it, i) => {
+      const isPhase = i && it.link === 'phase';
+      if (isPhase) { const b = document.createElement('div'); b.className = 'brk'; pb.appendChild(b); }
+      if (!i && it.phase) {
+        const j = document.createElement('span');
+        j.className = 'jn phase';
+        j.textContent = '// ' + it.phase;
+        pb.appendChild(j);
+      }
+      if (i) {
+        const j = document.createElement('span');
+        j.className = 'jn' + (isPhase ? ' phase' : '');
+        j.textContent = isPhase ? '// ' + (it.phase || '') : LINKS[it.link || 'then'];
+        j.title = 'сменить стык';
+        j.onclick = e => {
+          e.stopPropagation();
+          it.link = LINK_ORDER[(LINK_ORDER.indexOf(it.link || 'then') + 1) % LINK_ORDER.length];
+          commit();
+        };
+        pb.appendChild(j);
+      }
+      const c = document.createElement('span');
+      c.className = 'it' + (it.d ? ' ref' : '') + (hl && hl.id === pc.id && !doesIt(pc, it, hl.m) ? ' dim' : '');
+      c.style.setProperty('--c', itemColor(it));
+      if (whoLabel(it)) { const w = document.createElement('span'); w.className = 'who'; w.textContent = whoLabel(it); c.appendChild(w); }
+      c.appendChild(document.createTextNode(itemLabel(it)));
+      if (it.param) { const s = document.createElement('span'); s.className = 'pr'; s.textContent = it.param; c.appendChild(s); }
+      c.dataset.idx = i;
+      pb.appendChild(c);
+    });
+    el.appendChild(pb);
+    board.appendChild(el);
+  }
+}
+
+// ================================================================
+//  ПАНЕЛЬ
+// ================================================================
+function drawSide() {
+  const lib = $('#lib');
+  lib.innerHTML = '';
+  const drafts = state.pieces.filter(p => !p.fixed);
+  if (!drafts.length) lib.innerHTML = '<div class="empty">пока пусто</div>';
+  for (const pc of drafts) {
+    const el = document.createElement('div');
+    el.className = 'lib' + (pc.id === selId ? ' sel' : '');
+    el.dataset.lib = pc.id;
+    el.innerHTML = `<span class="st"></span><span class="n"></span><span class="fm"></span>`;
+    el.querySelector('.st').textContent = pc.fixed ? '◆' : '◇';
+    el.querySelector('.st').after(ordBadge(pc));
+    el.querySelector('.st').classList.toggle('f', !!pc.fixed);
+    el.querySelector('.n').textContent = pieceName(pc);
+    el.querySelector('.fm').textContent = formula(pc);
+    lib.appendChild(el);
+  }
+
+  const cl = $('#cardList');
+  cl.innerHTML = '';
+  const fixed = state.pieces.filter(p => p.fixed);
+  if (!fixed.length) cl.innerHTML = '<div class="empty">пусто. Собери деталь и нажми ◆ — она ляжет сюда.</div>';
+  fixed.sort((a, b) => orderOf(b) - orderOf(a));
+  let lastOrd = null;
+  for (const pc of fixed) {
+    const o = orderOf(pc);
+    if (o !== lastOrd) {
+      const h = document.createElement('div');
+      h.className = 'ordhead';
+      h.textContent = (ROMAN[o] || o) + ' · ' + (ORDER_NAME[o] || 'ПОРЯДОК ' + o);
+      cl.appendChild(h);
+      lastOrd = o;
+    }
+    const el = document.createElement('div');
+    el.className = 'card lib' + (pc.id === selId ? ' sel' : '');
+    el.dataset.lib = pc.id;
+    el.innerHTML = `<span class="n"></span><span class="fm"></span><div class="meta"></div>
+      <div class="row"><button class="back">на стол</button><button class="del">удалить</button></div>`;
+    el.querySelector('.n').textContent = pieceName(pc);
+    el.querySelector('.n').before(ordBadge(pc));
+    el.querySelector('.fm').textContent = formula(pc);
+    const meta = [pc.squad && ('сквад ' + pc.squad.size + (pc.squad.trigger ? ' · ⚡ ' + TRIGGERS[pc.squad.trigger] : '')), pc.real && '≈ ' + pc.real, (pc.who || []).length && 'кому: ' + pc.who.join(', '), pc.when && 'когда: ' + pc.when]
+      .filter(Boolean).join('\n');
+    el.querySelector('.meta').textContent = meta;
+    el.querySelector('.meta').style.whiteSpace = 'pre-line';
+    el.querySelector('.back').onclick = e => { e.stopPropagation(); pc.fixed = false; selId = pc.id; commit(); };
+    el.querySelector('.del').onclick = e => { e.stopPropagation(); if (confirm('Удалить «' + pieceName(pc) + '» из картотеки?')) removePiece(pc.id); };
+    cl.appendChild(el);
+  }
+
+  const pass = $('#pass');
+  const pc = piece(selId);
+  if (!pc) { pass.innerHTML = '<div class="empty">выбери деталь на столе</div>'; return; }
+  pass.innerHTML = `
+    <label>ПОРЯДОК</label><div class="ordbtns"></div><div class="ordnote"></div>
+    <label>ФОРМУЛА</label><div class="formula"></div>
+    <label>СКВАД</label><div class="sqbox"></div>
+    <label>НАЗВАНИЕ</label><input data-f="name" placeholder="как ты её зовёшь">
+    <label>РЕАЛЬНЫЙ ЭКВИВАЛЕНТ</label><input data-f="real" placeholder="как это называется на поле боя">
+    <label>ТЕОРИЯ / ИСТОЧНИК</label><textarea data-f="theory" placeholder="устав, доктрина, книга, видео…"></textarea>
+    <label>КОМУ</label><div class="facs"></div>
+    <label>КОГДА</label><textarea data-f="when" placeholder="триггер: потерял из виду, услышал выстрел…"></textarea>
+    <label>ЗАМЕТКИ</label><textarea data-f="notes"></textarea>
+    <label>СТАТУС</label><button class="btn" id="bFix"></button>`;
+  pass.querySelector('.formula').textContent = formula(pc) || '—';
+  pass.querySelectorAll('[data-f]').forEach(inp => {
+    inp.value = pc[inp.dataset.f] || '';
+    inp.oninput = () => {
+      pc[inp.dataset.f] = inp.value;
+      save();
+      if (inp.dataset.f === 'name') { drawPieces(); refreshLib(); }
+    };
+  });
+  const facs = pass.querySelector('.facs');
+  for (const f of FACTIONS) {
+    const b = document.createElement('span');
+    b.className = 'fac' + ((pc.who || []).includes(f) ? ' on' : '');
+    b.textContent = f;
+    b.onclick = () => {
+      pc.who = pc.who || [];
+      pc.who = pc.who.includes(f) ? pc.who.filter(x => x !== f) : [...pc.who, f];
+      b.classList.toggle('on');
+      save();
+    };
+    facs.appendChild(b);
+  }
+  drawSquadBox(pc, pass.querySelector('.sqbox'));
+  const ob = pass.querySelector('.ordbtns'), auto = autoOrder(pc);
+  for (const [val, txt] of [[0, 'авто (' + ROMAN[auto] + ')'], [2, 'II деталь'], [3, 'III пресет'], [4, 'IV']]) {
+    const b = document.createElement('button');
+    b.className = 'btn' + ((pc.order || 0) === val ? ' on' : '');
+    b.textContent = txt;
+    b.onclick = () => { pc.order = val || undefined; commit(); };
+    ob.appendChild(b);
+  }
+  if (pc.order && pc.order < auto)
+    pass.querySelector('.ordnote').textContent = 'внутри лежит деталь порядка ' + ROMAN[auto - 1] + ' — по составу это ' + ROMAN[auto];
+  const bf = pass.querySelector('#bFix');
+  bf.textContent = pc.fixed ? '◆ в картотеке — вернуть на стол' : '◆ зафиксировать → в картотеку';
+  bf.onclick = () => { if (pc.fixed) { pc.fixed = false; commit(); } else fixPiece(pc.id); };
+}
+
+function drawSquadBox(pc, box) {
+  if (!pc.squad) {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = '+ разложить по бойцам';
+    b.onclick = () => { squadOf(pc); commit(); };
+    box.appendChild(b);
+    return;
+  }
+  const sq = pc.squad;
+  const row = (label, build) => {
+    const l = document.createElement('div'); l.className = 'ordnote'; l.textContent = label; box.appendChild(l);
+    const c = document.createElement('div'); c.className = 'chips'; build(c); box.appendChild(c);
+  };
+  const chip = (c, txt, on, fn, cls = '') => {
+    const b = document.createElement('span'); b.className = 'chip ' + cls + (on ? ' on' : ''); b.textContent = txt; b.onclick = fn; c.appendChild(b);
+  };
+  const resize = n => {
+    sq.size = Math.max(1, Math.min(12, n));
+    if (sq.cap > sq.size) sq.cap = null;
+    if (sq.init > sq.size) sq.init = null;
+    pc.items.forEach(it => { if (it.who) it.who = it.who.filter(x => !/^\d+$/.test(x) || +x <= sq.size); });
+    commit();
+  };
+  row('численность', c => {
+    chip(c, '−', false, () => resize(sq.size - 1));
+    chip(c, sq.size + ' чел.', true, () => {});
+    chip(c, '+', false, () => resize(sq.size + 1));
+  });
+  row('★ кэп', c => {
+    chip(c, 'нет', !sq.cap, () => { sq.cap = null; commit(); });
+    for (let m = 1; m <= sq.size; m++) chip(c, '№' + m, sq.cap === m, () => { sq.cap = m; commit(); });
+  });
+  row('⚡ инициатор (на ком сработал триггер)', c => {
+    chip(c, 'нет', !sq.init, () => { sq.init = null; commit(); }, 'ini');
+    for (let m = 1; m <= sq.size; m++) chip(c, '№' + m, sq.init === m, () => { sq.init = m; commit(); }, 'ini');
+  });
+  row('триггер', c => {
+    for (const [k, txt] of Object.entries(TRIGGERS)) chip(c, txt, sq.trigger === k, () => { sq.trigger = sq.trigger === k ? null : k; commit(); }, 'ini');
+  });
+
+  const l = document.createElement('div'); l.className = 'ordnote'; l.textContent = 'раскладка по бойцам'; box.appendChild(l);
+  const lanes = document.createElement('div'); lanes.className = 'lanes';
+  for (let m = 1; m <= sq.size; m++) {
+    const steps = [];
+    pc.items.forEach((it, i) => {
+      if (i && it.link === 'phase' && steps.length && steps[steps.length - 1] !== '//') steps.push('//');
+      if (doesIt(pc, it, m)) steps.push((i + 1) + '.' + itemLabel(it) + (it.param ? '[' + it.param + ']' : ''));
+    });
+    if (steps[steps.length - 1] === '//') steps.pop();
+    const d = document.createElement('div'); d.className = 'lane';
+    d.innerHTML = '<b></b> <span></span>';
+    d.querySelector('b').textContent = '№' + m + (sq.cap === m ? '★' : '') + (sq.init === m ? '⚡' : '');
+    d.querySelector('span').textContent = steps.join('  ') || '— ничего —';
+    lanes.appendChild(d);
+  }
+  box.appendChild(lanes);
+  const rm = document.createElement('button');
+  rm.className = 'btn'; rm.style.marginTop = '6px'; rm.textContent = 'убрать сквад';
+  rm.onclick = () => { if (confirm('Убрать сквад и все назначения?')) { delete pc.squad; pc.items.forEach(it => delete it.who); commit(); } };
+  box.appendChild(rm);
+}
+
+// обновить только список, не трогая поля ввода (чтобы не терять фокус)
+function refreshLib() {
+  for (const el of document.querySelectorAll('.lib')) {
+    const pc = piece(el.dataset.lib);
+    if (pc) { el.querySelector('.n').textContent = pieceName(pc); el.querySelector('.fm').textContent = formula(pc); }
+  }
+}
+
+function commit() { save(); drawPieces(); drawSide(); $('#tableHint').style.display = state.pieces.some(p => !p.fixed) ? 'none' : ''; }
+
+function fixPiece(id) {
+  const pc = piece(id);
+  if (!pc.name) {
+    const v = prompt('Как назовёшь деталь?', '');
+    if (!v || !v.trim()) return;
+    pc.name = v.trim();
+  }
+  pc.fixed = true;
+  selId = id;
+  commit();
+}
+
+function select(id) { selId = id; commit(); }
+
+function removePiece(id) {
+  const used = state.pieces.some(p => p.id !== id && p.items.some(it => it.d === id));
+  if (used && !confirm('Эта деталь используется внутри других. Удалить всё равно?')) return;
+  state.pieces = state.pieces.filter(p => p.id !== id);
+  state.pieces.forEach(p => p.items = p.items.filter(it => it.d !== id));
+  state.pieces = state.pieces.filter(p => p.items.length);
+  if (selId === id) selId = null;
+  commit();
+}
+
+// ================================================================
+//  ПЕРЕТАСКИВАНИЕ
+// ================================================================
+let drag = null;   // {kind:'prim'|'item'|'piece'|'lib', ...}
+
+function makeGhost(text, color) {
+  const g = document.createElement('div');
+  g.className = 'ghost it';
+  g.style.setProperty('--c', color);
+  g.style.background = '#0e100c';
+  g.textContent = text;
+  document.body.appendChild(g);
+  return g;
+}
+
+// что под курсором: {piece, idx} — деталь и позиция вставки
+function dropTarget(x, y, excludeId) {
+  const els = document.elementsFromPoint(x, y);
+  for (const el of els) {
+    const pe = el.closest && el.closest('.piece');
+    if (!pe || pe.dataset.piece === excludeId) continue;
+    const it = el.closest('.it');
+    return { id: pe.dataset.piece, idx: it ? +it.dataset.idx : null, el: pe };
+  }
+  return null;
+}
+function overBoard(x, y) {
+  const r = board.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+function toDelta(x, y) {
+  const r = board.getBoundingClientRect(), { cx, cy } = geom();
+  return { dx: x - r.left - cx, dy: y - r.top - cy };
+}
+
+function insertInto(targetId, idx, items) {
+  const t = piece(targetId);
+  for (const it of items) if (it.d && contains(it.d, targetId)) { alert('Деталь не может содержать саму себя.'); return false; }
+  if (idx == null) t.items.push(...items); else t.items.splice(idx, 0, ...items);
+  return true;
+}
+
+function newPiece(x, y, items) {
+  const { dx, dy } = toDelta(x, y);
+  const pc = { id: uid(), dx: dx - 20, dy: dy - 12, items, name: '', real: '', theory: '', who: [], when: '', notes: '', fixed: false };
+  state.pieces.push(pc);
+  return pc;
+}
+
+function markDrop(x, y, excludeId) {
+  document.querySelectorAll('.piece.drop').forEach(e => e.classList.remove('drop'));
+  document.querySelectorAll('.it.ins').forEach(e => e.classList.remove('ins'));
+  const t = dropTarget(x, y, excludeId);
+  if (t) {
+    t.el.classList.add('drop');
+    if (t.idx != null) t.el.querySelector(`.it[data-idx="${t.idx}"]`)?.classList.add('ins');
+  }
+}
+
+board.addEventListener('pointerdown', e => {
+  const prim = e.target.closest('.prim');
+  const it = e.target.closest('.it');
+  const ph = e.target.closest('.ph');
+  const pe = e.target.closest('.piece');
+  if (e.target.closest('.jn') || e.target.closest('button')) return;
+
+  if (prim) {
+    const p = P[prim.dataset.prim];
+    drag = { kind: 'prim', item: { p: p.id, link: 'then', param: '' }, ghost: makeGhost(p.label, CATS[p.cat].c) };
+  } else if (it && pe) {
+    const pc = piece(pe.dataset.piece), idx = +it.dataset.idx;
+    drag = { kind: 'item', from: pc.id, idx, rect: it.getBoundingClientRect(), item: pc.items[idx], ghost: makeGhost(itemLabel(pc.items[idx]), itemColor(pc.items[idx])), sx: e.clientX, sy: e.clientY, moved: false };
+  } else if (ph && pe) {
+    const pc = piece(pe.dataset.piece);
+    drag = { kind: 'piece', id: pc.id, el: pe, ox: e.clientX, oy: e.clientY, dx0: pc.dx, dy0: pc.dy, moved: false };
+    pe.style.pointerEvents = 'none';
+    pe.style.zIndex = 50;
+  } else if (pe) {
+    select(pe.dataset.piece);
+    return;
+  } else {
+    return;
+  }
+  e.preventDefault();
+  hideTip();
+  if (drag.ghost) moveGhost(e.clientX, e.clientY);
+});
+
+function libDown(e) {
+  const el = e.target.closest('.lib');
+  if (!el || e.target.closest('button')) return;
+  const pc = piece(el.dataset.lib);
+  drag = { kind: 'lib', id: pc.id, item: { d: pc.id, link: 'then', param: '' }, ghost: makeGhost('«' + pieceName(pc) + '»', 'var(--accent)'), sx: e.clientX, sy: e.clientY, moved: false };
+  drag.ghost.style.display = 'none';
+  e.preventDefault();
+}
+$('#lib').addEventListener('pointerdown', libDown);
+$('#cardList').addEventListener('pointerdown', libDown);
+
+function moveGhost(x, y) { drag.ghost.style.left = x + 'px'; drag.ghost.style.top = y + 'px'; }
+
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  if ('sx' in drag && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) drag.moved = true;
+  if (drag.kind === 'piece') {
+    drag.moved = drag.moved || Math.hypot(e.clientX - drag.ox, e.clientY - drag.oy) > 3;
+    const pc = piece(drag.id);
+    pc.dx = drag.dx0 + e.clientX - drag.ox;
+    pc.dy = drag.dy0 + e.clientY - drag.oy;
+    const { cx, cy } = geom();
+    drag.el.style.left = cx + pc.dx + 'px';
+    drag.el.style.top = cy + pc.dy + 'px';
+    markDrop(e.clientX, e.clientY, drag.id);
+  } else {
+    if (drag.kind === 'lib' && drag.moved) drag.ghost.style.display = '';
+    moveGhost(e.clientX, e.clientY);
+    markDrop(e.clientX, e.clientY, null);
+  }
+});
+
+window.addEventListener('pointerup', e => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  d.ghost?.remove();
+  document.querySelectorAll('.piece.drop').forEach(el => el.classList.remove('drop'));
+  const x = e.clientX, y = e.clientY;
+
+  if (d.kind === 'piece') {
+    d.el.style.pointerEvents = ''; d.el.style.zIndex = '';
+    if (!d.moved) { select(d.id); return; }
+    const t = dropTarget(x, y, d.id);
+    if (t) {
+      const src = piece(d.id);
+      if (insertInto(t.id, t.idx, src.items)) {
+        state.pieces = state.pieces.filter(p => p !== src);
+        state.pieces.forEach(p => p.items.forEach(it => { if (it.d === src.id) it.d = t.id; }));
+        state.pieces.forEach(p => p.items = p.items.filter(it => it.d !== p.id));
+        selId = t.id;
+      }
+    }
+    commit();
+    return;
+  }
+
+  if (d.kind === 'lib' && !d.moved) { select(d.id); return; }
+  if (d.kind === 'item' && !d.moved) { select(d.from); openPop(d.from, d.idx, d.rect.left, d.rect.bottom + 6); return; }
+
+  const t = dropTarget(x, y, null);
+  const item = { ...d.item };
+
+  if (d.kind === 'item') {
+    const src = piece(d.from);
+    if (t && t.id === d.from) {
+      // перестановка внутри детали
+      src.items.splice(d.idx, 1);
+      let to = t.idx == null ? src.items.length : (t.idx > d.idx ? t.idx - 1 : t.idx);
+      src.items.splice(to, 0, item);
+    } else {
+      src.items.splice(d.idx, 1);
+      if (t) insertInto(t.id, t.idx, [item]);
+      else if (overBoard(x, y)) newPiece(x, y, [item]);
+      if (!src.items.length) state.pieces = state.pieces.filter(p => p !== src);
+    }
+    commit();
+    return;
+  }
+
+  // prim или lib
+  if (t) { if (insertInto(t.id, t.idx, [item])) selId = t.id; }
+  else if (overBoard(x, y)) selId = newPiece(x, y, [item]).id;
+  commit();
+});
+
+// ================================================================
+//  ПОПАП ШАГА: кто делает + параметр
+// ================================================================
+const pop = $('#pop');
+function openPop(id, idx, x, y) { popAt = { id, idx, x, y }; drawPop(); }
+function closePop() { popAt = null; pop.style.display = 'none'; }
+function drawPop() {
+  const pc = popAt && piece(popAt.id), it = pc && pc.items[popAt.idx];
+  if (!it) return closePop();
+  const sq = squadOf(pc);
+  pop.innerHTML = `<div class="t"></div>
+    <div class="l">КТО ДЕЛАЕТ</div><div class="chips sp"></div>
+    <div class="chips nums" style="margin-top:4px"></div>
+    <div class="l">ПАРАМЕТР</div><input class="prm" placeholder="15с, далеко, тихо…">
+    <div class="phbox"><div class="l">НАЗВАНИЕ ФАЗЫ</div><input class="phn" placeholder="контакт, перегруппировка, зачистка…"></div>`;
+  const pn = pop.querySelector('.phn');
+  if (popAt.idx === 0 || it.link === 'phase') {
+    pn.value = it.phase || '';
+    pn.onchange = () => { it.phase = pn.value.trim() || undefined; commit(); };
+    pn.onkeydown = e => { if (e.key === 'Enter') { pn.onchange(); closePop(); } if (e.key === 'Escape') closePop(); };
+  } else pop.querySelector('.phbox').remove();
+  pop.querySelector('.t').textContent = itemLabel(it);
+  const w = it.who || [];
+  const toggle = key => {
+    let cur = it.who || [];
+    if (key === 'all') cur = cur.includes('all') ? [] : ['all'];
+    else cur = cur.includes(key) ? cur.filter(x => x !== key) : [...cur.filter(x => x !== 'all'), key];
+    it.who = cur;
+    commit(); drawPop();
+  };
+  for (const [k, txt] of WHO_SPECIAL) {
+    const b = document.createElement('span');
+    b.className = 'chip' + (w.includes(k) ? ' on' : '') + (k === 'init' ? ' ini' : '');
+    b.textContent = txt;
+    b.onclick = () => toggle(k);
+    pop.querySelector('.sp').appendChild(b);
+  }
+  for (let m = 1; m <= sq.size; m++) {
+    const b = document.createElement('span');
+    b.className = 'chip' + (w.includes(String(m)) ? ' on' : '');
+    b.textContent = '№' + m + (sq.cap === m ? '★' : '') + (sq.init === m ? '⚡' : '');
+    b.onclick = () => toggle(String(m));
+    pop.querySelector('.nums').appendChild(b);
+  }
+  const inp = pop.querySelector('input');
+  inp.value = it.param || '';
+  inp.onchange = () => { it.param = inp.value.trim(); commit(); };
+  inp.onkeydown = e => { if (e.key === 'Enter') { inp.onchange(); closePop(); } if (e.key === 'Escape') closePop(); };
+  pop.style.display = 'block';
+  pop.style.left = Math.min(popAt.x, innerWidth - 270) + 'px';
+  pop.style.top = Math.min(popAt.y, innerHeight - pop.offsetHeight - 10) + 'px';
+}
+window.addEventListener('pointerdown', e => {
+  if (popAt && !pop.contains(e.target)) { pop.querySelectorAll('input').forEach(i => i.onchange && i.onchange()); closePop(); }
+}, true);
+
+// ================================================================
+//  ПОДСКАЗКИ
+// ================================================================
+const AVAIL = { engine: 'движок умеет', lua: 'нужен наш Lua-слой', none: 'пока нельзя' };
+board.addEventListener('mouseover', e => {
+  const el = e.target.closest('.prim');
+  if (!el || drag) return;
+  const p = P[el.dataset.prim];
+  tip.innerHTML = `<b></b><div></div><code></code><div style="color:var(--dim);margin-top:3px"></div>`;
+  tip.querySelector('b').textContent = p.label;
+  tip.querySelector('div').textContent = p.hint;
+  tip.querySelector('code').textContent = p.api;
+  tip.querySelectorAll('div')[1].textContent = AVAIL[p.avail];
+  tip.style.display = 'block';
+  const r = el.getBoundingClientRect();
+  tip.style.left = Math.min(r.left, innerWidth - 310) + 'px';
+  // снизу не влезает — показываем над блоком
+  const below = r.bottom + 6, h = tip.offsetHeight;
+  tip.style.top = (below + h > innerHeight - 6 ? Math.max(6, r.top - h - 6) : below) + 'px';
+});
+board.addEventListener('mouseout', e => { if (e.target.closest('.prim')) hideTip(); });
+function hideTip() { tip.style.display = 'none'; }
+
+// ================================================================
+//  ЭКСПОРТ / ИМПОРТ
+// ================================================================
+$('#bExport').onclick = () => {
+  const out = { version: 1, exported: new Date().toISOString(), prims: PRIMS.map(p => p.id), pieces: state.pieces };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }));
+  a.download = 'varka_parts_' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+// импорт + : добавляет новые детали; деталь с тем же id уже есть — остаётся твоя версия
+// импорт ⟳ : заменяет всё
+let importMode = 'merge';
+$('#bMerge').onclick = () => { importMode = 'merge'; $('#fImport').click(); };
+$('#bImport').onclick = () => { importMode = 'replace'; $('#fImport').click(); };
+$('#fImport').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (!Array.isArray(data.pieces)) throw new Error('нет pieces');
+    if (importMode === 'replace') {
+      if (!state.pieces.length || confirm('Заменить ВСЁ содержимым файла?')) { state.pieces = data.pieces; selId = null; commit(); }
+    } else {
+      let added = 0, same = 0, kept = [];
+      for (const pc of data.pieces) {
+        const mine = piece(pc.id);
+        if (!mine) { state.pieces.push(pc); added++; }
+        else if (JSON.stringify(mine) === JSON.stringify(pc)) same++;
+        else kept.push(pieceName(mine));
+      }
+      commit();
+      alert('Добавлено: ' + added + '\nУже были такие же: ' + same +
+        (kept.length ? '\nЕсть и у тебя, и в файле, но отличаются — оставлена твоя версия (' + kept.length + '):\n' + kept.join(', ') : ''));
+    }
+  } catch (err) { alert('Не читается: ' + err.message); }
+  finally { e.target.value = ''; }
+};
+$('#bClear').onclick = () => {
+  if (state.pieces.length && confirm('Убрать все детали со стола? (сначала экспортируй, если жалко)')) {
+    state.pieces = []; selId = null; commit();
+  }
+};
+
+// ================================================================
+load();
+drawRing(); commit();
+addEventListener('resize', () => { drawRing(); drawPieces(); });
+</script>
+</body>
+</html>

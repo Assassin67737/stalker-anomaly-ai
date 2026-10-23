@@ -116,6 +116,8 @@ local M = {
 	RES_DRAIN = 0.01, RES_GAIN = 0.002,       -- запас: тратится в секунду падения, копится в остальное время
 	BEND_BELOW = 0.30, BEND_UP = 0.25, BEND_DIST = 20, -- загиб на дне: ниже чего, насколько, враг ближе скольких м
 	WALL_PINNED = 0.20,                       -- средняя замкнутость бойцов, с которой «спина к стене»
+	W_WEAR = 0.50,                            -- износ (varka_stress, юзер 21.10 «дай силу»): средний износ
+	                                          -- живых 1 → цель вдвое ниже. Радикально — потом по ощущениям
 	W_HEAVY = 0.12,                           -- тяжёлое оружие врага (varka_intel): пулемёт/гранатомёт
 	                                          -- давят на цель не больше чем на 12% — малый коэффициент
 	NOISE_AMP = 0.08, NOISE_AT = 0.45, NOISE_W = 0.12, -- шум у порога: амплитуда, центр, ширина
@@ -205,10 +207,11 @@ end
 
 -- Оси прямо сейчас. Возвращает таблицу — она же уходит в трассу.
 local function moral_axes(squad, S, now)
-	local live_w, n, can, near, wall = 0, 0, 0, false, 0
+	local live_w, n, can, near, wall, wear = 0, 0, 0, false, 0, 0
 	local eyes = varka_vision and varka_vision.available()
 	each_member(squad, function(id, obj)
 		live_w, n = live_w + rank_w(rank_of(obj)), n + 1
+		if varka_stress then wear = wear + varka_stress.get(id) end
 		if eyes then wall = wall + (varka_vision.enclosure(obj:level_vertex_id()) or 0) end
 		local be = obj:best_enemy()
 		local sees = be and obj:see(be)
@@ -238,10 +241,14 @@ local function moral_axes(squad, S, now)
 	-- тяжёлое у врага: только то, что отряд ЗНАЕТ (узнали и поделились — varka_intel)
 	local heavy = varka_intel and varka_intel.heavy_threat(squad) or 0
 
+	-- износ: сколько угрозы смерти отряд в среднем пропустил через себя (копится и у побеждающих)
+	wear = n > 0 and wear / n or 0
+
 	local spirit = M.W_INF * inf + M.W_CAP * cap + M.W_FOG * (1 - S.fog)
 	local situation = (M.COH_FLOOR + (1 - M.COH_FLOOR) * coh) * spirit * (1 - M.W_HEAVY * heavy)
+		* (1 - M.W_WEAR * wear)
 	local z = S.fac.z  -- фанатизм: эта доля морали от обстановки не зависит
-	return { coh = coh, inf = inf, cap = cap, fog = S.fog, near = pinned, wall = wall, heavy = heavy,
+	return { coh = coh, inf = inf, cap = cap, fog = S.fog, near = pinned, wall = wall, heavy = heavy, wear = wear,
 		target = z + (1 - z) * situation }
 end
 
@@ -734,7 +741,7 @@ local function trace_plan(key, plan, preset_name, moral_v)
 		varka_trace.emit(key, 0, "dir_moral", {
 			moral = moral_v, target = S.target or moral_v, imp = S.imp, st = S.state, res = S.res,
 			coh = ax.coh or 1, inf = ax.inf or 1, cap = ax.cap or 1, fog = ax.fog or 0, near = ax.near and 1 or 0,
-			wall = ax.wall or 0, heavy = ax.heavy or 0, fz = S.fac.z, fd = S.fac.d,
+			wall = ax.wall or 0, heavy = ax.heavy or 0, wear = ax.wear or 0, fz = S.fac.z, fd = S.fac.d,
 		})
 	end
 end

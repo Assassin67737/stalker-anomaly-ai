@@ -1,0 +1,152 @@
+-- varka_finish.script — v0.1: ренегаты достреливают лежачих прямо в бою (21.10.2026, идея юзера)
+--
+-- Ваниль: пока жив хоть один здоровый враг, движок ВЫКИДЫВАЕТ раненых из списка целей
+-- (CEnemyManager::process_wounded, C++ — ни консоли, ни Lua-хука). Добивание (xrs_kill_wounded)
+-- включается, только когда остались одни лежачие, и это ритуал: подойти, встать на точку, выждать.
+-- Ренегатам ритуал не нужен (юзер 21.10): видит лежачего врага рядом — короткая очередь по нему
+-- прямо с места, хоть посреди перестрелки с его товарищами, и обратно в бой.
+--
+-- Где живёт: своё действие в ГЛАВНОМ планировщике (как жёсткий приказ varka_cmd — поверх боя;
+-- в боевой подпланировщик своих id не кладём, PLANNER_MAP). Бой, опасность и ритуальное добивание
+-- уступают ему, пока идёт очередь.
+--
+-- Честно: цель — только лежачий, которого боец сам видит (see) и до груди которого чистая линия СТВОЛА
+-- (xrs_kill_wounded.muzzle_clear: глаза движка видят сквозь окна и щели, пуля — нет; 21.10 автобус).
+-- Ствол упёрся посреди очереди — очередь обрываем. Очередь BURST_MS, потом пауза REST_MS — бой не бросаем.
+-- Цена: пока стреляет в лежачего, стоящий враг получает свободную секунду.
+
+local DEBUG = true
+
+local EVA_FINISH, ACT_FINISH = 188207, 188208  -- рядом с varka_regroup (188205, 188206)
+
+local FINISHERS = { renegade = true }  -- кто так делает
+
+local FINISH_R = 25     -- м: лежачий ближе — достреливаем
+local BURST_MS = 2000   -- мс одной очереди (с доворотом)
+local REST_MS  = 2000   -- мс после очереди — снова воюем как обычно
+local SCAN_MS  = 500    -- мс между поисками лежачих
+
+local state = {}  -- [npc_id] = { target, burst_until, rest_until, scan }
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), ev, f or {}) end
+end
+
+-- до груди лежачего чистая линия ствола (общая проверка с ритуальным добиванием)
+local function body_in_sight(npc, vo)
+	return xrs_kill_wounded.muzzle_clear(npc, vo)
+end
+
+-- ближайший лежачий враг, которого боец видит
+local function find_target(npc)
+	local wpn = npc:active_item()
+	if not (wpn and IsWeapon(wpn) and not IsMelee(wpn) and (wpn:get_ammo_in_magazine() or 0) > 0) then return end
+	local st = db.storage[npc:id()]
+	if st and st.rx_dont_shoot then return end  -- свой на линии (rx_ff)
+	local pos, best, best_d = npc:position(), nil, FINISH_R
+	for o in npc:memory_visible_objects() do
+		local vo = o and o:object()
+		if vo and IsStalker(vo) and vo:id() ~= 0 and vo:alive() and vo:wounded()
+			and npc:relation(vo) >= game_object.enemy then
+			local d = pos:distance_to(vo:position())
+			if d < best_d and npc:see(vo) and body_in_sight(npc, vo) then best, best_d = vo, d end
+		end
+	end
+	return best, best_d
+end
+
+class "eva_varka_finish" (property_evaluator)
+function eva_varka_finish:__init(name) super(nil, name) end
+
+function eva_varka_finish:evaluate()
+	local npc = self.object
+	if not npc:alive() or npc:wounded() then return false end
+	local id, now = npc:id(), time_global()
+	local s = state[id]
+	if not s then s = { rest_until = 0, scan = 0 }; state[id] = s end
+
+	-- очередь идёт: держим, пока жертва жива и лежит
+	if s.target then
+		local vo = level.object_by_id(s.target)
+		local down = vo and vo:alive() and vo:wounded()
+		local clear = down and body_in_sight(npc, vo)
+		if clear and now < s.burst_until then return true end
+		emit(npc, "finish_end", { victim = s.target, why = not down and "down" or (clear and "burst" or "blocked") })
+		s.target, s.rest_until = nil, now + REST_MS
+		return false
+	end
+	if now < s.rest_until or now < s.scan then return false end
+	s.scan = now + SCAN_MS
+
+	local vo, d = find_target(npc)
+	if not vo then return false end
+	s.target, s.burst_until = vo:id(), now + BURST_MS
+	emit(npc, "finish_start", { victim = vo:id(), d = d, be = npc:best_enemy() and npc:best_enemy():id() or -1 })
+	return true
+end
+
+class "act_varka_finish" (action_base)
+function act_varka_finish:__init(name) super(nil, name) end
+
+function act_varka_finish:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end  -- кадр смерти — трупом не командуем
+	local s = state[npc:id()]
+	local vo = s and s.target and level.object_by_id(s.target)
+	if not vo then return end
+	local dir = vec_sub(utils_obj.safe_bone_pos(vo, "bip01_spine"), utils_obj.safe_bone_pos(npc, "bip01_r_finger02"))
+	state_mgr.set_state(npc, "threat_fire", nil, nil, { look_object = vo, look_dir = dir }, { fast_set = true })
+end
+
+function act_varka_finish:finalize()
+	-- как xrs_kill_wounded: отпустить спуск, иначе очередь тянется в следующее действие
+	local npc = self.object
+	local bw = npc:best_weapon()
+	if bw and IsWeapon(bw) and (bw:get_state() == 5 or bw:get_state() == 6) then
+		npc:set_item(object.idle, bw)
+	end
+	action_base.finalize(self)
+end
+
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+
+	manager:add_evaluator(EVA_FINISH, eva_varka_finish("eva_varka_finish"))
+
+	local act = act_varka_finish("act_varka_finish")
+	act:add_precondition(wp(stalker_ids.property_alive, true))
+	act:add_precondition(wp(EVA_FINISH, true))
+	act:add_effect(wp(EVA_FINISH, false))
+	manager:add_action(ACT_FINISH, act)
+
+	-- Уступают очереди. manager:action(id) ищет через lower_bound — только id, которые есть всегда
+	-- (см. varka_cmd). Ритуальное добивание есть у всех, кроме зомбированных — ренегаты не они.
+	for _, aid in ipairs({ xr_actions_id.alife, xr_actions_id.state_mgr + 2,
+		stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }) do
+		manager:action(aid):add_precondition(wp(EVA_FINISH, false))
+	end
+	if xrs_kill_wounded then
+		manager:action(xrs_kill_wounded.actid):add_precondition(wp(EVA_FINISH, false))
+	end
+	if DEBUG then printf("VARKA-FINISH: npc %s hooked", npc:id()) end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	local st = db.storage[npc:id()]
+	if not st or st.varka_finish_hooked then return end
+	st.varka_finish_hooked = true  -- add_evaluator с тем же id дважды роняет движок
+	if FINISHERS[character_community(npc) or ""] then hook_npc(npc) end
+end
+
+local function npc_death(npc)
+	if npc then state[npc:id()] = nil end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

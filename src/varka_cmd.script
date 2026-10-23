@@ -128,11 +128,53 @@ local function slot_vid(npc, order)
 		local angle = ((idx - 1) % 6) * 60 + ring * 30
 		local dir = vector_rotate_y(vector():set(1, 0, 0), angle)
 		local v = level.vertex_in_direction(order.vid, dir, SLOT_STEP * ring)
-		if v and v < 4294967295 and npc:accessible(v) then vid = v end
+		-- 22.10: недоступную точку кольца НЕ меняем на центр — иначе все недоступные встают в одну ноду
+		-- (ближайшую разрешённую к центру). Пусть каждый идёт к ближайшей разрешённой к СВОЕЙ точке.
+		if v and v < 4294967295 then vid = v end
 	end
 	cache.varka_slot_stamp = order.stamp
 	cache.varka_slot_vid   = vid
 	return vid
+end
+
+-- Посты (23.10, юзер: «приехавшие на точку становятся на ближайшие посты, остальные как стояли»).
+-- Пост = работа смарта (stalker_jobs, gulag): её нода alife_task — начало пути патруля/кемпера/снайпера
+-- или смарт-кавер. Работы «в центре смарта» (их нода = нода самого смарта) — не посты.
+-- Дошёл до своей точки → ближайший свободный пост в POST_R от точки приказа; не хватило — стоит где стоял.
+local POST_R = 20
+local POST_JOBS = { [9] = true, [11] = true, [12] = true }  -- gulag_general: охрана, снайпер, кемпер (не костёр/сон/анимточки)
+local post_owner = {}  -- vid поста → id бойца
+
+local function post_free(vid, id)
+	local owner = post_owner[vid]
+	if not owner or owner == id then return true end
+	local o, st = level.object_by_id(owner), db.storage[owner]
+	return not (o and o:alive() and st and st.varka_post == vid)
+end
+
+local function pick_post(npc, order)
+	local center = level.vertex_position(order.vid)
+	local sim, gg, here = alife(), game_graph(), level.name()
+	local my = npc:position()
+	local best, best_d
+	for _, smart in pairs(SIMBOARD.smarts_by_names) do
+		if smart.stalker_jobs and smart.position:distance_to(center) < POST_R + 80
+			and sim:level_name(gg:vertex(smart.m_game_vertex_id):level_id()) == here then
+			for _, job in ipairs(smart.stalker_jobs) do
+				local task = POST_JOBS[job.job_type_id] and job.alife_task
+				local vid = task and task:level_vertex_id()
+				if vid and vid < 4294967295 and vid ~= smart.m_level_vertex_id then
+					local p = level.vertex_position(vid)
+					local d = p:distance_to(my)
+					if p:distance_to(center) <= POST_R and (not best_d or d < best_d)
+						and post_free(vid, npc:id()) and npc:accessible(vid) then
+						best, best_d = vid, d
+					end
+				end
+			end
+		end
+	end
+	return best, best_d
 end
 
 -- ============================================================================
@@ -178,13 +220,40 @@ function act_varka_order:execute()
 	local o = order_of(npc)
 	if not o then return end
 
-	local vid = slot_vid(npc, o)
+	-- 22.10: точка приказа за ограничителем смарта (рестриктор) — движок ведёт к ближайшей РАЗРЕШЁННОЙ ноде,
+	-- она у всех одна, и отряд встаёт кучей на краю (бой night_squads#210614-9: 300 с стояли в 75 м от зоны,
+	-- ни выстрела; кадр «пятеро в одной точке в траве»). Приказ сильнее работы смарта: снимаем ограничители,
+	-- и пересчитываем точки бойцов (их отбраковали как недоступные). Смена схемы смарта может вернуть
+	-- ограничители — поэтому проверка каждый кадр, а запись в trace — раз на приказ.
+	local st = db.storage[npc:id()]
+	if st and not npc:accessible(o.vid) then
+		if varka_trace and st.varka_unrestrict ~= o.stamp then
+			varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_blocked", {
+				vid = o.vid, out = npc:out_restrictions() or "", inr = npc:in_restrictions() or "",
+			})
+		end
+		st.varka_unrestrict = o.stamp
+		npc:remove_all_restrictions()
+		st.varka_slot_stamp = nil
+	end
+
+	-- пост действует, пока жив тот же приказ
+	if st and st.varka_post_stamp ~= o.stamp then st.varka_post, st.varka_post_tried = nil, nil end
+	if o.kind == "move" then o.went = true end
+	local vid = (st and st.varka_post) or slot_vid(npc, o)
 	local pos = level.vertex_position(vid)
 	local far = npc:position():distance_to_sqr(pos) > ARRIVE_SQR
+	-- 22.10: точка недоступна — «дошёл» = стоит на ближайшей разрешённой ноде (иначе вечно идёт на месте)
+	if far and not npc:accessible(vid) then
+		far = npc:accessible_nearest(pos, vector()) ~= npc:level_vertex_id()
+	end
 
 	if far then
-		-- жёсткий — бегом без стрельбы; мягкий — шагом, ствол наготове
-		state_mgr.set_state(npc, self.hard and "assault" or "raid", nil, nil, { look_position = pos })
+		-- жёсткий — бегом без стрельбы; мягкий — шагом, ствол наготове. Шаг трассы (qmove) — свой темп и взгляд:
+		-- не на конечную точку сквозь стены, а на место, которое стоит проверить
+		local state = self.hard and "assault" or "raid"
+		if o.q then state = o.pace == "run" and "assault" or o.pace == "sneak" and "sneak" or "raid" end
+		state_mgr.set_state(npc, state, nil, nil, { look_position = o.look_move or pos })
 		utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_order")
 		return
 	end
@@ -194,6 +263,21 @@ function act_varka_order:execute()
 		if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_arrive", { vid = vid }) end
 	end
 
+	-- дошёл до точки по приказу «идти» (не стоянка у спавна, не точка дирижёра) — один раз ищем пост
+	if st and o.went and not o.exact and st.varka_post_tried ~= o.stamp then
+		st.varka_post_tried, st.varka_post_stamp = o.stamp, o.stamp
+		local post, d = pick_post(npc, o)
+		if post then
+			st.varka_post, post_owner[post] = post, npc:id()
+			if varka_trace then
+				varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_post", { vid = post, d = d })
+			end
+			return  -- следующий кадр поведёт на пост
+		elseif varka_trace then  -- поста нет (не хватило / у смарта нет охраны-снайперов-кемперов) — для счёта покрытия
+			varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_post", { vid = -1 })
+		end
+	end
+
 	-- стоим: жёсткий держит пост и стреляет по видимому врагу; мягкий просто стоит наготове
 	local be = npc:best_enemy()
 	if self.hard and be and npc:see(be) then
@@ -201,6 +285,15 @@ function act_varka_order:execute()
 	elseif self.hard then
 		local look = (be and be:position()) or o.look
 		state_mgr.set_state(npc, "hide", nil, nil, look and { look_position = look } or nil)
+	elseif st and st.varka_post == vid then
+		-- на посту — лицом наружу от точки приказа (простое «сторожим подходы», до квадрантов)
+		local c = level.vertex_position(o.vid)
+		local out = vector():set(pos.x - c.x, 0, pos.z - c.z)
+		local look = out:magnitude() > 1 and vector():set(pos):add(out:normalize():mul(10)) or nil
+		state_mgr.set_state(npc, "threat", nil, nil, look and { look_position = look } or nil)
+	elseif o.q and o.look_move then
+		-- дошёл до шага трассы — стоит наготове, ствол туда, куда велено смотреть
+		state_mgr.set_state(npc, o.pace == "sneak" and "hide" or "threat", nil, nil, { look_position = o.look_move })
 	else
 		state_mgr.set_state(npc, "threat", nil, nil, nil)
 	end
@@ -277,34 +370,50 @@ function register(name, fn)
 	CMD[name] = fn
 end
 
--- spawn <секция_отряда> <vid> <сколько> [ghost 1/0]
+-- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг]
+-- Бои «по рангам» (21.10): профиль = секция бойца sim_default_<группировка>_<0..4> (костюм),
+-- ранг = число (новичок 1750, … легенда 30000). Снаряжение Anomaly выдаёт по рангу в момент
+-- рождения (xrs_rnd_npc_loadout, колбэк se_stalker_on_spawn) — а ранг там ещё из профиля, случайный.
+-- Поэтому выдачу на время спавна снимаем, ставим свой ранг и зовём её сами.
 CMD.spawn = function(a)
 	local section, vid, n, ghost = a[1], a[2], tonumber(a[3]) or 3, a[4] ~= "0"
+	local member, rank = a[5] ~= "-" and a[5] or nil, tonumber(a[6])
 	local pos
 	vid, pos = vid_pos(vid)
 	if not vid then return false, "плохой vid" end
 	if not ini_sys:section_exist(section) then return false, "нет секции " .. tostring(section) end
+	if member and not ini_sys:section_exist(member) then return false, "нет секции " .. member end
 	local gvid = db.actor:game_vertex_id()
 
 	local squad = alife_create(section, pos, vid, gvid)
 	if not squad then return false, "alife_create не создал отряд" end
 
 	-- состав: ровно n бойцов из npc_random секции (create_npc взял бы случайное число)
-	local pool = parse_names(ini_sys:r_string_ex(section, "npc_random") or ini_sys:r_string_ex(section, "npc") or "")
+	local pool = member and { member } or parse_names(ini_sys:r_string_ex(section, "npc_random") or ini_sys:r_string_ex(section, "npc") or "")
 	if #pool == 0 then return false, "у секции нет npc_random" end
 	local sim = alife()
-	for i = 1, n do
-		local id = squad:add_squad_member(pool[math.random(1, #pool)], pos, vid, gvid)
-		local se = id and sim:object(id)
-		if se then
-			SIMBOARD:setup_squad_and_group(se)
-			SendScriptCallback("squad_on_npc_creation", squad, se)
+	local loadout = rank and xrs_rnd_npc_loadout and xrs_rnd_npc_loadout.on_creation
+	if loadout then UnregisterScriptCallback("se_stalker_on_spawn", loadout) end
+	local ranks = {}
+	local ok, err = pcall(function()
+		for i = 1, n do
+			local id = squad:add_squad_member(pool[math.random(1, #pool)], pos, vid, gvid)
+			local se = id and sim:object(id)
+			if se then
+				if rank then se:set_rank(rank) end
+				if loadout then loadout(se) end  -- снаряжение по нашему рангу
+				ranks[#ranks + 1] = se:rank()
+				SIMBOARD:setup_squad_and_group(se)
+				SendScriptCallback("squad_on_npc_creation", squad, se)
+			end
 		end
-	end
+	end)
+	if loadout then RegisterScriptCallback("se_stalker_on_spawn", loadout) end  -- вернуть, даже если упали
+	if not ok then return false, "спавн: " .. tostring(err) end
 	if ghost then ghost_squad[squad.id] = true end
 	-- по умолчанию отряд стоит, где родился (мягко: на бой реагирует)
 	squad_order[squad.id] = { kind = "hold", vid = vid, pos = pos, hard = false, stamp = time_global() }
-	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid })
+	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid, member = member, ranks = table.concat(ranks, ",") })
 	return true, "sq:" .. squad.id
 end
 
@@ -317,6 +426,34 @@ CMD.order = function(a)
 	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global() }
 	if kind == "sq" then squad_order[id] = o else npc_order[id] = o end
 	return true, kind .. ":" .. id
+end
+
+-- qmove <боец> <vid> <x> <y> <z> <run|walk|sneak> [метка] — шаг трассы квадрантов (23.10, match/conductor.py):
+-- идти в ноду, глядя в точку x y z (место, которое стоит проверить взглядом), выбранным темпом. Мягкий: бой и
+-- опасность главнее. Та же нода — только обновить взгляд и темп (не дёргать бойца). Метка — что нарисовать
+-- вьюверу (номера площадок трассы), уходит в событие qmove.
+CMD.qmove = function(a)
+	local id = tonumber(a[1])
+	local npc = id and level.object_by_id(id)
+	if not (npc and npc:alive()) then return false, "нет бойца" end
+	local vid, pos = vid_pos(a[2])
+	if not vid then return false, "плохой vid" end
+	local lx, ly, lz = tonumber(a[3]), tonumber(a[4]), tonumber(a[5])
+	local look = lx and ly and lz and vector():set(lx, ly, lz) or nil
+	local pace = (a[6] == "run" or a[6] == "sneak") and a[6] or "walk"
+	local o = npc_order[id]
+	if o and o.q and o.vid == vid then
+		o.look_move, o.pace = look, pace
+	else
+		npc_order[id] = { kind = "move", vid = vid, pos = pos, hard = false, exact = true, q = true,
+			look_move = look, pace = pace, stamp = time_global() }
+	end
+	if varka_trace and (not o or o.vid ~= vid or o.tag ~= a[7]) then
+		varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, id, "qmove",
+			{ vid = vid, lx = lx or 0, ly = ly or 0, lz = lz or 0, pace = pace, track = a[7] or "" })
+	end
+	npc_order[id].tag = a[7]
+	return true, "npc:" .. id
 end
 
 -- free <цель> — снять приказы, отдать симуляции / дирижёру
@@ -410,10 +547,40 @@ CMD.freeze = function(a)
 end
 
 -- tp <vid> — перенести актёра (камеру-зрителя) к точке
+-- 23.10: зрителя поставило в «Электру» (бой 011929-6) — вечные разряды мешают смотреть. Аномалии вокруг точки
+-- берём с сервера (онлайн их ещё нет: игрок прыгает издалека), нода ближе ANOM_R к любой — ищем соседнюю кольцами.
+local ANOM_R = 7
+local function anomalies_near(pos, r)
+	local out, sim = {}, alife()
+	for id = 1, 65534 do
+		local se = sim:object(id)
+		if se and IsAnomaly(nil, se:clsid()) and se.position:distance_to(pos) < r then out[#out + 1] = se.position end
+	end
+	return out
+end
+local function safe_vid(vid)
+	local pos = level.vertex_position(vid)
+	local anoms = anomalies_near(pos, 40)
+	if #anoms == 0 then return vid end
+	local function ok(p)
+		for _, a in ipairs(anoms) do if a:distance_to(p) < ANOM_R then return false end end
+		return true
+	end
+	if ok(pos) then return vid end
+	for r = 3, 30, 3 do
+		for i = 0, 11 do
+			local v = level.vertex_in_direction(vid, vector_rotate_y(vector():set(1, 0, 0), i * 30), r)
+			if v and v < 4294967295 and v ~= vid and ok(level.vertex_position(v)) then return v end
+		end
+	end
+	return vid
+end
+
 CMD.tp = function(a)
-	local vid, pos = vid_pos(a[1])
+	local vid = vid_pos(a[1])
 	if not vid then return false, "плохой vid" end
-	db.actor:set_actor_position(pos)
+	vid = safe_vid(vid)
+	db.actor:set_actor_position(level.vertex_position(vid))
 	return true, tostring(vid)
 end
 
@@ -422,6 +589,7 @@ end
 -- команды, лежавшие в файле до загрузки, там уже не исполнятся (first_update их пропускает).
 CMD.level = function(a)
 	local name, want = a[1], a[2]
+	if not name then return true, level.name() end  -- без имени — где мы сейчас (матч «здесь»)
 	local sim, gg = alife(), game_graph()
 	local pick, se
 	for sname, smart in pairs(SIMBOARD.smarts_by_names) do

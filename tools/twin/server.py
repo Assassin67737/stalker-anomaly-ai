@@ -13,9 +13,12 @@ import atexit
 import http.server
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +73,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
+        if self.path.startswith("/areas/"):
+            return self.save_areas()
         if self.path != "/cmd":
             self.send_response(404)
             self.end_headers()
@@ -78,6 +83,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             n = add_command(body["cmd"], body.get("args", []))
             out = json.dumps({"seq": n}).encode()
+            self.send_response(200)
+        except Exception as ex:
+            out = json.dumps({"error": str(ex)}).encode()
+            self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    # Разметка территорий (23.10, редактор quads.html / quads3d.html): POST /areas/<уровень> → levels/<уровень>_areas.json.
+    # Прежняя версия — в levels/areas_backup/<уровень>_<время>.json (руками нарисованное терять нельзя).
+    def save_areas(self):
+        name = self.path[len("/areas/"):]
+        try:
+            if not re.fullmatch(r"[a-z0-9_]+", name):
+                raise ValueError("плохое имя уровня")
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            json.loads(body)  # только целый JSON
+            path = os.path.join(HERE, "levels", name + "_areas.json")
+            if os.path.exists(path):
+                bdir = os.path.join(HERE, "levels", "areas_backup")
+                os.makedirs(bdir, exist_ok=True)
+                shutil.copy2(path, os.path.join(bdir, f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.json"))
+            with open(path + ".tmp", "wb") as f:
+                f.write(body)
+            os.replace(path + ".tmp", path)
+            out = json.dumps({"ok": True, "bytes": len(body)}).encode()
             self.send_response(200)
         except Exception as ex:
             out = json.dumps({"error": str(ex)}).encode()

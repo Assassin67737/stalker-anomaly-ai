@@ -1,0 +1,65 @@
+{
+  "id": "night_ranks",
+  "level": "here",
+  "hour": 10,
+  "limit_s": 180,
+  "zone": {
+    "smart": "random",
+    "r": 15
+  },
+  "spectator": {
+    "aside": 30
+  },
+  "camera": {
+    "up": 8
+  },
+  "clear_r": 150,
+  "ghost": true,
+  "speed": 1,
+  "cvars": {
+    "ai_aim_fire_angle": 0.087,
+    "ai_reload_threshold": 0.2
+  },
+  "matchup": "ranks",
+  "balance": 3,
+  "sides": {
+    "A": {
+      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "n": [
+            1,
+            4
+          ],
+          "at": {
+            "smart_ring": [
+              30,
+              70
+            ]
+          }
+        }
+      ]
+    },
+    "B": {
+      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "n": [
+            1,
+            4
+          ],
+          "at": {
+            "smart_ring": [
+              30,
+              70
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

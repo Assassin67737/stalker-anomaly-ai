@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VARKA — квадранты 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Mono&family=PT+Sans+Narrow:wght@400;700&display=swap">
+<link rel="stylesheet" href="kpk.css">
+<style>
+/* Квадранты 3D (23.10): плитки нод навмеша поверх геометрии уровня, срез по высоте — заглянуть в здание.
+   Данные, угроза и путь — quads_core.js (общие с quads.html). */
+#top{display:flex;flex:1;overflow:hidden}
+#wrap{flex:1;position:relative;min-width:0}
+#wrap canvas{display:block;width:100%;height:100%}
+#side{width:320px;border-left:1px solid var(--rule);background:var(--panel);overflow-y:auto}
+#side p{color:var(--ink-2);line-height:1.45;margin-top:4px}
+#side .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font:12px var(--f-mono);color:var(--ink-2)}
+#side .kv b{color:var(--ink);font-weight:400}
+#path-list{font:11.5px var(--f-mono);color:var(--ink-2);word-break:break-all;margin-top:5px}
+.leg{display:flex;align-items:center;gap:6px;color:var(--ink-2);font-size:12px;margin-top:3px}
+.leg i{display:inline-block;width:46px;height:8px;border-radius:1px}
+#hint{position:absolute;left:10px;bottom:10px;background:rgba(18,17,13,.85);border:1px solid var(--rule);
+      padding:5px 9px;color:var(--ink-2);font-size:12px;pointer-events:none}
+#status{position:absolute;left:10px;top:10px;color:var(--ink-3);font:12px var(--f-mono)}
+a{color:var(--rust)}
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="wrap"><div id="status"></div>
+    <div id="hint">ЛКМ — вращать · ПКМ — двигать · колесо — ближе · WASD/QE — лететь (Shift — быстрее) · клик — инструмент</div></div>
+  <div id="side">
+    <div class="box">
+      <b>Квадранты 3D</b>
+      <div class="row">
+        <select id="level" title="уровень (у которого есть запечка квадрантов)"></select>
+        <a href="quads.html" id="to2d">2D</a> · <a href="viewer3d.html">бои 3D</a>
+      </div>
+      <div class="row" id="floors" title="этаж: слой в своей клетке снизу вверх; ниже выбранного — бледно, выше — скрыто"></div>
+      <div class="row">
+        <select id="color" title="как красить площадки">
+          <option value="areas">территории (разметка)</option>
+          <option value="quad">площадки (границы)</option>
+          <option value="floor">этаж</option>
+          <option value="height">высота</option>
+          <option value="cover">укрытость</option>
+          <option value="sees">обзор (сколько видит)</option>
+          <option value="threat" selected>угроза (от поставленных)</option>
+        </select>
+      </div>
+      <div class="row"><label title="срезать геометрию и плитки выше этой высоты — заглянуть в здание">срез
+        <input type="range" id="cut" min="0" max="100" value="100"> <span id="cutv">нет</span></label></div>
+      <div class="row"><label><input type="checkbox" id="geo" checked> геометрия уровня</label>
+        <label><input type="checkbox" id="tiles" checked> плитки</label></div>
+      <p class="muted" id="stats"></p>
+    </div>
+    <div class="box"><b>Разметка территорий</b><div id="editor"></div></div>
+    <div class="box tools">
+      <b>Песочница</b>
+      <div class="row" id="toolbar">
+        <button data-t="look" class="on" title="клик — кого видит площадка">◎ смотреть</button>
+        <button data-t="threat" title="враг точно здесь">✕ угроза</button>
+        <button data-t="prob" title="враг, может быть, где-то тут (круг)">◌ вероятная</button>
+        <button data-t="me" title="откуда идёт боец">● боец</button>
+        <button data-t="goal" title="куда ему надо">⚑ цель</button>
+        <button data-t="erase" title="убрать угрозу у места клика">⌫</button>
+      </div>
+      <div class="row"><label title="радиус вероятной угрозы">радиус <input type="number" id="prob-r" value="25" min="5" max="80"> м</label>
+        <button id="clear">очистить</button></div>
+      <div class="row"><label title="во сколько раз дороже метр под взглядом врага">вес угрозы
+        <input type="range" id="k" min="0" max="20" step="0.5" value="6"> <span id="kv">6</span></label></div>
+      <div class="row"><label title="враг выше — опаснее: +доля за каждые 8 м превышения">вес высоты
+        <input type="range" id="kh" min="0" max="2" step="0.1" value="1"> <span id="khv">1</span></label></div>
+      <p>Цена шага = длина × (1 + вес × угроза). Синяя труба — трасса квадрантов, белый пунктир — путь без учёта угрозы.
+        Расстановка общая с 2D (у этого браузера).</p>
+      <div class="kv" id="path-kv"></div>
+      <div id="path-list"></div>
+    </div>
+    <div class="box"><b>Под курсором</b><div class="kv" id="hover-kv"><span>—</span></div></div>
+    <div class="box"><b>Шкала</b><div id="legend"></div></div>
+  </div>
+</div>
+
+<script src="quads_core.js"></script>
+<script src="areas_core.js"></script>
+<script src="areas_ui.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.6/build/index.module.js"
+} }
+</script>
+<script type="module">
+// Координаты игры левые (x вправо, y вверх, z вперёд), three.js — правые: z с минусом (как в viewer3d.html).
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MeshBVH } from 'three-mesh-bvh';
+
+const $ = id => document.getElementById(id);
+const W = (x, y, z) => new THREE.Vector3(x, y, -z);
+const status = t => $('status').textContent = t;
+let LV = null, AM = null, floor = 'all', tool = 'look', threats = [], me = null, goal = null, sel = null;
+const PAINT = new Set(['paint', 'wipe']);
+let line = null, point = null, painting = false;   // недорисованная линия / точка без взгляда; идёт мазок
+let expo = null, route = null, plain = null, cutY = Infinity;
+
+// ─── сцена ──────────────────────────────────────────────────────────────────────────
+const wrap = $('wrap');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+wrap.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#14130f');
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 4000);
+scene.add(new THREE.HemisphereLight('#ffffff', '#445', 1.6));
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.zoomToCursor = true; controls.screenSpacePanning = false;
+controls.maxPolarAngle = Math.PI * 0.495;
+function resize(){ const w = wrap.clientWidth, h = wrap.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize);
+
+// геометрия уровня — шейдер как в viewer3d (нормаль по производным, горизонтали), плюс срез по высоте
+const cutU = { value: 1e6 };
+const terrainMat = new THREE.ShaderMaterial({
+  side: THREE.DoubleSide, transparent: true,
+  uniforms: { sun: { value: new THREE.Vector3(0.45, 0.8, 0.35).normalize() }, fogc: { value: new THREE.Color('#14130f') }, cut: cutU },
+  vertexShader: `varying vec3 vW;
+    void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  fragmentShader: `varying vec3 vW; uniform vec3 sun; uniform vec3 fogc; uniform float cut;
+    void main(){
+      if(vW.y > cut) discard;
+      vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
+      if(dot(n, cameraPosition - vW) < 0.0) n = -n;
+      float flo = smoothstep(0.55, 0.8, n.y);
+      vec3 c = mix(vec3(0.50, 0.47, 0.43), vec3(0.40, 0.44, 0.36), flo);
+      float l = 0.42 + 0.5 * max(dot(n, sun), 0.0) + 0.12 * n.y;
+      float d = length(cameraPosition - vW);
+      // стены полупрозрачные — плитки за ними просвечивают; пол плотный
+      gl_FragColor = vec4(mix(c * l, fogc, 1.0 - exp(-d * 0.0022)), mix(0.55, 1.0, flo));
+    }`,
+});
+let terrain = null, pick = null;
+async function loadMesh(name){
+  const r = await fetch(`levels/${name}_mesh.bin`);
+  if(!r.ok){ status(`нет levels/${name}_mesh.bin — bake_mesh.py`); return; }
+  const buf = await r.arrayBuffer(), dv = new DataView(buf);
+  const nv = dv.getUint32(4, true), nt = dv.getUint32(8, true);
+  const lo = [0,1,2].map(i => dv.getFloat32(12 + i*4, true)), hi = [0,1,2].map(i => dv.getFloat32(24 + i*4, true));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Uint16Array(buf, 36, nv * 3), 3, true));
+  const idx = new Uint32Array(buf.slice(36 + nv * 6, 36 + nv * 6 + nt * 12));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  terrain = new THREE.Mesh(g, terrainMat);
+  terrain.scale.set(hi[0] - lo[0], hi[1] - lo[1], -(hi[2] - lo[2]));
+  terrain.position.set(lo[0], lo[1], -lo[2]);
+  terrain.frustumCulled = false; terrain.renderOrder = 2;
+  scene.add(terrain);
+  // для клика: копия в метрах + дерево (пара секунд на большом уровне — строим сразу, пока смотришь)
+  const q = new Uint16Array(buf, 36, nv * 3), f = new Float32Array(nv * 3);
+  for(let i = 0; i < nv; i++){
+    f[i*3] = lo[0] + q[i*3] / 65535 * (hi[0] - lo[0]);
+    f[i*3+1] = lo[1] + q[i*3+1] / 65535 * (hi[1] - lo[1]);
+    f[i*3+2] = -(lo[2] + q[i*3+2] / 65535 * (hi[2] - lo[2]));
+  }
+  const pg = new THREE.BufferGeometry();
+  pg.setAttribute('position', new THREE.BufferAttribute(f, 3)); pg.setIndex(new THREE.BufferAttribute(idx, 1));
+  pg.boundsTree = new MeshBVH(pg);
+  pick = pg;
+}
+
+// плитки нод: одна плитка на ноду, цвет — по площадке
+let tiles = null, cellNodes = null;
+const tileGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+function buildTiles(){
+  if(tiles){ scene.remove(tiles); tiles.dispose(); }
+  const n = LV.nq.length, c = LV.meta.cell;
+  tiles = new THREE.InstancedMesh(tileGeo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.92, depthWrite: true }), n);
+  tiles.frustumCulled = false; tiles.renderOrder = 1;
+  tiles.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+  scene.add(tiles);
+  // клетка картинки → ноды в ней (для клика: по точке на земле найти ноду)
+  cellNodes = new Map();
+  for(let k = 0; k < n; k++){ const key = LV.nj[k] * LV.W + LV.ni[k]; const a = cellNodes.get(key); a ? a.push(k) : cellNodes.set(key, [k]); }
+  placeTiles();
+}
+const mtx = new THREE.Matrix4(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+function nodePos(k){ const b = LV.meta.box, c = LV.meta.cell; return [b[0] + LV.ni[k] * c, LV.ny[k], b[2] + (LV.H - 1 - LV.nj[k]) * c]; }
+function shown(k){
+  const d = LV.quads[LV.nq[k]];
+  if(LV.ny[k] > cutY) return 0;
+  if(floor === 'all') return 1;
+  return d.floor === +floor ? 1 : d.floor < +floor ? 0.3 : 0;   // ниже выбранного — бледно, выше — нет
+}
+function placeTiles(){
+  const s = LV.meta.cell * 0.94;
+  for(let k = 0; k < LV.nq.length; k++){
+    if(!shown(k)){ tiles.setMatrixAt(k, ZERO); continue; }
+    const [x, y, z] = nodePos(k);
+    mtx.makeScale(s, 1, s).setPosition(x, y + 0.06, -z);
+    tiles.setMatrixAt(k, mtx);
+  }
+  tiles.instanceMatrix.needsUpdate = true;
+  paintTiles();
+}
+function paintTiles(){
+  const mode = $('color').value, cache = new Map(), col = tiles.instanceColor.array, sl = tool === 'look' ? sel : null;
+  const areas = mode === 'areas' && AM;
+  // край активной территории: нода, у которой в соседней клетке (на той же высоте) нет ноды этой же области
+  const rim = new Set();
+  if(areas && AE.active >= 0){
+    for(let k = 0; k < LV.nq.length; k++){
+      if(AM.node[k] !== AE.active) continue;
+      const i = LV.ni[k], j = LV.nj[k];
+      for(const [di, dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const same = (cellNodes.get((j + dj) * LV.W + i + di) || []).some(o => AM.node[o] === AE.active && Math.abs(LV.ny[o] - LV.ny[k]) < 1);
+        if(!same){ rim.add(k); break; }
+      }
+    }
+  }
+  for(let k = 0; k < LV.nq.length; k++){
+    const q = LV.nq[k]; let c, m = (LV.ne[k] ? 0.5 : 1) * (shown(k) < 1 ? 0.35 : 1) / 255;
+    if(areas){
+      // разметка: цвет территории (активная ярче), неразмеченное — тускло по площадкам
+      const a = AM.node[k];
+      if(rim.has(k)){ c = (((LV.ni[k] + LV.nj[k]) >> 1) & 1) ? AE_DASH[0] : AE_DASH[1]; m = 1 / 255; }
+      else if(a >= 0){ c = areasColor(AM, a); m = (shown(k) < 1 ? 0.35 : a === AE.active ? 1.2 : 0.95) / 255; }
+      else { c = cache.get(q); if(!c){ c = quadsHue(q); cache.set(q, c); } m *= 0.35; }
+    } else { c = cache.get(q); if(!c){ c = quadsColor(LV, q, mode, expo, sl); cache.set(q, c); } }
+    col[k*3] = Math.min(1, c[0] * m); col[k*3+1] = Math.min(1, c[1] * m); col[k*3+2] = Math.min(1, c[2] * m);
+  }
+  tiles.instanceColor.needsUpdate = true;
+}
+
+// ─── метки: угрозы, боец, цель, пути ────────────────────────────────────────────────
+const marks = new THREE.Group(); scene.add(marks);
+const mat = c => new THREE.MeshBasicMaterial({ color: c, depthTest: false, transparent: true });
+function qPos(q, up = 0){ const d = LV.quads[q]; return W(d.x, d.y + up, d.z); }
+function rebuildMarks(){
+  marks.clear();
+  for(const t of threats){
+    const d = LV.quads[t.q];
+    const x = new THREE.Group();
+    for(const a of [Math.PI / 4, -Math.PI / 4]){ const b = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.35, 0.35), mat('#d25542')); b.rotation.z = a; x.add(b); }
+    x.position.copy(t.kind === 'prob' ? W(t.x, d.y + 2, t.z) : qPos(t.q, 2)); x.renderOrder = 5; marks.add(x);
+    if(t.kind === 'prob'){
+      const ring = new THREE.Mesh(new THREE.RingGeometry(t.r - 0.4, t.r, 64).rotateX(-Math.PI / 2), mat('#d25542'));
+      ring.material.opacity = 0.7; ring.position.copy(W(t.x, d.y + 0.3, t.z)); marks.add(ring);
+    }
+  }
+  const pin = (pt, c) => { if(!pt) return; const g = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 1.3, 4, 10), mat(c));
+    g.position.copy(qPos(pt.q, 1.1)); g.renderOrder = 5; marks.add(g); };
+  pin(me, '#4fc3f7'); pin(goal, '#a9c77f');
+  if(goal){ const f = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.7, 0.05), mat('#a9c77f')); f.position.copy(qPos(goal.q, 2.4)).add(new THREE.Vector3(0.6, 0, 0)); marks.add(f); }
+  const line = (r, up) => r && new THREE.CatmullRomCurve3(r.path.map(q => qPos(q, up)), false, 'centripetal', 0.2);
+  if(route && route.path.length > 1){
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(line(route, 0.9), route.path.length * 6, 0.22, 6), mat('#4fc3f7'));
+    tube.renderOrder = 4; marks.add(tube);
+  }
+  if(plain && plain.path.length > 1){
+    const g = new THREE.BufferGeometry().setFromPoints(line(plain, 0.6).getPoints(plain.path.length * 6));
+    const l = new THREE.Line(g, new THREE.LineDashedMaterial({ color: '#ddd5bf', dashSize: 1.2, gapSize: 0.8, depthTest: false, transparent: true, opacity: 0.7 }));
+    l.computeLineDistances(); l.renderOrder = 4; marks.add(l);
+  }
+  if(sel != null && tool === 'look'){
+    const s = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 6, 8), mat('#ffffff')); s.position.copy(qPos(sel, 3)); marks.add(s);
+  }
+}
+
+// разметка: линии — трубки цвета категории, точки — столбик со стрелкой взгляда; кисть — кольцо
+const amarks = new THREE.Group(); scene.add(amarks);
+const brushRing = new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 48).rotateX(-Math.PI / 2), mat('#ebe6d7'));
+brushRing.visible = false; brushRing.renderOrder = 6; scene.add(brushRing);
+function rebuildAreaMarks(){
+  amarks.clear(); if(!AM) return;
+  const rgb = c => new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255);
+  const tube = (pts, col, r) => { if(pts.length < 2) return;
+    const g = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map(p => W(p[0], p[1] + 0.35, p[2])), false, 'centripetal', 0), pts.length * 4, r, 5);
+    const m = new THREE.Mesh(g, mat(col)); m.renderOrder = 4; amarks.add(m); };
+  for(const l of AM.lines) tube(l.pts, rgb(catOf(LINE_CATS, l.cat)[2]), 0.16);
+  if(line) tube(line.pts, rgb(catOf(LINE_CATS, line.cat)[2]), 0.1);
+  for(const pt of [...AM.points, ...(point ? [point] : [])]){
+    const col = rgb(catOf(POINT_CATS, pt.cat)[2]);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.6, 6), mat(col)); post.position.copy(W(pt.x, pt.y + 0.8, pt.z)); amarks.add(post);
+    if(pt.dir){ const n = Math.hypot(pt.dir[0], pt.dir[1]) || 1;
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.9, 8), mat(col));
+      cone.position.copy(W(pt.x + pt.dir[0] / n * 0.8, pt.y + 1.4, pt.z + pt.dir[1] / n * 0.8));
+      cone.lookAt(W(pt.x + pt.dir[0] / n * 3, pt.y + 1.4, pt.z + pt.dir[1] / n * 3)); cone.rotateX(Math.PI / 2); amarks.add(cone); }
+  }
+}
+
+// ─── расчёт ────────────────────────────────────────────────────────────────────────
+function recompute(){
+  expo = quadsExposure(LV, threats, +$('kh').value);
+  route = plain = null;
+  if(me && goal){ route = quadsRoute(LV, expo, me.q, goal.q, +$('k').value); plain = quadsRoute(LV, expo, me.q, goal.q, 0); }
+  const [kv, list] = quadsRouteHTML(route, plain, me, goal);
+  $('path-kv').innerHTML = kv; $('path-list').textContent = list;
+  save(); paintTiles(); rebuildMarks();
+}
+
+// ─── клик и курсор: луч в геометрию (ниже среза) → нода в той клетке с близкой высотой ───
+const ray = new THREE.Raycaster();
+function nodeAt(cx, cy){
+  if(!pick || !LV) return -1;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((cx - r.left) / r.width * 2 - 1, -(cy - r.top) / r.height * 2 + 1), camera);
+  const hits = pick.boundsTree.raycast(ray.ray, THREE.DoubleSide).filter(h => h.point.y <= cutY + 0.05).sort((a, b) => a.distance - b.distance);
+  const b = LV.meta.box, c = LV.meta.cell;
+  for(const h of hits.slice(0, 4)){
+    const x = h.point.x, y = h.point.y, z = -h.point.z;
+    const i0 = Math.round((x - b[0]) / c), j0 = LV.H - 1 - Math.round((z - b[2]) / c);
+    let best = -1, bd = 1.6;
+    for(let di = -1; di <= 1; di++) for(let dj = -1; dj <= 1; dj++){
+      for(const k of cellNodes.get((j0 + dj) * LV.W + i0 + di) || []){
+        if(!shown(k)) continue;
+        const dd = Math.abs(LV.ny[k] - y) + 0.3 * (Math.abs(di) + Math.abs(dj));
+        if(dd < bd){ bd = dd; best = k; }
+      }
+    }
+    if(best >= 0) return best;
+  }
+  return -1;
+}
+// точка на поверхности под мышью (ниже среза) — для кисти
+function groundAt(cx, cy){
+  if(!pick) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2((cx - r.left) / r.width * 2 - 1, -(cy - r.top) / r.height * 2 + 1), camera);
+  const h = pick.boundsTree.raycast(ray.ray, THREE.DoubleSide).filter(h => h.point.y <= cutY + 0.05).sort((a, b) => a.distance - b.distance)[0];
+  return h ? { x: h.point.x, y: h.point.y, z: -h.point.z } : null;
+}
+// ноды под кистью: видимые, в круге AE.brush, на высоте мазка ±1.2 м (чтобы не красить этаж ниже)
+function brushNodes(g){
+  const b = LV.meta.box, c = LV.meta.cell, r = AE.brush, out = [];
+  const i0 = Math.round((g.x - b[0]) / c), j0 = LV.H - 1 - Math.round((g.z - b[2]) / c), R = Math.ceil(r / c);
+  for(let di = -R; di <= R; di++) for(let dj = -R; dj <= R; dj++){
+    if((di*di + dj*dj) * c * c > r * r) continue;
+    for(const k of cellNodes.get((j0 + dj) * LV.W + i0 + di) || [])
+      if(shown(k) === 1 && Math.abs(LV.ny[k] - g.y) < 1.2) out.push(k);
+  }
+  return aeFilter(out, tool === 'wipe');
+}
+let downAt = null, hoverAt = 0, strokeAt = 0;
+function strokeHere(e){
+  const g = groundAt(e.clientX, e.clientY); if(!g) return;
+  if(areasPaint(AM, brushNodes(g), tool === 'wipe' ? -1 : AE.active)){ paintTiles(); aeRender(); }
+}
+renderer.domElement.addEventListener('pointerdown', e => {
+  downAt = [e.clientX, e.clientY];
+  if(e.button === 0 && PAINT.has(tool) && AM){
+    if(tool === 'paint' && !aeCanEdit()) return;
+    controls.enabled = false; painting = true; areasBegin(AM); strokeHere(e);
+  }
+});
+addEventListener('pointerup', () => {
+  if(painting){ painting = false; areasEnd(AM); aeRender(true); }
+  controls.enabled = true;
+});
+renderer.domElement.addEventListener('pointerup', e => {
+  if(!downAt || e.button !== 0 || PAINT.has(tool) || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return;
+  const k = nodeAt(e.clientX, e.clientY); if(k < 0) return;
+  const q = LV.nq[k], d = LV.quads[q], [x, y, z] = nodePos(k), pt = { q, x: d.x, z: d.z };
+  // разметка
+  if(tool === 'pick' || tool === 'merge'){
+    const a = AM.node[k]; if(a < 0) return;
+    if(tool === 'pick') AE.active = a;
+    else if(a !== AE.active && aeCanEdit() && !AM.areas[a].locked){ const keep = AM.areas[AE.active].id; areasMerge(AM, a, AE.active); AE.active = AM.areas.findIndex(o => o.id === keep); }
+    aeRender(true); paintTiles(); return;
+  }
+  if(tool === 'fill'){
+    if(!aeCanEdit()) return;
+    const ks = []; for(let i = 0; i < LV.nq.length; i++) if(LV.nq[i] === q) ks.push(i);
+    areasBegin(AM); areasPaint(AM, aeFilter(ks, false), AE.active); areasEnd(AM); aeRender(true); paintTiles(); return;
+  }
+  if(tool === 'line'){
+    if(!line) line = { cat: AE.lineCat, pts: [] };
+    line.pts.push([+x.toFixed(2), +y.toFixed(2), +z.toFixed(2)]);
+    if(e.detail >= 2) finishLine(); else rebuildAreaMarks();
+    return;
+  }
+  if(tool === 'point'){
+    if(!point){ point = { cat: AE.pointCat, x: +x.toFixed(2), y: +y.toFixed(2), z: +z.toFixed(2), area: AM.node[k] }; }
+    else { point.dir = [+(x - point.x).toFixed(3), +(z - point.z).toFixed(3)]; AM.points.push(point); point = null; areasTouch(AM); aeRender(true); }
+    rebuildAreaMarks(); return;
+  }
+  if(tool === 'erase_lp'){
+    let best = null, bd = 3;
+    AM.lines.forEach((l, i) => l.pts.forEach(p => { const dd = Math.hypot(p[0] - x, p[2] - z); if(dd < bd){ bd = dd; best = ['l', i]; } }));
+    AM.points.forEach((p, i) => { const dd = Math.hypot(p.x - x, p.z - z); if(dd < bd){ bd = dd; best = ['p', i]; } });
+    if(best){ areasSnapshot(AM); (best[0] === 'l' ? AM.lines : AM.points).splice(best[1], 1); areasTouch(AM); aeRender(true); rebuildAreaMarks(); }
+    return;
+  }
+  // песочница
+  if(tool === 'look'){ sel = sel === q ? null : q; paintTiles(); rebuildMarks(); return; }
+  if(tool === 'threat') threats.push({ kind: 'threat', ...pt });
+  if(tool === 'prob') threats.push({ kind: 'prob', q, x, z, r: +$('prob-r').value });
+  if(tool === 'me') me = pt;
+  if(tool === 'goal') goal = pt;
+  if(tool === 'erase'){ let best = -1, bd = 1e9;
+    threats.forEach((t, i) => { const r = Math.hypot(t.x - x, t.z - z); if(r < bd){ bd = r; best = i; } });
+    if(best >= 0 && bd < 30) threats.splice(best, 1); }
+  recompute();
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if(painting){ if(performance.now() - strokeAt > 40){ strokeAt = performance.now(); strokeHere(e); } }
+  if(PAINT.has(tool)){
+    const g = groundAt(e.clientX, e.clientY);
+    brushRing.visible = !!g;
+    if(g){ brushRing.position.copy(W(g.x, g.y + 0.15, g.z)); brushRing.scale.setScalar(AE.brush);
+      brushRing.material.color.set(tool === 'wipe' ? '#d25542' : '#ebe6d7'); }
+  }
+  if(e.buttons || performance.now() - hoverAt < 120) return;
+  hoverAt = performance.now();
+  const k = nodeAt(e.clientX, e.clientY);
+  let h = k < 0 ? '<span>—</span>' : quadsInfoHTML(LV, LV.nq[k], expo, tool === 'look' ? sel : null);
+  if(k >= 0 && AM && AM.node[k] >= 0){ const a = AM.areas[AM.node[k]];
+    h = `<span>территория</span><b>${areasLabel(AM, AM.node[k])} · ${catOf(AREA_CATS, a.cat)[1]}</b>` + (a.note ? `<span>заметка</span><b>${a.note}</b>` : '') + h; }
+  $('hover-kv').innerHTML = h;
+});
+function finishLine(){
+  if(line){
+    const p = line.pts; if(p.length > 1 && Math.hypot(p[p.length-1][0] - p[p.length-2][0], p[p.length-1][2] - p[p.length-2][2]) < 0.3) p.pop();
+    if(p.length >= 2){ AM.lines.push(line); areasTouch(AM); }
+  }
+  line = null; aeRender(true); rebuildAreaMarks();
+}
+
+// полёт WASD/QE — как в viewer3d
+const held = new Set();
+addEventListener('keydown', e => {
+  if(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  if(e.ctrlKey || e.metaKey){
+    if(e.code === 'KeyZ'){ e.preventDefault(); aeUndo(); }
+    if(e.code === 'KeyS'){ e.preventDefault(); aeSave(); }
+    return;
+  }
+  if(e.code === 'BracketLeft') return aeBrush(-0.4);
+  if(e.code === 'BracketRight') return aeBrush(0.4);
+  if(e.key === 'Enter') return finishLine();
+  if(e.key === 'Escape'){ line = null; point = null; rebuildAreaMarks(); return; }
+  held.add(e.code);
+});
+addEventListener('keyup', e => held.delete(e.code));
+addEventListener('blur', () => held.clear());
+function fly(dt){
+  if(!held.size) return;
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0;
+  if(fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1); fwd.normalize();
+  const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize(), v = new THREE.Vector3();
+  if(held.has('KeyW')) v.add(fwd); if(held.has('KeyS')) v.sub(fwd);
+  if(held.has('KeyD')) v.add(right); if(held.has('KeyA')) v.sub(right);
+  if(held.has('KeyE')) v.y += 1; if(held.has('KeyQ')) v.y -= 1;
+  const speed = Math.max(6, camera.position.distanceTo(controls.target) * 0.9) * (held.has('ShiftLeft') || held.has('ShiftRight') ? 4 : 1);
+  v.multiplyScalar(speed * dt / 1000); camera.position.add(v); controls.target.add(v);
+}
+
+// ─── панель ─────────────────────────────────────────────────────────────────────────
+function buildFloors(){
+  const f = $('floors'); f.innerHTML = '';
+  const mk = (v, t) => { const b = document.createElement('button'); b.textContent = t; b.className = String(v) === String(floor) ? 'on' : '';
+    b.onclick = () => { floor = v; buildFloors(); placeTiles(); }; f.appendChild(b); };
+  mk('all', 'все этажи'); const [f0, f1] = quadsFloorRange(LV); for(let i = f0; i <= f1; i++) mk(i, quadsFloorName(i));
+}
+function setCut(){
+  const b = LV.meta.box, v = +$('cut').value;
+  cutY = v >= 100 ? Infinity : b[1] + (b[4] - b[1]) * v / 100;
+  cutU.value = isFinite(cutY) ? cutY : 1e6;
+  $('cutv').textContent = isFinite(cutY) ? `${cutY.toFixed(1)} м` : 'нет';
+  placeTiles();
+}
+function setTool(t){
+  if(line && t !== 'line') finishLine();
+  point = null; tool = t;
+  document.querySelectorAll('#toolbar button').forEach(b => b.className = b.dataset.t === t ? 'on' : '');
+  aeSetTool(t); brushRing.visible = false;
+  if(t !== 'look') sel = null;
+  if(AE_TOOLS.some(x => x[0] === t) && $('color').value !== 'areas'){ $('color').value = 'areas'; legend(); }
+  paintTiles(); rebuildMarks(); rebuildAreaMarks();
+}
+document.querySelectorAll('#toolbar button').forEach(b => b.onclick = () => setTool(b.dataset.t));
+$('clear').onclick = () => { threats = []; me = goal = null; sel = null; recompute(); };
+$('k').oninput = () => { $('kv').textContent = $('k').value; recompute(); };
+$('kh').oninput = () => { $('khv').textContent = $('kh').value; recompute(); };
+$('color').onchange = () => { legend(); paintTiles(); };
+$('cut').oninput = setCut;
+$('geo').onchange = () => { if(terrain) terrain.visible = $('geo').checked; };
+$('tiles').onchange = () => { if(tiles) tiles.visible = $('tiles').checked; };
+$('level').onchange = () => { const q = new URLSearchParams(location.search); q.set('level', $('level').value); location.search = '?' + q; };
+function legend(){
+  const m = $('color').value;
+  $('legend').innerHTML = m === 'areas'
+    ? AREA_CATS.map(c => `<div class="leg" title="${c[3]}"><i style="background:rgb(${c[2]})"></i>${c[1]}</div>`).join('') + '<p>Тусклое — ещё не размечено.</p>'
+    : quadsLegendHTML(m) + '<p>◎ смотреть: клик по площадке — кого она видит.</p>';
+}
+addEventListener('beforeunload', e => { if(AM && AM.dirty){ e.preventDefault(); e.returnValue = ''; } });
+
+function save(){ try{ localStorage.setItem('varka_quads_' + LV.name, JSON.stringify({ threats, me, goal })); }catch(_){} }
+function restore(){
+  try{ const s = JSON.parse(localStorage.getItem('varka_quads_' + LV.name) || 'null');
+    if(s){ threats = s.threats || []; me = s.me; goal = s.goal; } }catch(_){}
+}
+// камера: на расстановку (боец/цель/угрозы), иначе весь уровень сверху-сбоку
+function frame(){
+  const pts = [me, goal, ...threats].filter(Boolean).map(p => [p.x, LV.quads[p.q].y, p.z]);
+  const b = LV.meta.box;
+  if(!pts.length) pts.push([b[0], b[1], b[2]], [b[3], b[1], b[5]]);
+  const mn = [0,1,2].map(i => Math.min(...pts.map(p => p[i]))), mx = [0,1,2].map(i => Math.max(...pts.map(p => p[i])));
+  const c = [0,1,2].map(i => (mn[i] + mx[i]) / 2), r = Math.max(40, Math.hypot(mx[0] - mn[0], mx[2] - mn[2]) * 0.6);
+  controls.target.copy(W(c[0], mn[1], c[2]));
+  camera.position.copy(W(c[0], mn[1] + r * 1.1, c[2] - r * 0.75));
+}
+
+let last = performance.now();
+function loop(now){ fly(now - last); last = now; controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); }
+
+(async () => {
+  resize(); legend(); requestAnimationFrame(loop);
+  status('уровни…');
+  const ok = await quadsLevels();
+  $('level').innerHTML = ok.map(n => `<option value="${n}">${n}</option>`).join('');
+  if(!ok.length){ status('нет запечки: python3 quads/bake_quads.py levels/src/<уровень> <уровень>'); return; }
+  const want = new URLSearchParams(location.search).get('level');
+  const name = ok.includes(want) ? want : ok.includes('l03_agroprom') ? 'l03_agroprom' : ok[0];
+  $('level').value = name; $('to2d').href = 'quads.html?level=' + name;
+  status(`квадранты ${name}…`);
+  LV = await quadsLoad(name);
+  AM = await areasLoad(LV); AE.AM = AM; AE.active = -1;
+  // есть разметка (или смотрим авточерновик) — сразу красить территориями, а не угрозой
+  if(AREAS_SRC === 'auto' || AM.areas.length){ $('color').value = 'areas'; legend(); }
+  aeMount($('editor'), () => { paintTiles(); rebuildAreaMarks(); }, setTool); aeRender(true);
+  restore(); buildFloors();
+  status('плитки…'); buildTiles(); setCut();
+  status('геометрия…'); await loadMesh(name);
+  frame(); recompute(); rebuildAreaMarks();
+  const fl = {}; LV.quads.forEach(d => fl[d.floor] = (fl[d.floor] || 0) + 1);
+  $('stats').textContent = `площадок ${LV.quads.length}, нод ${LV.nq.length}; по этажам: ` + Object.entries(fl).sort((a, b) => a[0] - b[0]).map(([f, c]) => `${quadsFloorName(+f)}: ${c}`).join(', ');
+  status('');
+})();
+</script>
+</body>
+</html>

@@ -14,6 +14,7 @@ actid = 188112
 hostage_list = {}
 local ini = ini_file("ai_tweaks\\xrs_kill_wounded.ltx")
 local Enable = ini:r_bool_ex("settings","enable",false)
+function is_enabled() return Enable == true end  -- VARKA 23.10: varka_survive спрашивает, есть ли действие 188112
 local ActorKillWoundedChance = ini:r_float_ex("settings","actor_cause_surrender_chance") or 0.25
 local ActorKillWoundedMaxDist = ini:r_float_ex("settings","actor_cause_surrender_max_dist") or 7
 local MinDistanceRunState = ini:r_float_ex("settings","state_run_min_distance") or 8
@@ -25,8 +26,10 @@ local MinTriggerTimer = ini:r_float_ex("settings","min_timer","float") or 3000
 local MaxTriggerTimer = ini:r_float_ex("settings","max_timer","float") or 5000
 local SurrenderMinTriggerTimer = ini:r_float_ex("settings","surrender_min_timer") or 5000
 local SurrenderMaxTriggerTimer = ini:r_float_ex("settings","surrender_max_timer") or 5000
--- VARKA: казнь чуть быстрее — палач слишком долго смотрит перед выстрелом (юзер 20.10). ×0.6
-local VARKA_TIMER_SCALE = 0.6
+-- VARKA: казнь быстрее — палач слишком долго смотрит перед выстрелом (юзер 20.10: ×0.6; 21.10: «слишком
+-- много навешивают» — замер: от прихода к жертве до выстрела медиана 6 с). ×0.3: обычная 0.45–1.35 с,
+-- с анимацией пленного 2.4–3 с.
+local VARKA_TIMER_SCALE = 0.3
 MinTriggerTimer, MaxTriggerTimer = MinTriggerTimer * VARKA_TIMER_SCALE, MaxTriggerTimer * VARKA_TIMER_SCALE
 SurrenderMinTriggerTimer = SurrenderMinTriggerTimer * VARKA_TIMER_SCALE
 SurrenderMaxTriggerTimer = SurrenderMaxTriggerTimer * VARKA_TIMER_SCALE
@@ -36,6 +39,56 @@ local CauseSurrenderCommunities = parse_list(ini,"settings","cause_surrender_com
 ini = nil
 
 local PICK_TRIES = 8 -- VARKA: сколько случайных направлений пробовать, прежде чем просто отступить
+
+-- VARKA (21.10): точка палача годится, только если с неё видно тело — луч по статике от глаз до груди
+-- лежачего. Бой 21.10: жертва в ложбине, луч с точки палача упирался за метр до тела; палач 33 с стоял
+-- в 4 м — «дошёл до кольца» каждый тик брал свою же слепую точку, see() = нет, сброс, по кругу.
+-- Жертва вылечилась, встала и выстрелила первой.
+local RQT_STATIC = 2    -- collide::rqtStatic
+local EYE_H      = 1.6  -- глаза стоящего над нодой, м
+local GUN_H      = 1.35 -- ствол стоящего над нодой (у плеча), м
+local MUZZLE     = 0.5  -- срез ствола впереди кисти, м
+local BLOCK_MS   = 700  -- мс: ствол упёрся дольше — точка негодная, ищем другую
+local rp_kw
+
+-- отрезок свободен по статике (упор не раньше 0.3 м до конца)
+local function line_clear(from, to)
+	if not rp_kw then
+		rp_kw = ray_pick()
+		rp_kw:set_flags(RQT_STATIC)
+	end
+	local dir = vector():set(to):sub(from)
+	local d = dir:magnitude()
+	if d < 0.5 then return true end
+	dir:normalize()
+	rp_kw:set_position(from)
+	rp_kw:set_direction(dir)
+	rp_kw:set_range(d)
+	return not rp_kw:query() or rp_kw:get_distance() >= d - 0.3
+end
+
+local function chest_of(vo)
+	return utils_obj.safe_bone_pos(vo, "bip01_spine1")
+end
+
+-- с точки pos (позиция ноды) до груди лежачего чисто и глазам, и стволу.
+-- VARKA 21.10 (снимок юзера: палач у автобуса высадил магазин в бампер): глаза над бампером, ствол — в него.
+local function body_in_sight(pos, vo)
+	local chest = chest_of(vo)
+	return line_clear(vector():set(pos.x, pos.y + EYE_H, pos.z), chest)
+		and line_clear(vector():set(pos.x, pos.y + GUN_H, pos.z), chest)
+end
+
+-- живая линия ствола: от кисти (+ срез) до груди лежачего. npc:see (глаза движка) видит сквозь окна и
+-- щели — стрелять разрешает, а пуля бьёт в железо. Не local: им же пользуется varka_finish (ренегаты).
+function muzzle_clear(npc, vo)
+	local chest = chest_of(vo)
+	local hand = utils_obj.safe_bone_pos(npc, "bip01_r_hand")
+	local dir = vector():set(chest):sub(hand)
+	local d = dir:magnitude()
+	if d < 1 then return true end
+	return line_clear(vector():set(hand):add(dir:mul(MUZZLE / d)), chest)
+end
 
 ----------------------------
 local level = level
@@ -150,11 +203,26 @@ function eva_kill_wounded:__init( name, storage ) super ( nil, name )
 	self.st.force_false = 0
 end
 
+-- VARKA 23.10: один палач на жертву. Бой 225317-1: вся Свобода (5 из 5) 8 с шла добивать одного раненого
+-- ИСГ, пока трое ИСГ были живы, — бой встал. Первый, кто взялся, держит жертву, пока подтверждает её
+-- (оценщик зовётся постоянно); бросил, ушёл в опасность или умер — через CLAIM_MS берёт следующий.
+local executor = {}  -- id жертвы → { id = палач, t = последнее подтверждение }
+local CLAIM_MS = 1500
+local function claim(npc, victim_id)
+	local now, c = time_global(), executor[victim_id]
+	if c and c.id ~= npc:id() and now - c.t < CLAIM_MS then
+		local o = level.object_by_id(c.id)
+		if o and o:alive() then return false end
+	end
+	executor[victim_id] = { id = npc:id(), t = now }
+	return true
+end
+
 function eva_kill_wounded:find_target()
-	local npc = self.object 
+	local npc = self.object
 	local be = npc:best_enemy() or get_hostage(npc)
 
-	if (be and IsStalker(be) and be:alive() and is_wounded(be)) then 
+	if (be and IsStalker(be) and be:alive() and is_wounded(be) and claim(npc, be:id())) then
 		if (self.st.selected_id == nil or self.st.selected_id ~= be:id()) then
 			self.st.selected_id = be:id()
 			self.st.vertex_id = nil
@@ -282,7 +350,8 @@ function act_kill_wounded:execute()
 				local away = vec_sub(npc:position(),vo:position())
 				vid = npc:vertex_in_direction(npc:level_vertex_id(),away,MaxDistance - dist + 1)
 			end
-			if (validate(npc,vid) and level.vertex_position(vid):distance_to_sqr(vo:position()) >= min_sqr) then
+			if (validate(npc,vid) and level.vertex_position(vid):distance_to_sqr(vo:position()) >= min_sqr
+				and body_in_sight(level.vertex_position(vid), vo)) then -- VARKA 21.10: с точки видно тело глазам и стволу
 				st.vertex_id = vid
 				st.vertex_position = level.vertex_position(st.vertex_id)
 				break
@@ -297,12 +366,23 @@ function act_kill_wounded:execute()
 	local on_spot = st.vertex_id and npc:level_vertex_id() == st.vertex_id
 	if (st.timer and tg > st.timer and on_spot and not too_close) then
 		if not (axr_task_manager.hostages_by_id[vo:id()]) then
-			if (npc:see(vo)) then
+			local clear = npc:see(vo) and muzzle_clear(npc, vo)
+			if (clear) then
+				st.blocked = nil
 				state_mgr.set_state(npc,"threat_sniper_fire",nil,nil,{look_object = vo, look_dir = dir})
 				if (varka_trace) then -- VARKA: факт выстрела добивания для разбора на вьювере
 					varka_trace.emit(0, npc:id(), "kw_fire", {victim=vo:id(), d=dist})
 				end
+			elseif (npc:see(vo) and not (st.blocked and tg - st.blocked > BLOCK_MS)) then
+				-- VARKA 21.10: видит, но ствол упёрся (может, ещё поднимает оружие) — целится, не стреляет
+				st.blocked = st.blocked or tg
+				state_mgr.set_state(npc,"threat",nil,nil,{look_object = vo, look_dir = dir})
 			else
+				-- VARKA 21.10: ствол упёрся надолго — та же история, что «не видно»: точка негодная
+				if (st.blocked and varka_trace) then
+					varka_trace.emit(0, npc:id(), "kw_blocked", {victim=vo:id(), d=dist})
+				end
+				st.blocked = nil
 				-- VARKA: с этой точки жертву не видно (стена, угол коридора) — ищем другую, таймер сохраняем
 				if (db.used_level_vertex_ids[st.vertex_id] == npc:id()) then
 					db.used_level_vertex_ids[st.vertex_id] = nil
@@ -317,7 +397,9 @@ function act_kill_wounded:execute()
 	
 	if (st.vertex_id) then
 		-- VARKA: было dist <= MinDistance+1 — считало «дошёл» и в упор; теперь только кольцо [min, min+1]
-		if (npc:level_vertex_id() == st.vertex_id or (dist >= MinDistance and dist <= MinDistance+1)) then
+		-- VARKA 21.10: «уже в кольце» засчитываем, только если отсюда видно тело (иначе — идти к выбранной точке)
+		if (npc:level_vertex_id() == st.vertex_id or (dist >= MinDistance and dist <= MinDistance+1
+			and body_in_sight(npc:position(), vo))) then
 			state_mgr.set_state(npc,"threat",nil,nil,{look_dir = dir})
 			if (db.used_level_vertex_ids[st.vertex_id]) then
 				db.used_level_vertex_ids[st.vertex_id] = nil

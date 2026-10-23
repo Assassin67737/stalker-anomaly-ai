@@ -593,7 +593,13 @@ end
 
 local MODES = { search = action_varka_search, freeze = action_varka_freeze }
 
+-- v0.24: вера v2 (varka_belief + руки varka_clear в главном планировщике). Пока у отряда есть
+-- облако, свободный боец сюда не попадает — его держит varka_clear поверх боя. Сюда — только без
+-- облака: остаётся глушилка. Старый поиск по вееру выключен; false — вернуть как было.
+local V2 = true
+
 local function mode_of(npc)
+	if V2 then return "freeze" end
 	return belief_alive(npc) and "search" or "freeze"
 end
 

@@ -1,0 +1,105 @@
+/* kpk.css — общий вид вьюверов (2D и 3D), 21.10.2026.
+   КПК наблюдателя: бетон, бумага, ржавчина. Погоны рангов и нашивки группировок — из мира игры. */
+:root{
+  --ground:#12110d; --panel:#191812; --panel-hi:#211f18; --rule:#2f2c23; --rule-hi:#463f30;
+  --ink:#ddd5bf; --ink-2:#a8a08a; --ink-3:#6f6956;
+  --rust:#d68a35; --rust-deep:#3a2614; --geiger:#a9c77f; --alarm:#d25542;
+  --gold:#d9b25a; --pale:#cfc8b0;
+  --side-a:#4fc3f7; --side-b:#ff8a65;
+  --f-label:"PT Sans Narrow","Arial Narrow","Liberation Sans Narrow",sans-serif;
+  --f-mono:"PT Mono","DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground);color:var(--ink);font:13px/1.35 var(--f-label);
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+:focus-visible{outline:1px solid var(--rust);outline-offset:1px}
+::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:var(--rule-hi);border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* таблички-заголовки: как маркировка на ящике */
+.box{padding:10px 12px;border-bottom:1px solid var(--rule)}
+.box>b,.plate-h,details>summary{display:flex;align-items:center;gap:7px;margin-bottom:7px;
+  font-weight:700;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);list-style:none;cursor:default}
+.box>b::before,.plate-h::before,details>summary::before{content:'';width:3px;height:11px;background:var(--rust);flex:none}
+details>summary{cursor:pointer}
+details>summary::after{content:'▾';margin-left:auto;color:var(--ink-3);letter-spacing:0}
+details:not([open])>summary::after{content:'▸'}
+details:not([open])>summary{margin-bottom:0}
+.row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.row+.row{margin-top:6px}
+.muted{color:var(--ink-3)}
+
+button,select{padding:3px 9px;cursor:pointer;border:1px solid var(--rule-hi);border-radius:2px;
+  background:var(--panel-hi);color:var(--ink-2);font:13px var(--f-label)}
+button:hover,select:hover{color:var(--ink);border-color:var(--ink-3)}
+button.on{border-color:var(--rust);color:var(--rust);background:var(--rust-deep)}
+select{padding-right:4px}
+input[type=checkbox]{accent-color:var(--rust)}
+input[type=range]{accent-color:var(--rust)}
+input[type=number]{width:44px;background:var(--panel-hi);color:var(--ink);border:1px solid var(--rule-hi);
+  border-radius:2px;font:12px var(--f-mono);padding:2px 4px}
+label{cursor:pointer;user-select:none}
+
+/* таймлайн (полоса под сценой) */
+.transport{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid var(--rule);background:var(--panel);flex-wrap:wrap}
+.transport button{min-width:30px}
+.transport .scrub{flex:1;min-width:120px}
+.transport .tlabel{color:var(--ink-3);font:11px var(--f-mono);min-width:96px;text-align:right}
+.transport label{display:flex;align-items:center;gap:4px;color:var(--ink-2)}
+
+/* погоны, звезда командира, полоска здоровья */
+.strap{flex:none;display:inline-block;vertical-align:middle}
+.star{color:var(--gold);font-size:12px}
+.hp{display:inline-block;height:4px;background:#26231b;flex:none;vertical-align:middle}
+.hp i{display:block;height:100%}
+.side-A{color:var(--side-a)} .side-B{color:var(--side-b)}
+
+/* состав: карточки отрядов (оба вьювера) */
+.roster{font-size:12.5px}
+.roster .legend{color:var(--ink-3);font-size:11.5px;padding:10px 12px;border-bottom:1px solid var(--rule);line-height:1.5}
+.straps{display:flex;gap:7px;align-items:flex-end;margin:4px 0 6px}
+.straps span{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:9.5px;color:var(--ink-3)}
+.roster .sq{padding:8px 12px 6px;border-bottom:1px solid var(--rule);cursor:pointer}
+.roster .sq:hover,.roster .m:hover{background:var(--panel-hi)}
+.roster .sq.sel,.roster .m.sel{background:var(--rust-deep)}
+.roster .hd{display:flex;gap:7px;align-items:center;white-space:nowrap}
+.patch{width:30px;height:30px;flex:none;object-fit:contain;display:inline-block}
+.patch.none{border:1px solid var(--rule-hi);border-radius:3px}
+.roster .hd .patch{background:rgba(18,17,13,.88);padding:2px;border-radius:2px;filter:contrast(1.3) saturate(1.25)}  /* 23.10: в панели нашивки блеклее, чем на плашке карты — та же тёмная подложка + контраст */
+.roster .who{display:flex;flex-direction:column;line-height:1.15;min-width:0}
+.roster .who b{color:var(--ink);font-size:14px}
+.roster .who small{color:var(--ink-3);font:10.5px var(--f-mono)}
+.roster .mode{color:#00e5ff;font-size:12px}
+.roster .count{margin-left:auto;color:var(--ink-2);font:12px var(--f-mono)}
+.roster .tag{font:700 11px var(--f-label);letter-spacing:.08em;padding:0 4px;border:1px solid currentColor;border-radius:2px}
+.roster .members{margin-top:5px}
+.roster .m{display:flex;gap:6px;align-items:center;padding:2px 12px 2px 14px;margin:0 -12px;cursor:pointer;white-space:nowrap;color:var(--ink-2)}
+.roster .m .id{font:11.5px var(--f-mono);color:var(--ink)}
+.roster .m.dead{color:#4a4638}
+.roster .m.dead .id{color:#4a4638;text-decoration:line-through}
+.roster .m.dead .strap{opacity:.35}
+.roster .m .star{margin-left:-3px}
+.roster .wpn{color:#a89f7c}
+.roster .role{color:#00e5ff}
+.roster .fl{color:#e8d55a}
+.roster .act{color:#6d7a72;margin-left:auto;overflow:hidden;text-overflow:ellipsis}
+.roster .intel{color:#a89f7c;font-size:11px;margin-top:3px;white-space:normal}
+.roster .mbar{position:relative;height:5px;background:#26231b;border-radius:1px;margin:4px 0 2px}
+.roster .mbar i{position:absolute;left:0;top:0;bottom:0;border-radius:1px}
+.roster .mbar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:#fff8}
+.roster .axes{display:flex;gap:5px;color:var(--ink-3);font-size:10px}
+.roster .axes span{display:flex;align-items:center;gap:2px}
+.roster .axes em{display:inline-block;width:14px;height:4px;background:#26231b;position:relative}
+.roster .axes em i{position:absolute;left:0;top:0;bottom:0;background:#6a9}
+
+/* табло матча (DOM-версия, 3D) */
+.scoreboard{display:flex;align-items:center;gap:8px}
+.scoreboard .side{display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;min-width:0}
+.scoreboard .vs{color:var(--ink-3)}
+.scoreboard .patch{width:26px;height:26px}
+.scoreboard-sub{color:var(--ink-2);font:11px var(--f-mono);margin-top:4px}
+.scoreboard-sub.end{color:var(--rust)}
+
+/* журнал */
+.log{font:11px/1.45 var(--f-mono)}
+.log>div{border-bottom:1px solid #1d1b15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

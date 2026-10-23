@@ -1,0 +1,1403 @@
+{
+  "version": 1,
+  "exported": "2026-10-19T00:00:00Z",
+  "prims": [
+    "go",
+    "run",
+    "sneak",
+    "freeze",
+    "stand",
+    "crouch",
+    "prone",
+    "look",
+    "sweep",
+    "glance",
+    "shoot",
+    "pour",
+    "hold",
+    "reload",
+    "see",
+    "hear",
+    "lose",
+    "hit",
+    "corpse",
+    "belief",
+    "clear",
+    "forget",
+    "shout",
+    "heard",
+    "order",
+    "claim",
+    "release",
+    "node",
+    "cover",
+    "conceal",
+    "sector",
+    "dead",
+    "enemy",
+    "ally",
+    "cap",
+    "wait",
+    "while",
+    "if",
+    "repeat"
+  ],
+  "pieces": [
+    {
+      "id": "cl_bound",
+      "dx": -260,
+      "dy": -180,
+      "items": [
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "init"
+          ],
+          "phase": "контакт",
+          "d": "6notm33"
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "all"
+          ],
+          "d": "prpyhlb"
+        },
+        {
+          "p": "shout",
+          "link": "phase",
+          "param": "№2,3 — огонь! №4,5 — вперёд!",
+          "who": [
+            "cap"
+          ],
+          "phase": "база огня"
+        },
+        {
+          "p": "pour",
+          "link": "then",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "link": "and",
+          "param": "до укрытия на фланге, рывок 3–5 с",
+          "who": [
+            "4",
+            "5"
+          ],
+          "d": "tz7v6cp"
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ],
+          "d": "yrwgiwg"
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "на позиции!",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "heard",
+          "link": "phase",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ],
+          "phase": "смена"
+        },
+        {
+          "p": "pour",
+          "link": "then",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "link": "and",
+          "param": "перескок мимо №4,5",
+          "who": [
+            "2",
+            "3"
+          ],
+          "d": "tz7v6cp"
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ],
+          "d": "yrwgiwg"
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "на позиции!",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "p": "look",
+          "link": "phase",
+          "param": "",
+          "who": [
+            "cap"
+          ],
+          "phase": "оценка"
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "if",
+          "link": "then",
+          "param": "враг держится",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "repeat",
+          "link": "then",
+          "param": "фазы «база огня» + «смена»",
+          "who": [
+            "all"
+          ]
+        },
+        {
+          "p": "if",
+          "link": "then",
+          "param": "ушёл из виду",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "all"
+          ],
+          "d": "ol9d5pe"
+        }
+      ],
+      "name": "огонь и манёвр: скачками",
+      "real": "огонь и манёвр, скачки с перекатом (alternate bounds / bounding overwatch)",
+      "theory": "пехотная тактика отделения: base of fire + maneuver element; DIRECTOR_CORPUS A1 (bounding overwatch, fire and movement)",
+      "who": [
+        "Военные",
+        "Долг",
+        "Наёмники",
+        "Монолит"
+      ],
+      "when": "контакт с видимым врагом, враг не отходит; дистанция средняя, есть укрытия для скачков",
+      "notes": "Синхронизация пар сделана выкриком: «на позиции!» → УСЛЫШАТЬ СВОЕГО. Отдельный стык «после №X» не понадобился — выкрик и есть сигнал.\n⚡ = №2: кто увидел первым, тот и стреляет первым — он уже смотрит в нужную сторону.\nНикто не движется без прикрытия: в каждой фазе одна пара льёт, другая бежит.",
+      "fixed": true,
+      "order": 3,
+      "squad": {
+        "size": 5,
+        "cap": 1,
+        "init": 2,
+        "trigger": "see"
+      }
+    },
+    {
+      "id": "cl_envelop",
+      "dx": 140,
+      "dy": -180,
+      "items": [
+        {
+          "link": "then",
+          "param": "ранен — в укрытие",
+          "who": [
+            "init"
+          ],
+          "phase": "удар",
+          "d": "is9gned"
+        },
+        {
+          "link": "and",
+          "param": "на звук выстрела",
+          "who": [
+            "rest"
+          ],
+          "d": "uie8ac7"
+        },
+        {
+          "p": "hear",
+          "link": "then",
+          "param": "",
+          "who": [
+            "rest"
+          ]
+        },
+        {
+          "p": "cap",
+          "link": "on",
+          "param": "",
+          "who": [
+            "rest"
+          ]
+        },
+        {
+          "p": "shout",
+          "link": "phase",
+          "param": "№2,3 — прижать! №4,5 — обход!",
+          "who": [
+            "cap"
+          ],
+          "phase": "фиксация"
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ],
+          "d": "yrwgiwg"
+        },
+        {
+          "p": "pour",
+          "link": "then",
+          "param": "короткими, беречь патроны",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "p": "sneak",
+          "link": "and",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "dead",
+          "link": "on",
+          "param": "вне его сектора",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "look",
+          "link": "and",
+          "param": "тыл",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": "",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "claim",
+          "link": "phase",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ],
+          "phase": "выход на фланг"
+        },
+        {
+          "p": "node",
+          "link": "on",
+          "param": "~90° к линии огня №2,3",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "на фланге!",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "hold",
+          "link": "then",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "wait",
+          "link": "and",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "cap",
+          "link": "on",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "heard",
+          "link": "phase",
+          "param": "",
+          "who": [
+            "cap"
+          ],
+          "phase": "удар с фланга"
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "давай!",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "hold",
+          "link": "then",
+          "param": "перенос огня — не задеть своих",
+          "who": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "p": "shoot",
+          "link": "and",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "enemy",
+          "link": "on",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "sweep",
+          "link": "phase",
+          "param": "каждый свой",
+          "who": [
+            "2",
+            "3",
+            "4",
+            "5"
+          ],
+          "phase": "закрепление"
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": "",
+          "who": [
+            "2",
+            "3",
+            "4",
+            "5"
+          ]
+        },
+        {
+          "p": "clear",
+          "link": "then",
+          "param": "",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "if",
+          "link": "then",
+          "param": "не нашли",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "4",
+            "5"
+          ],
+          "d": "ol9d5pe"
+        }
+      ],
+      "name": "охват: прижать и обойти",
+      "real": "охват (single envelopment): фиксация огнём + манёвр на фланг, перенос огня",
+      "theory": "DIRECTOR_CORPUS B2 (охват), B1 (fix как роль); принцип: прижатый не смотрит по сторонам",
+      "who": [
+        "Военные",
+        "Наёмники",
+        "Монолит",
+        "Грех"
+      ],
+      "when": "попадание от стрелка, которого не видно или видно плохо; у сквада хватает людей на две пары",
+      "notes": "Деградация: если людей 4 — пара обхода превращается в одного (атомарная пьеса: без фланга охвата нет, тогда снап на «огонь и манёвр»).\n⚡ (раненый) не бросается в бой, а держит тыл — полезный, но не на острие.\nЕсли ⚡ выпал на №2–5, дирижёр должен перетасовать номера — тут открытый вопрос привязки.",
+      "fixed": true,
+      "order": 3,
+      "squad": {
+        "size": 6,
+        "cap": 1,
+        "init": 6,
+        "trigger": "hit"
+      }
+    },
+    {
+      "id": "cl_net",
+      "dx": -60,
+      "dy": 120,
+      "items": [
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "ушёл! туда!",
+          "who": [
+            "init"
+          ],
+          "phase": "потеря"
+        },
+        {
+          "p": "heard",
+          "link": "then",
+          "param": "",
+          "who": [
+            "rest"
+          ]
+        },
+        {
+          "p": "belief",
+          "link": "then",
+          "param": "принять его направление",
+          "who": [
+            "rest"
+          ]
+        },
+        {
+          "p": "shout",
+          "link": "phase",
+          "param": "№3,4 — углы держать!",
+          "who": [
+            "cap"
+          ],
+          "phase": "сеть"
+        },
+        {
+          "p": "claim",
+          "link": "then",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ]
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": "края облака веры, без наложения",
+          "who": [
+            "3",
+            "4"
+          ]
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ],
+          "d": "yrwgiwg"
+        },
+        {
+          "p": "sweep",
+          "link": "and",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ]
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ]
+        },
+        {
+          "p": "sneak",
+          "link": "phase",
+          "param": "к самому плотному месту",
+          "who": [
+            "init"
+          ],
+          "phase": "прочёс"
+        },
+        {
+          "p": "belief",
+          "link": "on",
+          "param": "",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "sneak",
+          "link": "and",
+          "param": "следом, 5–10 м",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "ally",
+          "link": "on",
+          "param": "",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "clear",
+          "link": "then",
+          "param": "",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "node",
+          "link": "on",
+          "param": "",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": "чисто!",
+          "who": [
+            "init"
+          ]
+        },
+        {
+          "p": "repeat",
+          "link": "then",
+          "param": "пока вера жива",
+          "who": [
+            "init",
+            "cap"
+          ]
+        },
+        {
+          "p": "if",
+          "link": "phase",
+          "param": "кто-то увидел",
+          "who": [
+            "all"
+          ],
+          "phase": "исход"
+        },
+        {
+          "link": "then",
+          "param": "",
+          "who": [
+            "all"
+          ],
+          "d": "76pn7yv"
+        },
+        {
+          "p": "if",
+          "link": "then",
+          "param": "вера погасла",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "forget",
+          "link": "then",
+          "param": "",
+          "who": [
+            "all"
+          ]
+        },
+        {
+          "p": "release",
+          "link": "then",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ]
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": "",
+          "who": [
+            "3",
+            "4"
+          ]
+        }
+      ],
+      "name": "сеть: держать углы и прочёсывать",
+      "real": "сеть наблюдения + прочёсывание (hasty cordon & search)",
+      "theory": "ядро VARKA v1: belief-облако + лоты (sectors of observation) + HOLD + поиск; DIRECTOR_CORPUS A4, C2",
+      "who": [
+        "Одиночки",
+        "Долг",
+        "Свобода",
+        "Военные",
+        "Наёмники",
+        "Чистое Небо",
+        "ИИГ"
+      ],
+      "when": "враг ушёл из виду, но далеко уйти не мог; облако веры ещё узкое",
+      "notes": "Это то, что v1-core пытается делать снизу без кэпа: посты (HOLD) + поиск + отметки «чисто».\nОтличие: здесь роли раздаёт ★ выкриком, а в коде каждый сам хватает лот.\nХорошая мерка для полигона: похоже ли то, что видно в игре, на эту раскладку.",
+      "fixed": true,
+      "order": 3,
+      "squad": {
+        "size": 4,
+        "cap": 1,
+        "init": 2,
+        "trigger": "lose"
+      }
+    },
+    {
+      "id": "ipt6ney",
+      "dx": -88,
+      "dy": -124,
+      "items": [
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "go",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "trs prom T to T1",
+      "real": "транспортировать, транспортировка",
+      "theory": "смена позиции. один из простейших примитивов второго порядка...сравнимо с \"идти\" первого порядка",
+      "who": [],
+      "when": "команда кэпа, тригер на выстрел вбилзи или что в этом роде..конкретику определить вопрос дирезера и его ренжы..",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "yrwgiwg",
+      "dx": -64,
+      "dy": -94,
+      "items": [
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "freeze",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "stp in ..",
+      "real": "занять позицию",
+      "theory": "простейший II",
+      "who": [],
+      "when": "приказ и прочее: угроза жизни - занять позицию в точке укрытия от угозы - дейсвовать по распоряжению кэпа(дирежера)",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "uie8ac7",
+      "dx": -85,
+      "dy": -91,
+      "items": [
+        {
+          "p": "look",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "vrv to",
+      "real": "посмотреть туда",
+      "theory": "...",
+      "who": [],
+      "when": "выстрел/звуки в том напрвлении",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "is9gned",
+      "dx": -254,
+      "dy": -111,
+      "items": [
+        {
+          "p": "hit",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "run",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "cover",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "crouch",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "wait",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "cap",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "hear",
+          "link": "on",
+          "param": ""
+        }
+      ],
+      "name": "aswr_to_threat",
+      "real": "перегруппировка",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "общий класс - первичная реакция..триггеры разобрзны",
+      "fixed": true
+    },
+    {
+      "id": "465peld",
+      "dx": -195,
+      "dy": -223,
+      "items": [
+        {
+          "p": "run",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "cover",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "look",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "sector",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "wait",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "see",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "shoot",
+          "link": "and",
+          "param": ""
+        }
+      ],
+      "name": "polite_attack_act",
+      "real": "одна из базовых action на поле боя",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "9rmtn0o",
+      "dx": -208,
+      "dy": -201,
+      "items": [
+        {
+          "p": "hit",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "pour",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "hit",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "sector",
+          "link": "and",
+          "param": ""
+        }
+      ],
+      "name": "moment_aswr_to_threat",
+      "real": "более реалистчная реакция менее обученного члеовека",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "76pn7yv",
+      "dx": -195,
+      "dy": -26,
+      "items": [
+        {
+          "p": "enemy",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "see",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "pour",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        }
+      ],
+      "name": "moment_aswr",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "общий класс моментальный ответов",
+      "fixed": true
+    },
+    {
+      "id": "yrfkh1o",
+      "dx": -204,
+      "dy": -175,
+      "items": [
+        {
+          "p": "corpse",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "glance",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "crouch",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "sweep",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "wait",
+          "link": "and",
+          "param": ""
+        }
+      ],
+      "name": "not_polt_aswr_to_body",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "g19ktiz",
+      "dx": -153,
+      "dy": -128,
+      "items": [
+        {
+          "p": "corpse",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "d": "prpyhlb",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "ok_aswr_to body",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "ol9d5pe",
+      "dx": -291,
+      "dy": -167,
+      "items": [
+        {
+          "p": "lose",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "go",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "belief",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "look",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "simp_of_serch_regime",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "tz7v6cp",
+      "dx": -181,
+      "dy": -25,
+      "items": [
+        {
+          "p": "node",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "run",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "node",
+          "link": "on",
+          "param": ""
+        }
+      ],
+      "name": "trs_by_spr",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true
+    },
+    {
+      "id": "prpyhlb",
+      "dx": -201,
+      "dy": -129,
+      "items": [
+        {
+          "p": "enemy",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "see",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "d": "tz7v6cp",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "cover",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "crouch",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "wait",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "cap",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "hear",
+          "link": "and",
+          "param": ""
+        }
+      ],
+      "name": "firstest_aswr",
+      "real": "реакция на инициацию/перегруппировка",
+      "theory": "",
+      "who": [],
+      "when": "обозначен*",
+      "notes": "общий класс - первичная реакция..триггеры разобрзны",
+      "fixed": true
+    },
+    {
+      "id": "6notm33",
+      "dx": -137,
+      "dy": -138,
+      "items": [
+        {
+          "p": "enemy",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "see",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "shout",
+          "link": "then",
+          "param": ""
+        }
+      ],
+      "name": "alert",
+      "real": "",
+      "theory": "",
+      "who": [],
+      "when": "",
+      "notes": "",
+      "fixed": true,
+      "squad": {
+        "size": 4,
+        "cap": null,
+        "init": null,
+        "trigger": "see"
+      }
+    },
+    {
+      "id": "j61qe1a",
+      "dx": -242,
+      "dy": -253,
+      "items": [
+        {
+          "d": "6notm33",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "d": "prpyhlb",
+          "link": "then",
+          "param": "",
+          "who": [
+            "all"
+          ]
+        },
+        {
+          "p": "cap",
+          "link": "then",
+          "param": "",
+          "who": []
+        },
+        {
+          "p": "shout",
+          "link": "and",
+          "param": "",
+          "who": [
+            "cap"
+          ]
+        },
+        {
+          "p": "stand",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "look",
+          "link": "and",
+          "param": "кто-то кто не кэп, допустим 2",
+          "who": []
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "if",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "see",
+          "link": "and",
+          "param": "",
+          "who": [
+            "2"
+          ]
+        },
+        {
+          "p": "enemy",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "shoot",
+          "link": "then",
+          "param": "",
+          "who": [
+            "2"
+          ]
+        },
+        {
+          "p": "enemy",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "pour",
+          "link": "and",
+          "param": "и/или (depend on exp of боец)",
+          "who": [
+            "2"
+          ]
+        },
+        {
+          "p": "sector",
+          "link": "on",
+          "param": ""
+        },
+        {
+          "p": "enemy",
+          "link": "and",
+          "param": ""
+        },
+        {
+          "p": "crouch",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "p": "reload",
+          "link": "then",
+          "param": ""
+        },
+        {
+          "d": "465peld",
+          "link": "phase",
+          "param": "сразу после конца инициации №2, не ожидая его перезарядки",
+          "who": [
+            "3",
+            "4"
+          ]
+        }
+      ],
+      "name": "main_body_of_actions",
+      "real": "первая после-перегруппировочная деятельность",
+      "theory": "",
+      "who": [
+        "Долг",
+        "Свобода",
+        "Наёмники",
+        "Военные",
+        "Монолит",
+        "ИИГ"
+      ],
+      "when": "",
+      "notes": "",
+      "fixed": true,
+      "squad": {
+        "size": 4,
+        "cap": 1,
+        "init": null,
+        "trigger": null
+      }
+    }
+  ]
+}

@@ -1,4 +1,11 @@
--- varka_weapons.script — v0.4: патроны у сталкеров бесконечны — пустой магазин = перезарядка (21.10.2026)
+-- varka_weapons.script — v0.5: болтовка вблизи — по рангу (21.10.2026, идея юзера)
+-- v0.5: полигон 21.10 (Монолит с СКС на Свалке) — СКС числится снайперкой (kind = w_sniper), а снайперке
+--   ближе 40 м шёл минус: на ~21 м брал пистолет, на ~33 м обратно, раз в 8 с. Но СКС — самозарядка.
+--   Теперь: снайперка с rpm > BOLT_RPM — «марксманка» (w_marksman, вблизи не хуже автомата).
+--   Настоящая болтовка вблизи — по рангу: новичок заранее (враг ближе BOLT_NEAR × (1 − навык)) меняет
+--   на запасной ствол; мастер и легенда сначала стреляют патроном из патронника и сразу, не передёргивая,
+--   берут запасной. Обратно на болтовку — когда враг дальше BOLT_FAR.
+-- v0.4: патроны у сталкеров бесконечны — пустой магазин = перезарядка (21.10.2026)
 -- v0.4: полигон 21.10 (Долг против ренегатов) — пистолеты на 75 м. Причина: сталкеры воюют с
 --   бесконечными патронами (движок: eTraderFlagInfiniteAmmo у всех сталкеров, перезарядка сама
 --   досоздаёт патроны, коробок в рюкзаке нет — они появляются только на трупе). Проверка «есть ли
@@ -34,7 +41,8 @@ local RANGE = {
 	w_smg     = { 0, 0, 30, 60 },
 	w_shotgun = { 0, 0, 15, 35 },
 	w_rifle   = { 0, 0, 120, 250 },
-	w_sniper  = { 15, 40, 400, 800 },
+	w_marksman = { 0, 0, 150, 400 },  -- v0.5: самозарядная снайперка (СВД, СКС, СВТ, SR-25)
+	w_sniper  = { 0, 0, 400, 800 },   -- v0.5: болтовка; вблизи решает правило болтовки, не счёт
 	launcher  = { 20, 35, 150, 300 },
 }
 
@@ -44,18 +52,38 @@ local POWER = {
 	w_smg     = 0.85,
 	w_shotgun = 1,
 	w_rifle   = 1,
+	w_marksman = 1,
 	w_sniper  = 1,
 	launcher  = 1,
 }
+
+-- v0.5: болтовка. rpm в ltx: M24 20, Мосин 25, K98 28, SV-98 30, Remington 700 40 — затвор ручной;
+-- самозарядки от 60 (СВД 60, СВУ 70, СВТ 150, СКС 200). WA2000 (45) — самозарядка, порог её отсекает.
+local BOLT_RPM  = 42
+local BOLT_NEAR = 30      -- м: враг ближе — болтовка в руках неуместна
+local BOLT_FAR  = 40      -- м: враг дальше — назад на болтовку
+local BOLT_SHOT = 1500    -- мс: выстрел был только что — «выстрелил и на запасной»
+local SKILL_LOW, SKILL_TOP = 3500, 17500  -- ранг: новичок (0) … мастер (1), game_relations.ltx
+
+local function is_bolt(wpn)
+	return (ini_sys:r_float_ex(wpn:section(), "rpm") or 999) <= BOLT_RPM
+end
+
+-- навык 0..1: новичок — 0, мастер и легенда — 1
+local function skill(npc)
+	local r = npc.character_rank and npc:character_rank() or 0
+	return math.max(0, math.min(1, (r - SKILL_LOW) / (SKILL_TOP - SKILL_LOW)))
+end
 
 local state = {}  -- [npc_id] = { id = выбранный ствол, since, check }
 
 local function kind_of(wpn)
 	local k = ini_sys:r_string_ex(wpn:section(), "kind")
+	if k == "w_sniper" and not is_bolt(wpn) then return "w_marksman" end  -- v0.5
 	if RANGE[k] then return k end
 	local cls = wpn:clsid()
 	if IsLauncher and IsLauncher(nil, cls) then return "launcher" end
-	if IsSniper(nil, cls) then return "w_sniper" end
+	if IsSniper(nil, cls) then return is_bolt(wpn) and "w_sniper" or "w_marksman" end
 	if IsShotgun(nil, cls) then return "w_shotgun" end
 	if IsPistol(nil, cls) then return "w_pistol" end
 	return "w_rifle"
@@ -102,6 +130,14 @@ local function choose(npc, cur_wpn, flags)
 	local st = state[id]
 	if not st then st = { since = 0, check = 0 }; state[id] = st end
 
+	-- v0.5: выстрел из болтовки замечаем по магазину (колбэк выстрела у бойца один, его держит varka_match)
+	local held_wpn = cur_wpn and IsWeapon(cur_wpn) and cur_wpn or nil
+	if held_wpn and is_bolt(held_wpn) then
+		local m = held_wpn:get_ammo_in_magazine() or 0
+		if st.mag_id == held_wpn:id() and m < st.mag then st.shot, st.check = now, 0 end
+		st.mag_id, st.mag = held_wpn:id(), m
+	end
+
 	-- кэш: пока свежо — отвечаем тем же
 	if now < st.check and st.id then
 		local o = level.object_by_id(st.id)
@@ -141,6 +177,39 @@ local function choose(npc, cur_wpn, flags)
 				varka_trace.emit(0, id, "wpn_sidearm", { from = cur:section(), to = p:section(), d = d })
 			end
 			return
+		end
+	end
+
+	-- v0.5: болтовка вблизи. Запасной держим, пока враг не отойдёт дальше BOLT_FAR.
+	if st.backup then
+		local o = level.object_by_id(st.backup)
+		if be and d < BOLT_FAR and held(o, id) then
+			st.id = st.backup
+			flags.gun_id = st.id
+			return
+		end
+		st.backup, force = nil, true
+	elseif be and cur and is_bolt(cur) and d < BOLT_NEAR then
+		local pre = d < BOLT_NEAR * (1 - skill(npc))        -- заранее: новичок — сразу, мастер — никогда
+		local shot = st.shot and now - st.shot < BOLT_SHOT  -- выстрелил — и на запасной, не передёргивая
+		if pre or shot then
+			local alt, alt_s = nil, -1
+			npc:iterate_inventory(function(_, item)
+				if IsWeapon(item) and not IsMelee(item) and not IsGrenade(item) and not is_bolt(item) then
+					local s = score(npc, item, d)
+					if s > alt_s then alt, alt_s = item, s end
+				end
+			end, npc)
+			if alt then  -- запасного нет — воюем болтовкой
+				st.backup, st.since, st.shot = alt:id(), now, nil
+				st.id = alt:id()
+				flags.gun_id = st.id
+				if varka_trace then
+					varka_trace.emit(0, id, "wpn_switch", { from = cur:section(), to = alt:section(), d = d,
+						s_from = -1, s_to = alt_s, why = pre and "bolt_pre" or "bolt_shot", skill = skill(npc) })
+				end
+				return
+			end
 		end
 	end
 

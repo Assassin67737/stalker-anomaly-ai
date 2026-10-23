@@ -6,6 +6,8 @@
   levels/<имя>.png      R = высота (0..255 в рамке уровня), G = открытость стоя (high), B = сидя (low)
                         (среднее по 4 направлениям, 0..15 → 0..255; 0 = закрыто, 15 = голо), A = 255 там, где есть нода
   levels/<имя>_vid.png  RGB = vid + 1 (0 = ноды нет) — по нему вьювер узнаёт ноду под мышью
+  levels/<имя>_ground.png  то же, но НИЖНЯЯ нода клетки — первый этаж (раннер матчей ставит туда точку и спавн:
+                        верхняя нода в здании — крыша, 23.10 отряд с неё спускался и застревал на лестнице)
   levels/<имя>.json     рамка уровня, размер клетки, число нод
 
 Если над одной клеткой несколько нод (этажи, мосты) — берём верхнюю: вид сверху.
@@ -34,12 +36,17 @@ def bake(path, name):
 
     info = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     vids = Image.new('RGB', (w, h), (0, 0, 0))
-    pi, pv = info.load(), vids.load()
-    top = {}  # (i, j) → y верхней ноды
+    ground = Image.new('RGB', (w, h), (0, 0, 0))
+    pi, pv, pg = info.load(), vids.load(), ground.load()
+    top, low = {}, {}  # (i, j) → y верхней / нижней ноды
 
     for vid, n in enumerate(nodes):
         i = int(round((n['x'] - minx) / cell))
         j = h - 1 - int(round((n['z'] - minz) / cell))  # север вверх
+        k = vid + 1
+        if low.get((i, j), 1e9) > n['y']:
+            low[(i, j)] = n['y']
+            pg[i, j] = (k >> 16 & 255, k >> 8 & 255, k & 255)
         if top.get((i, j), -1e9) >= n['y']:
             continue
         top[(i, j)] = n['y']
@@ -47,16 +54,18 @@ def bake(path, name):
                     sum(n['high']) * 17 // 4,
                     sum(n['low']) * 17 // 4,
                     255)
-        k = vid + 1
         pv[i, j] = (k >> 16 & 255, k >> 8 & 255, k & 255)
 
     out = os.path.join(HERE, 'levels')
     os.makedirs(out, exist_ok=True)
     info.save(os.path.join(out, name + '.png'))
     vids.save(os.path.join(out, name + '_vid.png'))
-    json.dump(dict(name=name, count=meta['count'], cell=cell, box=meta['box'], w=w, h=h,
-                   stacked=meta['count'] - len(top)),
-              open(os.path.join(out, name + '.json'), 'w'), indent=1)
+    ground.save(os.path.join(out, name + '_ground.png'))
+    # чужие поля (vision от vision/bake_vision.py) не терять при перепекании
+    mpath = os.path.join(out, name + '.json')
+    m = json.load(open(mpath)) if os.path.exists(mpath) else {}
+    m.update(name=name, count=meta['count'], cell=cell, box=meta['box'], w=w, h=h, stacked=meta['count'] - len(top))
+    json.dump(m, open(mpath, 'w'), indent=1)
 
     # список уровней — вьювер по нему угадывает, где шёл бой
     index = sorted(f[:-5] for f in os.listdir(out) if f.endswith('.json') and os.path.exists(os.path.join(out, f[:-5] + '.png')))

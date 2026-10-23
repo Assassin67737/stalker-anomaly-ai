@@ -4,89 +4,65 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VARKA — вид сверху</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Mono&family=PT+Sans+Narrow:wght@400;700&display=swap">
+<link rel="stylesheet" href="kpk.css">
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0a0a0a;color:#d0d0d0;font-family:'Courier New',monospace;font-size:12px;
-     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+/* 2D: раскладка. Палитра, шрифты, кнопки, карточки отрядов — kpk.css (общие с 3D) */
 #top{display:flex;flex:1;overflow:hidden}
-#canvas-wrap{flex:1;position:relative;background:#0a0a0a}
+#center{flex:1;display:flex;flex-direction:column;min-width:0}
+#canvas-wrap{flex:1;position:relative;background:var(--ground)}
 canvas{display:block;width:100%;height:100%;cursor:crosshair}
 canvas.drag{cursor:grabbing}
-#sidebar{width:300px;display:flex;flex-direction:column;border-left:1px solid #222;background:#0d0d0d}
-.box{padding:8px 10px;border-bottom:1px solid #222}
-.box b{color:#888;display:block;margin-bottom:4px}
-.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-#layers label{display:flex;align-items:center;gap:6px;padding:1px 0;cursor:pointer}
-#layers input{accent-color:#777}
-.sw{display:inline-block;width:10px;height:10px;border-radius:2px}
-#eventlog{flex:1;overflow-y:auto;padding:6px 10px;font-size:11px}
-.ev{padding:1px 0;border-bottom:1px solid #141414;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-button,select{padding:3px 8px;cursor:pointer;border:1px solid #444;border-radius:3px;
-       background:#1a1a1a;color:#ccc;font-family:inherit;font-size:11px}
-button:hover{background:#252525}
-button.on{border-color:#2e7d32;color:#66BB6A}
-#scrub{width:100%;accent-color:#546}
-#scrub-label{color:#555;font-size:10px;text-align:right}
-#statusbar{padding:3px 10px;font-size:10px;color:#666;border-top:1px solid #1a1a1a;
-           background:#080808;white-space:nowrap;overflow:hidden;display:flex;gap:20px}
-#hover{color:#8a8}
-#sidebar{overflow-y:auto}
-#eventlog{min-height:120px}
-details>summary{cursor:pointer;color:#888;font-weight:bold;margin-bottom:4px;list-style:none}
-details>summary::before{content:'▸ ';color:#555}
-details[open]>summary::before{content:'▾ '}
-#creative .tools button{min-width:0;padding:3px 6px}
-#creative .tools button.on{border-color:#00bcd4;color:#4dd0e1;background:#0f2226}
-#creative label{display:flex;align-items:center;gap:4px}
-#creative input[type=number]{width:44px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;
-       font-family:inherit;font-size:11px;padding:2px 4px}
-#sel-info{color:#4dd0e1;min-height:14px;margin:4px 0}
-#hint{color:#666;font-size:10px;margin-top:4px;line-height:1.4}
-#cmdlog{max-height:110px;overflow-y:auto;font-size:10px;margin-top:6px;border-top:1px solid #1a1a1a;padding-top:4px}
-#cmdlog .ok{color:#66BB6A} #cmdlog .fail{color:#ef5350} #cmdlog .wait{color:#888}
-#roster{width:260px;background:#050505;border-right:1px solid #222;overflow-y:auto;font-size:11px;padding:6px 0}
-#roster.hidden{display:none}
-#sidebar.hidden{display:none}
-#panes{position:absolute;top:6px;left:6px;display:flex;gap:4px;z-index:2}
-#panes button{padding:2px 7px;background:rgba(10,10,10,0.8);font-size:12px}
-#roster .legend{color:#555;font-size:10px;padding:0 8px 6px;border-bottom:1px solid #161616;line-height:1.5}
-#roster .sq{padding:5px 8px 3px;border-top:1px solid #181818;cursor:pointer}
-#roster .sq:hover,#roster .m:hover{background:#111}
-#roster .sq.sel{background:#0c1d20}
-#roster .hd{display:flex;gap:6px;align-items:center;white-space:nowrap}
-#roster .stripe{width:4px;height:12px;border-radius:1px}
-#roster .mbar{position:relative;height:6px;background:#1b1b1b;border-radius:2px;margin:3px 0 2px}
-#roster .mbar i{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
-#roster .mbar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:#fff8}
-#roster .axes{display:flex;gap:4px;color:#666;font-size:9px}
-#roster .axes span{display:flex;align-items:center;gap:2px}
-#roster .axes em{display:inline-block;width:14px;height:4px;background:#1b1b1b;position:relative}
-#roster .axes em i{position:absolute;left:0;top:0;bottom:0;background:#6a9}
-#roster .m{display:flex;gap:5px;padding:1px 8px 1px 18px;cursor:pointer;white-space:nowrap;color:#aaa}
-#roster .m.dead{color:#444;text-decoration:line-through}
-#roster .m.sel{background:#0c1d20}
-#roster .role{color:#00e5ff}
-#roster .fl{color:#ffee58}
+#sidebar{width:304px;display:flex;flex-direction:column;border-left:1px solid var(--rule);background:var(--panel);overflow-y:auto}
+#layers label{display:flex;align-items:center;gap:7px;padding:1px 0;color:var(--ink-2)}
+#layers label:hover{color:var(--ink)}
+.sw{display:inline-block;width:10px;height:10px;border-radius:1px}
+#eventlog{flex:1;min-height:120px;overflow-y:auto;padding:4px 12px 8px}
+#creative .tools button{padding:3px 7px}
+#creative label{display:flex;align-items:center;gap:4px;color:var(--ink-2)}
+#sel-info{color:var(--rust);min-height:16px;margin:8px 0 4px}
+#hint{color:var(--ink-3);font-size:12px;margin-top:6px;line-height:1.35}
+#cmdlog{max-height:110px;overflow-y:auto;font:10.5px/1.4 var(--f-mono);margin-top:6px;border-top:1px solid var(--rule);padding-top:4px}
+#cmdlog .ok{color:var(--geiger)} #cmdlog .fail{color:var(--alarm)} #cmdlog .wait{color:var(--ink-3)}
+#live-btn.on{border-color:var(--alarm);color:#f08a78;background:#33150f}
+#statusbar{padding:3px 12px;font:11px var(--f-mono);color:var(--ink-3);border-top:1px solid var(--rule);
+  background:var(--ground);white-space:nowrap;overflow:hidden;display:flex;gap:24px}
+#hover{color:var(--ink-2)}
+#panes{position:absolute;top:8px;left:8px;display:flex;gap:4px;z-index:2}
+#panes button{padding:1px 8px;background:rgba(18,17,13,.85);font-size:14px}
+#roster{width:276px;background:var(--panel);border-right:1px solid var(--rule);overflow-y:auto;padding-bottom:8px}
+#roster.hidden,#sidebar.hidden{display:none}
 </style>
 </head>
 <body>
 <div id="top">
-  <div id="roster"></div>
-  <div id="canvas-wrap"><canvas id="cv"></canvas>
-    <div id="panes">
-      <button onclick="toggleRoster()" title="панель состава слева">◧</button>
-      <button onclick="toggleField()" title="только поле боя (клавиша F)">⛶</button>
-      <button onclick="toggleSidebar()" title="панель справа">◨</button>
+  <div id="roster" class="roster"></div>
+  <div id="center">
+    <div id="canvas-wrap"><canvas id="cv"></canvas>
+      <div id="panes">
+        <button onclick="toggleRoster()" title="состав отрядов слева">◧</button>
+        <button onclick="toggleField()" title="только поле боя (клавиша F)">⛶</button>
+        <button onclick="toggleSidebar()" title="панель справа">◨</button>
+      </div>
+    </div>
+    <div id="transport" class="transport">
+      <button id="live-btn" class="on" onclick="goLive()" title="показывать то, что идёт в игре сейчас">● В эфире</button>
+      <button id="follow-btn" class="on" onclick="toggleFollow()" title="новый матч — карта сама переезжает к его точке">⌖ за матчем</button>
+      <button id="play-btn" onclick="togglePlay()" title="проиграть запись">▶</button>
+      <select id="speed" title="скорость повтора"><option value="1">×1</option><option value="4" selected>×4</option><option value="16">×16</option></select>
+      <input type="range" id="scrub" class="scrub" min="0" max="0" value="0" step="100" oninput="onScrub(+this.value)" title="перемотка">
+      <div id="scrub-label" class="tlabel">—</div>
     </div>
   </div>
   <div id="sidebar">
     <div class="box">
       <b>Карта</b>
       <div class="row">
-        <select id="level" onchange="pickLevel(this.value)"><option value="auto">уровень: авто</option></select>
-        <button onclick="fitFight()">к бою</button>
-        <button onclick="fitLevel()">весь</button>
-        <button onclick="toggleRoster()" title="панель слева: отряды и каждый боец">состав</button>
+        <select id="level" onchange="pickLevel(this.value)" title="подложка: какой уровень показывать"><option value="auto">уровень: как в игре</option></select>
+        <button onclick="fitFight()" title="приблизить к бою">к бою</button>
+        <button onclick="fitLevel()" title="весь уровень">весь</button>
+        <a href="quads.html" style="color:var(--rust)" title="площадки навмеша и песочница трассы">квадранты</a>
       </div>
       <div class="row">
         <select id="vmode" onchange="mapDirty=true; draw()" title="как красить слой «зрение»">
@@ -98,7 +74,7 @@ details[open]>summary::before{content:'▾ '}
       </div>
     </div>
     <div class="box" id="creative">
-      <details open><summary>Творческий режим → игра</summary>
+      <details open><summary>Творческий режим</summary>
       <div class="row tools" id="tools">
         <button data-tool="select" class="on" title="клик по бойцу — выбрать отряд, Shift — одного бойца">выбор</button>
         <button data-tool="spawn"  title="клик по карте — заспавнить отряд">спавн</button>
@@ -108,18 +84,12 @@ details[open]>summary::before{content:'▾ '}
         <button data-tool="hostile" title="клик по бойцу другого отряда — стравить два отряда">стравить</button>
         <button data-tool="tp"     title="клик — перенести себя (актёра) туда">телепорт</button>
       </div>
-      <div class="row" style="margin-top:6px">
-        <select id="sp-faction">
-          <option value="freedom">Свобода</option><option value="duty">Долг</option>
-          <option value="stalker">сталкеры</option><option value="bandit">бандиты</option>
-          <option value="army">военные</option><option value="monolith">Монолит</option>
-          <option value="csky">ЧН</option><option value="ecolog">экологи</option>
-          <option value="greh">Грех</option><option value="isg">ИИГ</option>
-        </select>
-        <select id="sp-level"><option value="novice">новички</option><option value="advanced" selected>опытные</option><option value="veteran">ветераны</option></select>
+      <div class="row">
+        <select id="sp-faction" title="группировка нового отряда"></select>
+        <select id="sp-level" title="уровень отряда"><option value="novice">новички</option><option value="advanced" selected>опытные</option><option value="veteran">ветераны</option></select>
         <label title="сколько бойцов">× <input type="number" id="sp-n" value="4" min="1" max="12"></label>
       </div>
-      <div class="row" style="margin-top:4px">
+      <div class="row">
         <label title="отряд нейтрален к тебе: смотришь, а не воюешь"><input type="checkbox" id="sp-ghost" checked> нейтральны ко мне</label>
         <label title="приказ перебивает бой и опасность; без галочки — бой важнее приказа"><input type="checkbox" id="ord-hard"> сквозь бой</label>
       </div>
@@ -134,21 +104,18 @@ details[open]>summary::before{content:'▾ '}
         <button onclick="selCmd('kill')">убить</button>
         <button onclick="selCmd('remove')">убрать</button>
       </div>
-      <div class="row" style="margin-top:6px">
+      <div class="row">
         <button onclick="send('freeze',['1'])" title="заморозить мир (консоль: freeze_time on)">❄ пауза</button>
         <button onclick="send('freeze',['0'])">▶ дальше</button>
-        <button onclick="send('time',['0.25'])">×¼</button>
+        <button onclick="send('time',['0.25'])" title="скорость игры">×¼</button>
         <button onclick="send('time',['1'])">×1</button>
         <button onclick="send('time',['3'])">×3</button>
       </div>
-      <div class="row" style="margin-top:6px" title="перенести себя на другой уровень (как быстрое перемещение); игра перезагрузит уровень">
-        <select id="go-level">
-          <option value="l01_escape">Кордон</option><option value="l02_garbage">Свалка</option>
-          <option value="l09_deadcity">Мёртвый город</option><option value="l10_limansk">Лиманск</option><option value="pripyat">Припять (ЗП)</option><option value="l07_military">Армейские склады</option>
-        </select>
+      <div class="row" title="перенести себя на другой уровень (как быстрое перемещение); игра перезагрузит уровень">
+        <select id="go-level"></select>
         <button onclick="send('level',[document.getElementById('go-level').value])">переехать</button>
       </div>
-      <div class="row" style="margin-top:6px" title="сфера лучей вокруг тебя в игре — сверка запечки зрения (в игре — Scroll Lock)">
+      <div class="row" title="сфера лучей вокруг тебя в игре — сверка запечки зрения (в игре — Scroll Lock)">
         <button onclick="send('probe',['on'])" title="снимок каждые 1,5 с, пока идёшь">эхолот вкл</button>
         <button onclick="send('probe',['off'])">выкл</button>
         <button onclick="send('probe',['once'])" title="один снимок здесь и сейчас, даже если стоишь">1 снимок</button>
@@ -159,26 +126,18 @@ details[open]>summary::before{content:'▾ '}
     </div>
     <div class="box" id="layers">
       <b>Слои</b>
-      <div class="row" style="margin-bottom:4px">
-        <button onclick="preset('player')">игрок</button>
-        <button onclick="preset('analyst')">аналитик</button>
-      </div>
-    </div>
-    <div id="eventlog"></div>
-    <div class="box" style="border-top:1px solid #222;border-bottom:none">
       <div class="row" style="margin-bottom:6px">
-        <button id="live-btn" class="on" onclick="goLive()">● LIVE</button>
-        <button id="follow-btn" class="on" onclick="toggleFollow()" title="новый матч — карта сама переезжает к его точке">⌖ матч</button>
-        <button id="play-btn" onclick="togglePlay()">▶</button>
-        <select id="speed"><option>1</option><option selected>4</option><option>16</option></select>×
+        <button onclick="preset('player')" title="только то, что видно глазами">игрок</button>
+        <button onclick="preset('analyst')" title="все слои">аналитик</button>
       </div>
-      <input type="range" id="scrub" min="0" max="0" value="0" step="100" oninput="onScrub(+this.value)">
-      <div id="scrub-label">—</div>
     </div>
+    <div class="box" style="border-bottom:none;padding-bottom:0"><b>Журнал</b></div>
+    <div id="eventlog" class="log"></div>
   </div>
 </div>
-<div id="statusbar"><span id="status">ожидание данных...</span><span id="hover"></span></div>
+<div id="statusbar"><span id="status">жду данные из игры…</span><span id="hover"></span></div>
 
+<script src="kpk.js"></script>
 <script>
 // ─────────────────────────────────────────────
 // СЛОИ
@@ -190,14 +149,16 @@ const LAYERS = [
   ['vision', 'зрение (запечка cform)','#e04040', false],
   ['pano',   'панорама под мышью (стоя ─, сидя ┄)','#7fffd4', false],
   ['trails', 'следы путей',        '#4a6a8a', false],
-  ['npcs',   'бойцы',              '#2196F3', true ],
+  ['npcs',   'бойцы (погон ранга, ★ командир)','#2196F3', true ],
+  ['squads', 'отряды (нашивка, мораль)','#d68a35', true ],
+  ['belief2','вера: облако, щели, роли','#c86bff', true ],
   ['gaze',   'взгляд',             '#888',    true ],
   ['director','дирижёр (роли, фланг, мораль)','#00e5ff', true ],
   ['targets','цели (— видит, ┄ нет; белая — цель ранена)','#e05050', false],
   ['status', 'ранен / опасность / добивает','#ff5', false],
   ['shots',  'выстрелы / попадания','#FF7043', true ],
   ['barks',  'выкрики',            '#ddd',    true ],
-  ['belief', 'вера (конус)',       '#FFD700', false],
+  ['belief', 'вера v1 (конус)',    '#FFD700', false],
   ['echo',   'эхо',                '#b4a0ff', false],
   ['fan',    'веер поиска',        '#78c8c8', false],
   ['lots',   'лоты',               '#CE93D8', false],
@@ -237,29 +198,33 @@ let t0 = 0, tMax = 0;   // время первого и последнего с�
 let playT = 0;          // время, которое показываем
 let isLive = true, isPlaying = false;
 
-const FACTIONS = {
-  stalker:'#4CAF50', bandit:'#FF9800', military:'#8BC34A',
-  monolith:'#9C27B0', freedom:'#2196F3', csky:'#00BCD4',
-  dolg:'#F44336', duty:'#F44336', killer:'#EF5350', zombied:'#607D8B',
-  actor:'#FF6B6B', ecolog:'#26A69A', greh:'#EF9A9A',
-};
-function fcolor(comm){ return FACTIONS[comm] || '#aaa'; }
-
-function rankLetter(r){
-  if(r<3500)  return 'N';
-  if(r<6500)  return 'T';
-  if(r<9000)  return 'E';
-  if(r<12000) return 'P';
-  if(r<14500) return 'V';
-  if(r<17500) return 'X';
-  if(r<27000) return 'M';
-  return 'L';
+// группировки, нашивки, ранги, погоны, названия действий — kpk.js (общие с 3D)
+onPatchLoad(() => { draw(); renderRoster(true); });
+const strapPath = new Path2D(STRAP_SHAPE);
+function drawStrap(cx, cy, i, h){   // погон на карте, центр в (cx, cy)
+  const k = h/16, legend = i===7;
+  ctx.save(); ctx.translate(cx - 5*k, cy - 8*k); ctx.scale(k, k);
+  ctx.fillStyle = legend ? STRAP_GOLD : STRAP_BODY; ctx.fill(strapPath);
+  ctx.strokeStyle = STRAP_EDGE; ctx.lineWidth = 0.9; ctx.stroke(strapPath);
+  for(const [x,y,w,hh,c] of STRAP_PARTS[i]){ ctx.fillStyle = STRAP_COL[c]; ctx.fillRect(x,y,w,hh); }
+  ctx.restore();
 }
+function drawStar(cx, cy, R){       // звезда командира отряда
+  ctx.beginPath();
+  for(let i=0;i<10;i++){
+    const r = i%2 ? R*0.45 : R, a = -Math.PI/2 + i*Math.PI/5;
+    i ? ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r) : ctx.moveTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+  }
+  ctx.closePath(); ctx.fillStyle = '#d9b25a'; ctx.fill();
+  ctx.strokeStyle = '#3a2a10'; ctx.lineWidth = 1; ctx.stroke();
+}
+const FL = '"PT Sans Narrow","Arial Narrow",sans-serif';
+function fnt(px, bold){ return (bold ? 'bold ' : '') + px + 'px ' + FL; }
 
 // Состояние мира на момент playT. Строится проигрыванием событий по порядку;
 // при движении вперёд докатываем, при перемотке назад — заново с нуля.
 function freshState(){
-  return { upto:0, npcs:{}, trails:{}, beliefs:{}, echos:{}, nodes:{}, lots:{}, holds:{},
+  return { upto:0, npcs:{}, trails:{}, beliefs:{}, bel:{}, echos:{}, nodes:{}, lots:{}, holds:{},
            shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{}, posts:{}, rspots:{}, probe:null, probeN:0, holdouts:{}, match:null, plays:{}, intel:{} };
 }
 let S = freshState();
@@ -271,7 +236,7 @@ function applyEvent(s, ev){
     s.npcs[ev.npc] = {px:ev.px,py:ev.py,pz:ev.pz,dx:ev.dx,dz:ev.dz,
                       rank:ev.rank,comm:ev.comm,active:ev.active,sq:ev.sq,_t:ev.t,
                       be:ev.be, bsee:ev.bsee, wnd:ev.wnd, dng:ev.dng, dtype:ev.dtype, kw:ev.kw,
-                      aid:ev.aid, aid2:ev.aid2, hp:ev.hp, wpn:ev.wpn, wk:ev.wk};
+                      aid:ev.aid, aid2:ev.aid2, hp:ev.hp, wpn:ev.wpn, wk:ev.wk, lead:ev.lead};
     (s.trails[ev.npc] ||= []).push(ev.px, ev.pz);
 
   } else if(t==='belief_born'||t==='belief_notice'||t==='belief_update'){
@@ -284,6 +249,9 @@ function applyEvent(s, ev){
     b.px=ev.px; b.pz=ev.pz; b.bx=ev.bx; b.bz=ev.bz;
     b.cone=ev.cone; b.reach=ev.reach; b.mass=ev.mass; b._t=ev.t;
     s.beliefs[ev.sq] = b;
+
+  } else if(t==='bel'){
+    s.bel[ev.sq] = ev;            // снимок веры v2 отряда (раз в секунду, пока облако живо)
 
   } else if(t==='belief_fade'||t==='belief_kill'){
     delete s.beliefs[ev.sq];
@@ -333,7 +301,7 @@ function applyEvent(s, ev){
   } else if(t==='dir_moral'){
     // v0.5: мораль с осями (старые trace несут только moral)
     s.moral[ev.sq] = {v:ev.moral, target:ev.target, imp:ev.imp, st:ev.st, res:ev.res,
-                      coh:ev.coh, inf:ev.inf, cap:ev.cap, fog:ev.fog, near:ev.near, wall:ev.wall, heavy:ev.heavy};
+                      coh:ev.coh, inf:ev.inf, cap:ev.cap, fog:ev.fog, near:ev.near, wall:ev.wall, heavy:ev.heavy, wear:ev.wear};
 
   } else if(t==='holdout_start'){
     const slots = {};
@@ -345,7 +313,7 @@ function applyEvent(s, ev){
   } else if(t==='match_start' || t==='match_clear'){
     // новый бой — метки прошлого (засели, перегруппировка, роли, флангеры) больше не про него
     for(const k of ['holdouts','posts','rspots','flanks','scouts','roles','plans','lots','holds','nodes','beliefs','echos','plays']) s[k] = {};
-    if(t==='match_clear') return;
+    if(t==='match_clear'){ s.match = null; return; }   // уборка перед следующим боем — прошлый матч кончился
     s.match = {id:ev.id, zx:ev.zx, zz:ev.zz, zr:ev.zr, limit:ev.limit, t0:ev.t,
                a:String(ev.a).split(',').map(Number), b:String(ev.b).split(',').map(Number), end:null};
 
@@ -402,7 +370,7 @@ function applyEvent(s, ev){
     s.scouts[ev.npc] = {px:ev.sx, pz:ev.sz, _t:ev.t};
   }
 
-  if(t!=='npc_pos' && t!=='belief_snap' && t!=='echo_snap' && t!=='dir_moral' && t!=='hit' && t!=='play_slots'){
+  if(t!=='npc_pos' && t!=='bel' && t!=='belief_snap' && t!=='echo_snap' && t!=='dir_moral' && t!=='hit' && t!=='play_slots'){
     s.evLog.push(ev);
     if(s.evLog.length > 80) s.evLog.shift();
   }
@@ -442,9 +410,17 @@ async function loadIndex(){
     const sel = document.getElementById('level');
     for(const n of names){
       levels[n] = await (await fetch(`levels/${n}.json`)).json();
-      const o = document.createElement('option'); o.value=n; o.textContent=n; sel.appendChild(o);
+      const o = document.createElement('option'); o.value=n; o.textContent=levelName(n); sel.appendChild(o);
+      const g = document.createElement('option'); g.value=n; g.textContent=levelName(n);
+      document.getElementById('go-level').appendChild(g);
     }
   }catch(e){ setStatus('нет levels/index.json — запеки уровень: bake_level.py'); }
+}
+// группировки для спавна: имя в команде spawn → как в игре
+for(const [v,comm] of [['stalker','stalker'],['bandit','bandit'],['army','army'],['freedom','freedom'],['duty','dolg'],
+    ['monolith','monolith'],['csky','csky'],['ecolog','ecolog'],['greh','greh'],['isg','isg'],['killer','killer'],['renegade','renegade']]){
+  const o = document.createElement('option'); o.value = v; o.textContent = FACTION_RU[comm];
+  document.getElementById('sp-faction').appendChild(o);
 }
 
 // Уровень угадываем по самому бою: все vid меньше числа нод и все точки внутри рамки.
@@ -454,6 +430,8 @@ function guessLevel(){
   for(let i=allEvents.length-1; i>=0; i--){
     const e = allEvents[i];
     if(e.ev==='level' && levels[e.name]) return e.name;
+    // кусок матча (match/runs) начала trace не содержит, но раннер спрашивает уровень командой
+    if(e.ev==='cmd_ok' && e.cmd==='level' && levels[e.info]) return e.info;
   }
   // старые записи без имени: самый маленький уровень, куда влезает бой
   let maxVid = -1;
@@ -626,11 +604,11 @@ function showHover(px, py){
 // РИСОВАНИЕ
 // ─────────────────────────────────────────────
 function draw(){
-  ctx.fillStyle = '#0a0a0a';
+  ctx.fillStyle = '#12110d';
   ctx.fillRect(0,0,cv.width,cv.height);
   if(!view){
-    ctx.fillStyle='#444'; ctx.font='14px monospace';
-    ctx.fillText('ожидание данных: запусти игру → бой', 20, 40);
+    ctx.fillStyle='#6f6956'; ctx.font=fnt(16);
+    ctx.fillText('Жду события из игры: загрузи сейв с VARKA и начни бой или матч.', 24, 44);
     return;
   }
 
@@ -661,6 +639,9 @@ function draw(){
     }
   }
 
+  // ── вера v2: облако «где он может быть», щели, роли (varka_belief) ──
+  if(on.belief2) drawBelief(s, alive);
+
   // ── веер поиска ───────────────────────────────
   if(on.fan){
     for(const n of Object.values(s.nodes)){
@@ -684,7 +665,7 @@ function draw(){
       const p = w2s(e.px, e.pz);
       ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI*2);
       ctx.strokeStyle='rgba(180,160,255,0.35)'; ctx.lineWidth=2; ctx.stroke();
-      ctx.fillStyle='rgba(180,160,255,0.6)'; ctx.font='9px monospace';
+      ctx.fillStyle='rgba(180,160,255,0.6)'; ctx.font=fnt(10);
       ctx.fillText('эхо sq'+sq, p.x+12, p.y-10);
     }
   }
@@ -703,7 +684,7 @@ function draw(){
       ctx.fillStyle   = `rgba(255,200,0,${0.08+mass*0.35})`; ctx.fill();
       ctx.strokeStyle = `rgba(255,200,0,${0.25+mass*0.6})`; ctx.lineWidth=1; ctx.stroke();
       ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fillStyle='#FFD700'; ctx.fill();
-      ctx.fillStyle='rgba(255,200,0,0.9)'; ctx.font='bold 10px monospace';
+      ctx.fillStyle='rgba(255,200,0,0.9)'; ctx.font=fnt(11,1);
       ctx.fillText(`sq${sq} m=${mass.toFixed(2)} ${(b.cone||0).toFixed(0)}°`, p.x+8, p.y-6);
     }
   }
@@ -740,7 +721,7 @@ function draw(){
     for(const h of Object.values(s.holds)){
       const p = w2s(h.px, h.pz);
       ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.strokeRect(p.x-5, p.y-5, 10, 10);
-      ctx.fillStyle='#ccc'; ctx.font='9px monospace'; ctx.fillText('HOLD '+(h.mode||''), p.x+7, p.y+3);
+      ctx.fillStyle='#ccc'; ctx.font=fnt(10); ctx.fillText('HOLD '+(h.mode||''), p.x+7, p.y+3);
     }
   }
 
@@ -766,7 +747,9 @@ function draw(){
     ctx.setLineDash([]);
   }
 
-  // ── дирижёр: точка фланга, путь скаута, подпись отряда ──
+  const groups = squadGroups(s, alive);
+
+  // ── дирижёр: точка фланга, путь скаута, пьесы, убежища ──
   if(on.director){
     for(const [id,f] of Object.entries(s.flanks)){
       const npc = s.npcs[id]; if(!npc || !alive(npc)) continue;
@@ -782,39 +765,6 @@ function draw(){
       const a = w2s(npc.px,npc.pz), c = w2s(sc.px,sc.pz);
       ctx.setLineDash([2,4]); ctx.strokeStyle='#b4a0ff'; ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(c.x,c.y); ctx.stroke(); ctx.setLineDash([]);
-    }
-    // значок отряда над его верхним бойцом: [полоса фракции] #id глиф режима ▮мораль▮ ↑↓
-    // клик по значку — выделить отряд; подробности — в панели «состав» слева
-    badgeHits = [];
-    const groups = squadGroups(s, alive);
-    for(const [sq,g] of Object.entries(groups)){
-      if(!s.plans[sq] && !s.moral[sq]) continue;
-      const pl = s.plans[sq], m = s.moral[sq], po = s.posts[sq];
-      const p = w2s(g.x/g.n, g.zmax);
-      const x0 = p.x - 34, y0 = p.y - 30, w = 68, h = 15;
-      const isSel = sel && sel.kind==='sq' && sel.id===+sq;
-      ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(x0, y0, w, h);
-      ctx.fillStyle = fcolor(g.comm); ctx.fillRect(x0, y0, 3, h);
-      ctx.font = 'bold 10px monospace'; ctx.fillStyle = '#ccc';
-      ctx.fillText(sqShort(sq), x0+5, y0+11);
-      ctx.fillStyle = '#00e5ff'; ctx.fillText(MODE_GLYPH[pl && pl.mode] || '·', x0+31, y0+11);
-      const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
-      if(mv){
-        ctx.fillStyle = '#222'; ctx.fillRect(x0+41, y0+4, 18, 7);
-        ctx.fillStyle = MSTATE_COL[mv.st] || '#00e5ff'; ctx.fillRect(x0+41, y0+4, 18*mv.v, 7);
-        const imp = mv.imp||0;
-        if(Math.abs(imp) > 0.003){ ctx.fillStyle = imp<0 ? '#ff5252' : '#69f0ae'; ctx.fillText(imp<0?'▾':'▴', x0+60, y0+11); }
-      }
-      if(po && po.phase==='regroup'){
-        ctx.font='9px monospace'; ctx.fillStyle='#a5d6a7';
-        ctx.fillText(`⏱${Math.max(0,(po.till-playT)/1000).toFixed(0)}`, x0+w+2, y0+11);
-      }
-      ctx.strokeStyle = isSel ? '#4dd0e1' : '#333'; ctx.lineWidth = isSel ? 2 : 1; ctx.strokeRect(x0, y0, w, h);
-      if(isSel){   // от значка к бойцам — видно, чей он
-        ctx.strokeStyle='rgba(77,208,225,0.35)'; ctx.lineWidth=1;
-        for(const n of g.members){ const q = w2s(n.px,n.pz); ctx.beginPath(); ctx.moveTo(p.x, y0+h); ctx.lineTo(q.x,q.y); ctx.stroke(); }
-      }
-      badgeHits.push({sq:+sq, x0, y0, x1:x0+w, y1:y0+h});
     }
     // пьесы контакта: огневые точки, линии от бойцов (перебегающие — сплошной, держащие — пунктир)
     for(const [sq,pl] of Object.entries(s.plays)){
@@ -858,7 +808,7 @@ function draw(){
       const c = w2s(po.tx, po.tz);
       ctx.strokeStyle='#ff5252'; ctx.lineWidth=2;
       ctx.beginPath(); ctx.moveTo(c.x-7,c.y-7); ctx.lineTo(c.x+7,c.y+7); ctx.moveTo(c.x+7,c.y-7); ctx.lineTo(c.x-7,c.y+7); ctx.stroke();
-      ctx.fillStyle='#ff8a80'; ctx.font='bold 10px monospace';
+      ctx.fillStyle='#ff8a80'; ctx.font=fnt(11,1);
       ctx.fillText(`угроза sq${sq}`, c.x+9, c.y-6);
     }
     for(const [id,sp] of Object.entries(s.rspots)){
@@ -889,8 +839,14 @@ function draw(){
       ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2);
       ctx.fillStyle=col; ctx.fill();
       ctx.strokeStyle = npc.active ? '#fff' : '#222'; ctx.lineWidth = npc.active ? 2 : 1; ctx.stroke();
-      ctx.fillStyle='#bbb'; ctx.font='10px monospace';
-      ctx.fillText(`${id}(${rankLetter(npc.rank||0)})`, p.x+r+2, p.y-r);
+      const tag = String(id), sh = 15, sw = sh*10/16;
+      ctx.font = fnt(12);
+      const tw = ctx.measureText(tag).width, bx = p.x+r+3, by = p.y-r-10;
+      ctx.fillStyle = 'rgba(11,10,7,0.86)'; ctx.fillRect(bx, by, sw+tw+9, sh+3);
+      ctx.strokeStyle = '#463f30'; ctx.lineWidth = 1; ctx.strokeRect(bx+.5, by+.5, sw+tw+8, sh+2);
+      drawStrap(bx+2+sw/2, by+1.5+sh/2, rankIdx(npc.rank||0), sh);
+      ctx.fillStyle = '#ddd5bf'; ctx.fillText(tag, bx+sw+5, by+sh-2);
+      if(npc.lead) drawStar(p.x, p.y-r-8, 5.5);
       if(npc.hp!=null){
         const hp = Math.max(0, Math.min(1, npc.hp));
         ctx.fillStyle='#222'; ctx.fillRect(p.x-8, p.y+r+3, 16, 3);
@@ -907,7 +863,7 @@ function draw(){
       if(npc.dng) tags.push('! '+(npc.dtype||'danger'));
       if(npc.kw)  tags.push('добивает');
       if(tags.length){
-        ctx.fillStyle = npc.kw ? '#ff8a80' : '#ffee58'; ctx.font='bold 10px monospace';
+        ctx.fillStyle = npc.kw ? '#ff8a80' : '#ffee58'; ctx.font=fnt(11,1);
         ctx.fillText(tags.join(' · '), p.x+r+2, p.y-r-11);
       }
     }
@@ -916,19 +872,120 @@ function draw(){
       const po = s.posts[npc.sq];
       const cap = po && String(po.cap)===String(id) ? 'КЭП · ' : '';
       ctx.fillStyle = role==='flank' ? '#00e5ff' : role==='regroup' || role==='guard' ? '#a5d6a7' : '#b4a0ff';
-      ctx.font='bold 10px monospace';
+      ctx.font=fnt(11,1);
       ctx.fillText(cap + (ROLE_NAMES[role] || role.toUpperCase()), p.x-r-2, p.y+r+22);
     }
     const bk = s.barks[id];
     if(on.barks && bk && playT-bk._t < 2500){
-      ctx.fillStyle='#fff'; ctx.font='bold 11px monospace';
+      ctx.fillStyle='#fff'; ctx.font=fnt(12,1);
       ctx.fillText('«'+bk.theme+'»', p.x+r+2, p.y+r+11);
+    }
+  }
+
+  // ── отряды: плашка над верхним бойцом — нашивка группировки, номер, режим дирижёра, мораль ──
+  // клик по плашке — выделить отряд; подробности — в составе слева
+  badgeHits = [];
+  if(on.squads){
+    for(const [sq,g] of Object.entries(groups)){
+      const pl = s.plans[sq], m = s.moral[sq], po = s.posts[sq];
+      const p = w2s(g.x/g.n, g.zmax);
+      const P = 24, w = 80, h = 28, x0 = p.x - w/2, y0 = p.y - 26 - h, tx = x0 + P + 6;
+      const isSel = sel && sel.kind==='sq' && sel.id===+sq;
+      // от плашки к бойцам: еле видно всегда, ярко у выбранного
+      ctx.strokeStyle = isSel ? 'rgba(214,138,53,0.55)' : 'rgba(221,213,191,0.12)'; ctx.lineWidth = 1;
+      for(const n of g.members){ const q = w2s(n.px,n.pz); ctx.beginPath(); ctx.moveTo(p.x, y0+h); ctx.lineTo(q.x,q.y); ctx.stroke(); }
+      ctx.fillStyle = 'rgba(18,17,13,0.88)'; ctx.fillRect(x0, y0, w, h);
+      ctx.fillStyle = fcolor(g.comm); ctx.fillRect(x0, y0+h-2, w, 2);
+      const im = patchImg(g.comm);
+      if(im) ctx.drawImage(im, x0+2, y0+1, P, P);
+      else { ctx.fillStyle = fcolor(g.comm)+'55'; ctx.fillRect(x0+4, y0+3, P-4, P-6); }
+      ctx.font = fnt(14,1); ctx.fillStyle = '#ddd5bf'; ctx.fillText(sqShort(sq), tx, y0+13);
+      if(pl && MODE_GLYPH[pl.mode]){ ctx.font = fnt(13); ctx.fillStyle = '#00e5ff'; ctx.fillText(MODE_GLYPH[pl.mode], x0+w-13, y0+13); }
+      const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
+      if(mv){
+        const bw = w - P - 12;
+        ctx.fillStyle = '#2c2920'; ctx.fillRect(tx, y0+18, bw, 5);
+        ctx.fillStyle = MSTATE_COL[mv.st] || '#00e5ff'; ctx.fillRect(tx, y0+18, bw*Math.max(0, Math.min(1, mv.v)), 5);
+        const imp = mv.imp||0;
+        if(Math.abs(imp) > 0.003){ ctx.font=fnt(12,1); ctx.fillStyle = imp<0 ? '#ff5252' : '#69f0ae'; ctx.fillText(imp<0?'▾':'▴', x0+w+3, y0+24); }
+      } else {
+        ctx.font = fnt(11); ctx.fillStyle = '#a8a08a'; ctx.fillText(`в строю ${g.n}`, tx, y0+23);
+      }
+      if(po && po.phase==='regroup'){
+        ctx.font=fnt(11); ctx.fillStyle='#a5d6a7';
+        ctx.fillText(`⏱${Math.max(0,(po.till-playT)/1000).toFixed(0)}`, x0+w+3, y0+12);
+      }
+      ctx.strokeStyle = isSel ? '#d68a35' : '#463f30'; ctx.lineWidth = isSel ? 2 : 1; ctx.strokeRect(x0+.5, y0+.5, w-1, h-1);
+      badgeHits.push({sq:+sq, x0, y0, x1:x0+w, y1:y0+h});
     }
   }
 }
 
 // Панорама ноды под мышью: лучи до упора, стоя — сплошной контур, сидя — пунктир.
 // Это та самая «эхолокация»: что видно с этой точки, без хождения — из геометрии уровня.
+// Вера v2 (varka_belief, событие bel раз в секунду). Клетки — фиолетом, гуще = вероятнее (масса в
+// стотысячных, шкала логарифмическая от порога 5). Щель — ромб: край тени, через который она затечёт
+// в вычищенное. Роли: сплошная — ЗАГЛЯНУТЬ, пунктир — ДЕРЖАТЬ КРАЙ. Есть засада у угла — линия ведёт к
+// ней (квадратик), оттуда точками — прицел в щель; нет — к щели, оттуда точками — в гущу тени.
+function belParse(b){
+  if(b._cells) return;
+  const rows = (str, f) => (str || '').split(';').filter(Boolean).map(t => f(t.split(',')));
+  b._cells = rows(b.c, ([ix, iz, y, m]) => ({ix:+ix, iz:+iz, y:y/10, m:+m}));
+  b._gaps  = rows(b.g, ([x, z, w]) => ({x:+x, z:+z, w:+w}));
+  b._roles = rows(b.a, ([id, kind, x, z, lx, lz, ax, az]) =>
+    ({id:+id, kind, x:+x, z:+z, lx:+lx, lz:+lz, ax: ax === undefined ? null : +ax, az: az === undefined ? null : +az}));
+}
+function drawBelief(s, alive){
+  const sc = view.sc;
+  for(const b of Object.values(s.bel)){
+    if(playT - b.t > 1600) continue;          // облака нет — снимки не приходят
+    belParse(b);
+    const cs = b.cs || 3, w = Math.max(1, cs*sc - 0.5);
+    let top = 5, heavy = null;
+    for(const c of b._cells) if(c.m > top){ top = c.m; heavy = c; }
+    const lt = Math.log(top / 5);
+    for(const c of b._cells){
+      const k = lt > 0 ? Math.max(0, Math.log(c.m / 5)) / lt : 1;
+      const p = w2s(c.ix*cs, (c.iz+1)*cs);
+      ctx.fillStyle = `rgba(200,107,255,${(0.10 + 0.55*k).toFixed(3)})`;
+      ctx.fillRect(p.x, p.y, w, w);
+    }
+    for(const g of b._gaps){
+      if(g.w < 10) continue;                  // тень легче 1% — крошка
+      const p = w2s(g.x, g.z);
+      ctx.strokeStyle = '#f2c14e'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(p.x-6,p.y); ctx.lineTo(p.x,p.y-6); ctx.lineTo(p.x+6,p.y); ctx.lineTo(p.x,p.y+6);
+      ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#f2c14e'; ctx.font = fnt(10);
+      ctx.fillText(`щель · за ней ${Math.round(g.w / 10 / Math.max(b.u, 1e-6))}% веры`, p.x+9, p.y-5);
+    }
+    for(const r of b._roles){
+      const npc = s.npcs[r.id];
+      if(!npc || !alive(npc)) continue;
+      const a = w2s(npc.px, npc.pz), gap = w2s(r.x, r.z);
+      const go = r.ax !== null ? w2s(r.ax, r.az) : gap, aim = r.ax !== null ? gap : w2s(r.lx, r.lz);
+      const col = r.kind === 'h' ? '#f2c14e' : '#e0b3ff';
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+      ctx.setLineDash(r.kind === 'h' ? [5,4] : []);
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(go.x,go.y); ctx.stroke();
+      ctx.setLineDash([2,3]); ctx.globalAlpha = 0.7;
+      ctx.beginPath(); ctx.moveTo(go.x,go.y); ctx.lineTo(aim.x,aim.y); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.setLineDash([]);
+      if(r.ax !== null){ ctx.fillStyle = col; ctx.fillRect(go.x-3, go.y-3, 6, 6); }
+      ctx.fillStyle = col; ctx.font = fnt(10,1);
+      ctx.fillText(r.kind === 'h' ? 'держит край' : 'заглядывает', a.x+9, a.y+15);
+    }
+    if(heavy){
+      const p = w2s((heavy.ix+1)*cs, (heavy.iz+1)*cs);
+      ctx.fillStyle = '#e0b3ff'; ctx.font = fnt(11,1);
+      // масса облака: 1 на врага; при нескольких врагах — среднее на одного
+      const k = b.clouds || 1, pc = v => Math.round(v / k * 100);
+      const n = k > 1 ? ` · врагов ${k}` : '';
+      ctx.fillText(`в тени ${pc(b.u)}% · вычеркнули ${pc(b.eaten)}% · ушёл ${pc(b.lost)}%${n}`, p.x+4, p.y-4);
+    }
+  }
+}
+
 function drawPano(){
   if(!on.pano || !L || !L.pano || !hoverW) return;
   const n = nodeAt(hoverW.x, hoverW.z);
@@ -953,20 +1010,37 @@ function drawPano(){
   ctx.fillStyle='#7fffd4'; ctx.beginPath(); ctx.arc(c.x,c.y,3,0,Math.PI*2); ctx.fill();
 }
 
-// Матч: точка-задача (держит тот, у кого в радиусе только свои) и табло
+// Матч: точка-задача (держит тот, у кого в радиусе только свои) и табло у нижнего края карты
+// (юзер 21.10: над точкой мешало смотреть бой):
+// [нашивка] Сторона A #id  против  #id Сторона B [нашивка], ниже — время или итог
+function commOf(s, sqs){ for(const n of Object.values(s.npcs)) if(sqs.includes(n.sq)) return n.comm; return null; }
 function drawMatch(s){
   const m = s.match;
   if(!m || (m.end && playT - m.end.t > 20000)) return;
   const c = w2s(m.zx, m.zz), r = m.zr * view.sc;
-  ctx.setLineDash([8,6]); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.lineWidth=2;
+  ctx.setLineDash([8,6]); ctx.strokeStyle='rgba(221,213,191,0.55)'; ctx.lineWidth=2;
   ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+  const ca = commOf(s, m.a), cb = commOf(s, m.b);
+  const left = `${FACTION_RU[ca] || 'A'} ${m.a.map(sqShort).join(' ')}`, vs = '  против  ',
+        right = `${m.b.map(sqShort).join(' ')} ${FACTION_RU[cb] || 'B'}`;
   const el = ((m.end ? m.end.t : playT) - m.t0) / 1000;
-  const txt = `МАТЧ ${m.id} · A ${m.a.map(sqShort).join(' ')} против B ${m.b.map(sqShort).join(' ')} · `+
-              (m.end ? `конец: ${m.end.reason}, живых ${m.end.alive_a}:${m.end.alive_b}` : `${el.toFixed(0)} / ${m.limit} с`);
-  ctx.font='bold 11px monospace';
-  const w = ctx.measureText(txt).width;
-  ctx.fillStyle='rgba(0,0,0,0.75)'; ctx.fillRect(c.x - w/2 - 5, c.y - r - 22, w + 10, 16);
-  ctx.fillStyle='#fff'; ctx.fillText(txt, c.x - w/2, c.y - r - 10);
+  const tail = m.end ? `итог: ${END_RU[m.end.reason] || m.end.reason}, в живых ${m.end.alive_a} : ${m.end.alive_b}` : `${el.toFixed(0)} / ${m.limit} с`;
+  const P = 24;
+  ctx.font = fnt(14,1);
+  const wl = ctx.measureText(left).width, wv = ctx.measureText(vs).width, wr = ctx.measureText(right).width;
+  const W = P + 8 + wl + wv + wr + 8 + P + 12, H = 44, x0 = Math.round(cv.width/2 - W/2), y0 = cv.height - H - 10;
+  ctx.fillStyle = 'rgba(18,17,13,0.9)'; ctx.fillRect(x0, y0, W, H);
+  ctx.strokeStyle = '#463f30'; ctx.lineWidth = 1; ctx.strokeRect(x0+.5, y0+.5, W-1, H-1);
+  const pa = ca && patchImg(ca), pb = cb && patchImg(cb);
+  if(pa) ctx.drawImage(pa, x0+6, y0+4, P, P);
+  if(pb) ctx.drawImage(pb, x0+W-6-P, y0+4, P, P);
+  let x = x0 + 6 + P + 8;
+  ctx.fillStyle = fcolor(ca); ctx.fillText(left, x, y0+21); x += wl;
+  ctx.fillStyle = '#6f6956'; ctx.fillText(vs, x, y0+21); x += wv;
+  ctx.fillStyle = fcolor(cb); ctx.fillText(right, x, y0+21);
+  ctx.font = fnt(12); ctx.fillStyle = m.end ? '#d68a35' : '#a8a08a';
+  const wt = ctx.measureText(tail).width;
+  ctx.fillText(tail, cv.width/2 - wt/2, y0+38);
 }
 
 // Последний снимок эхолота: горизонтальные лучи (наклон 0) — точки упора, и сколько снимков всего
@@ -984,7 +1058,7 @@ function drawProbe(s){
     ctx.beginPath(); ctx.moveTo(c.x,c.y); ctx.lineTo(p.x,p.y); ctx.stroke();
     if(d >= 0){ ctx.fillRect(p.x-2,p.y-2,4,4); }
   });
-  ctx.font='bold 10px monospace';
+  ctx.font=fnt(11,1);
   ctx.fillText(`эхолот: снимков ${s.probeN}`, c.x+6, c.y-6);
 }
 
@@ -999,29 +1073,7 @@ const MODE_NAMES = { hold:'держат', scout:'разведка', regroup:'п�
 const PLAY_COL = { front:'#4fc3f7', bound:'#aed581', withdraw:'#ffb74d' };
 const MSTATE_COL = { steady:'#00e5ff', shaken:'#ffb74d', broken:'#ff5252' };
 // класс оружия (kind из ltx) → коротко
-const WEAPON_KIND = { w_pistol:'пист', w_smg:'ПП', w_shotgun:'дробь', w_rifle:'автомат', w_sniper:'снайп', w_launcher:'гранатомёт', w_rpg:'РПГ', w_knife:'нож' };
-function hpColor(h){ return h > 0.6 ? '#66bb6a' : h > 0.3 ? '#ffb74d' : '#ef5350'; }
 let badgeHits = [];
-// Действия GOAP по номеру (stalker_ids, xr_actions_id, моды 188xxx, наши 99x/1882xx)
-const ACTION_NAMES = {
-  88:'симуляция', 89:'бой', 90:'аномалия', 91:'опасность', 87:'смерть', 2:'подбирает', 3:'без симуляции',
-  142:'труп рядом', 147:'помогает раненому', 192:'state_mgr', 194:'state_mgr', 307:'смарт-укрытие', 442:'после боя', 452:'анимточка',
-  188111:'компаньон', 188112:'добивает', 188113:'опасность (скрипт)', 188114:'костёр', 188115:'ПАНИКА', 188116:'рация', 188117:'вертолёт',
-  188118:'бой из укрытия', 188120:'ящик', 188202:'приказ', 188204:'приказ сквозь бой', 188206:'перегруппировка',
-  // внутри боя / опасности
-  996:'поиск по вере', 995:'глушилка', 16:'целится', 17:'готовится', 19:'стреляет', 20:'отходит', 21:'в укрытие', 22:'выглядывает',
-  23:'держит позицию', 24:'сближается', 25:'обходит', 26:'ищет врага', 28:'внезапная атака', 29:'стреляет вслепую',
-  30:'к раненому', 32:'над раненым', 33:'добивает', 34:'VARKA: поиск/глушилка', 36:'тяжело ранен',
-  70:'неясная опасность', 71:'опасность с направления', 72:'граната', 73:'звук', 74:'в укрытие (опасн.)', 75:'озирается',
-  76:'ищет (опасн.)', 77:'в укрытие', 78:'выглядывает', 79:'держит', 80:'обходит', 81:'ищет', 82:'от гранаты', 83:'ждёт взрыва', 84:'после взрыва', 85:'озирается', 86:'ищет',
-};
-function actName(n){
-  if(n.aid==null || n.aid<0) return '';
-  const top = ACTION_NAMES[n.aid] || ('#'+n.aid);
-  return n.aid2!=null && n.aid2>=0 ? `${top}: ${ACTION_NAMES[n.aid2] || '#'+n.aid2}` : top;
-}
-function sqShort(sq){ return '#' + String(sq).slice(-3); }
-
 // Отряды на карте: центр, верхний боец, фракция, живые бойцы
 function squadGroups(s, alive){
   const groups = {};
@@ -1047,27 +1099,34 @@ const EV_COLORS = {
   cmd_ok:'#66BB6A', cmd_fail:'#ef5350', spawned:'#4dd0e1', order_start:'#4dd0e1', order_arrive:'#26c6da', order_end:'#557',
   probe:'#ff4081', probe_mode:'#ff4081', intel:'#998', play_start:'#aed581', play_end:'#8d6e63', wpn_switch:'#998', match_start:'#fff', match_end:'#fff', death:'#9e9e9e', holdout_start:'#ff7043', holdout_end:'#8d6e63',
   regroup_start:'#a5d6a7', all_clear:'#69f0ae', post_end:'#557', scout_arrive:'#b4a0ff', regroup_spot:'#81c784',
+  bel_seed:'#c86bff', bel_end:'#8e5bb0', clear_start:'#c86bff', clear_role:'#e0b3ff', clear_post:'#f2c14e', clear_fire:'#ff5252', clear_step:'#e0b3ff', clear_end:'#557',
   dir_plan:'#00e5ff',    flank_pick:'#00e5ff',  flank_arrive:'#00bcd4', flank_none:'#557',  scout_go:'#b4a0ff',
 };
 
 function fmtEv(e){
   const col  = EV_COLORS[e.ev] || '#666';
   const ts   = e.t!=null ? (e.t/1000).toFixed(1)+'s' : '';
-  const nstr = e.npc ? `<span style="color:#555">n${e.npc}</span> ` : '';
-  const sqstr= e.sq  ? `<span style="color:#445">sq${e.sq}</span> ` : '';
+  const nstr = e.npc ? `<span style="color:#7d7763">n${e.npc}</span> ` : '';
+  const sqstr= e.sq  ? `<span style="color:#5d5a4a">sq${e.sq}</span> ` : '';
   let d='';
   if(e.ev==='search_node'||e.ev==='hold_enter') d=` vid=${e.vid} w=${(e.w||0).toFixed(2)}${e.mode?' '+e.mode:''}`;
   else if(e.ev==='node_checked'||e.ev==='lot_claim') d=` vid=${e.vid}`;
   else if(e.ev==='belief_kill')  d=` reason=${e.reason||'?'}`;
+  else if(e.ev==='bel_seed')     d=` потеряли n${e.eid} (${e.why==='lost'?'из виду':'весть движка'}, ${((e.age||0)/1000).toFixed(1)} с назад)`;
+  else if(e.ev==='bel_end')      d=` n${e.eid}: ${BEL_END[e.why]||e.why} — вычеркнули ${Math.round((e.eaten||0)*100)}%, ушёл ${Math.round((e.lost||0)*100)}%`;
+  else if(e.ev==='clear_role')   d=e.role==='hold' ? ' держит край' : ' заглядывает';
+  else if(e.ev==='clear_post')   d=e.role==='peek' ? ` сел у угла, ждёт ${((e.wait||0)/1000).toFixed(0)} с` : ' сел держать край';
+  else if(e.ev==='clear_step')   d=' терпение кончилось — шаг за угол';
+  else if(e.ev==='clear_fire')   d=` нашёл n${e.enemy} первым — бьёт с места`;
   else if(e.ev==='alert_hear')   d=` ${e.stype||''} who=${e.who||0}`;
   else if(e.ev==='alert_corpse') d=` corpse=${e.cid}`;
   else if(e.ev==='watch_lost')   d=` bel=${e.bel} echo=${e.echo}`;
-  else if(e.ev==='search_start') d=` rank=${rankLetter(e.rank||0)}`;
+  else if(e.ev==='search_start') d=` ${rankName(e.rank||0)}`;
   else if(e.ev==='bark')         d=` «${e.theme}»`;
   else if(e.ev==='kw_fire')      d=` → n${e.victim} с ${(e.d||0).toFixed(1)} м`;
   else if(e.ev==='dir_plan')     d=` ${e.preset}/${e.mode} ${e.roles||''}`;
   else if(e.ev==='cmd_ok'||e.ev==='cmd_fail') d=` #${e.seq} ${e.cmd} ${e.info||''}`;
-  else if(e.ev==='spawned')      d=` sq${e.sq} ${e.section} ×${e.n}`;
+  else if(e.ev==='spawned')      d=` sq${e.sq} ${e.section} ×${e.n}${e.ranks ? ' · ранги '+String(e.ranks).split(',').map(r=>rankName(+r)).join(', ') : ''}`;
   else if(e.ev==='flank_pick')   d=` vid=${e.vid} sep=${(e.w||0).toFixed(2)}`;
   else if(e.ev==='regroup_start') d=` ${((e.dur||0)/1000).toFixed(0)} с, кэп n${e.cap}, мораль ${(e.moral||0).toFixed(2)} ${MSTATE[e.mstate]||''}`;
   else if(e.ev==='all_clear')    d=` разведка: ${e.scouts||'—'}`;
@@ -1084,8 +1143,8 @@ function fmtEv(e){
   else if(e.ev==='probe')        d=` ${e.level||''} vid=${e.vid} x=${(+e.ox).toFixed(1)} z=${(+e.oz).toFixed(1)}`;
   else if(e.ev==='probe_mode')   d=e.on ? ' вкл' : ' выкл';
   else if(e.ev==='regroup_spot') d=` vid=${e.vid} открыт ${(e.open||0).toFixed(2)}`;
-  return `<div class="ev"><span style="color:#333">${ts} </span>${nstr}${sqstr}`+
-         `<span style="color:${col}">${e.ev}</span><span style="color:#555">${d}</span></div>`;
+  return `<div class="ev"><span style="color:#4a4638">${ts} </span>${nstr}${sqstr}`+
+         `<span style="color:${col}">${e.ev}</span><span style="color:#8a846f">${d}</span></div>`;
 }
 
 // ─────────────────────────────────────────────
@@ -1104,8 +1163,8 @@ function refresh(){
   el.innerHTML = S.evLog.map(fmtEv).join('');
   el.scrollTop = el.scrollHeight;
   const alive = Object.values(S.npcs).filter(n=>playT-n._t<=3000).length;
-  setStatus(`${L ? L.meta.name : 'уровень ?'} | событий ${S.upto}/${allEvents.length} | ` +
-            `бойцов ${alive} | вер ${Object.keys(S.beliefs).length}`);
+  setStatus(`${L ? levelName(L.meta.name) : 'уровень не узнан'} · событий ${S.upto}/${allEvents.length} · ` +
+            `бойцов ${alive} · вер ${Object.keys(S.beliefs).length}`);
 }
 
 function setButtons(){
@@ -1123,8 +1182,9 @@ function toggleFollow(){
   document.getElementById('follow-btn').className = followMatch ? 'on' : '';
   if(followMatch){ followedId = null; followNewMatch(); }
 }
+// 22.10: без «в эфире» — раньше слежение молча умирало после любого ползунка/повтора (в 3D так не было)
 function followNewMatch(){
-  if(!followMatch || !isLive || !cv.width) return;
+  if(!followMatch || !cv.width) return;
   let m = null;
   for(let i = allEvents.length - 1; i >= 0; i--){
     if(allEvents[i].ev === 'match_start'){ m = allEvents[i]; break; }
@@ -1327,16 +1387,16 @@ function drawCreative(s, alive){
       if(sel.kind==='sq' ? npc.sq!==sel.id : +id!==sel.id) continue;
       const p = w2s(npc.px, npc.pz);
       ctx.beginPath(); ctx.arc(p.x, p.y, 12, 0, Math.PI*2);
-      ctx.strokeStyle='#4dd0e1'; ctx.lineWidth=2; ctx.stroke();
+      ctx.strokeStyle='#d68a35'; ctx.lineWidth=2; ctx.stroke();
     }
   }
   // флажки приказов: куда отправили (жёсткий — красный)
   for(const [target,m] of Object.entries(marks)){
-    const p = w2s(m.x, m.z), col = m.hard ? '#ff5252' : '#4dd0e1';
+    const p = w2s(m.x, m.z), col = m.hard ? '#ff5252' : '#d68a35';
     ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y-18); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(p.x, p.y-18); ctx.lineTo(p.x+11, p.y-14); ctx.lineTo(p.x, p.y-10); ctx.closePath(); ctx.fill();
-    ctx.font='9px monospace'; ctx.fillText(`${target} ${m.kind==='move'?'идти':'стоять'}${m.hard?' !':''}`, p.x+13, p.y-12);
+    ctx.font=fnt(10); ctx.fillText(`${target} ${m.kind==='move'?'идти':'стоять'}${m.hard?' !':''}`, p.x+13, p.y-12);
   }
 }
 
@@ -1378,7 +1438,8 @@ window.addEventListener('keydown', e=>{
 const AXES = [['coh','спл','сплочённость: вес живых / вес в начале'], ['inf','влн','влияние: доля бойцов, кто может ответить'],
               ['cap','кэп','вертикаль: жив ли старший'], ['fog','тум','туман: огонь от невидимого (больше — хуже)'],
               ['res','зап','запас храбрости (Моран)'], ['wall','стн','стены вокруг бойцов (запечка зрения)'],
-              ['heavy','тяж','у врага известный отряду пулемёт/гранатомёт (давит на мораль)']];
+              ['heavy','тяж','у врага известный отряду пулемёт/гранатомёт (давит на мораль)'],
+              ['wear','изн','износ: сколько угрозы смерти отряд в среднем пропустил через себя (больше — хуже)']];
 
 function renderRoster(force){
   if(!rosterOn) return;
@@ -1391,21 +1452,31 @@ function renderRoster(force){
     if(playT - n._t > 60000) continue;   // давно пропавших не держим
     (bySq[n.sq] ||= []).push([id,n]);
   }
-  const html = [`<div class="legend">▣ держат · ➚ разведка · ⟲ перегруппировка · ⌂ засели<br>`+
-    `полоса — мораль: <span style="color:${MSTATE_COL.steady}">твёрд</span> / <span style="color:${MSTATE_COL.shaken}">шаток</span> / <span style="color:${MSTATE_COL.broken}">сломлен</span>, белая черта — куда тянет<br>`+
-    `✚ ранен · ! опасность · ⚔ добивает · ◎ видит цель · ○ помнит</div>`];
-  for(const sq of Object.keys(bySq).sort()){
+  const html = [`<div class="legend">`+
+    strapLegendHTML(18)+
+    `<span class="star">★</span> командир отряда · ✚ ранен · ! опасность · ⚔ добивает · ◎ видит цель · ○ помнит<br>`+
+    `режим дирижёра: ▣ держат · ➚ разведка · ⟲ перегруппировка · ⌂ засели<br>`+
+    `мораль: <span style="color:${MSTATE_COL.steady}">твёрд</span> · <span style="color:${MSTATE_COL.shaken}">шаток</span> · <span style="color:${MSTATE_COL.broken}">сломлен</span>, белая черта — куда тянет</div>`];
+  if(!Object.keys(bySq).length)
+    html.push(`<div class="legend" style="border:none">Здесь появятся отряды, как только бойцы выйдут в онлайн рядом с тобой.</div>`);
+  // 22.10: пара текущего матча — сверху (A, потом B), как в 3D; чужие отряды без живых (убраны уборкой
+  // после прошлого боя) не показываем, а не держим ещё минуту
+  const m = s.match, sideOf = sq => !m ? 0 : m.a.includes(+sq) ? 1 : m.b.includes(+sq) ? 2 : 3;
+  const order = Object.keys(bySq)
+    .filter(sq => sideOf(sq) < 3 || bySq[sq].some(([,n])=>alive(n)))
+    .sort((x,y)=> sideOf(x)-sideOf(y) || x.localeCompare(y));
+  for(const sq of order){
     const ms = bySq[sq], pl = s.plans[sq], m = s.moral[sq];
     const live = ms.filter(([,n])=>alive(n)).length;
     const comm = ms[0][1].comm, isSel = sel && sel.kind==='sq' && sel.id===+sq;
     const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
-    let h = `<div class="sq${isSel?' sel':''}" data-sq="${sq}"><div class="hd">`+
-      `<span class="stripe" style="background:${fcolor(comm)}"></span><b style="color:#ddd">${sqShort(sq)}</b>`+
-      `<span style="color:#777">${comm}</span><span style="color:#00e5ff">${MODE_GLYPH[pl&&pl.mode]||'·'} ${pl ? (MODE_NAMES[pl.mode]||pl.mode) : ''}</span>`+
-      `<span style="color:#666;margin-left:auto">${live}/${ms.length}</span></div>`;
+    let h = `<div class="sq${isSel?' sel':''}" data-sq="${sq}"><div class="hd">${patchHTML(comm)}`+
+      `<span class="who"><b style="color:${fcolor(comm)}">${FACTION_RU[comm] || comm}</b><small>отряд ${sqShort(sq)}</small></span>`+
+      (pl ? `<span class="mode" title="${MODE_NAMES[pl.mode]||pl.mode}">${MODE_GLYPH[pl.mode]||''} ${MODE_NAMES[pl.mode]||pl.mode}</span>` : '')+
+      `<span class="count" title="живых / всего">${live}/${ms.length}</span></div>`;
     if(mv){
       const col = MSTATE_COL[mv.st] || '#00e5ff', imp = mv.imp||0;
-      h += `<div class="hd" style="color:${col}">мораль ${mv.v.toFixed(2)} ${mv.st?MSTATE[mv.st]:''}`+
+      h += `<div class="hd" style="color:${col};margin-top:5px">мораль ${mv.v.toFixed(2)} ${mv.st?MSTATE[mv.st]:''}`+
            (Math.abs(imp)>0.003 ? ` <span style="color:${imp<0?'#ff5252':'#69f0ae'}">${imp<0?'▾':'▴'}${Math.abs(imp*60).toFixed(2)}/мин</span>` : '')+
            (mv.near ? ' <span style="color:#ff7043">прижат</span>' : '') + `</div>`+
            `<div class="mbar"><i style="width:${mv.v*100}%;background:${col}"></i>`+
@@ -1413,7 +1484,7 @@ function renderRoster(force){
       if(mv.coh!=null){
         h += `<div class="axes">` + AXES.map(([k,lab,tip])=>{
           const v = mv[k]==null ? 0 : mv[k];
-          return `<span title="${tip}: ${(+v).toFixed(2)}">${lab}<em><i style="width:${Math.min(100,v*100)}%;${k==='fog'?'background:#c66':''}"></i></em></span>`;
+          return `<span title="${tip}: ${(+v).toFixed(2)}">${lab}<em><i style="width:${Math.min(100,v*100)}%;${k==='fog'||k==='wear'?'background:#c66':''}"></i></em></span>`;
         }).join('') + `</div>`;
       }
     }
@@ -1423,11 +1494,12 @@ function renderRoster(force){
       const name = e => (e.cls==='mg' ? 'пулемёт ' : e.cls==='launcher' ? 'гранатомёт ' : e.cls==='sniper' ? 'снайпер ' : '') + String(e.sec||'').replace('wpn_','');
       const sh = intel.filter(([,e])=>e.shared).map(([,e])=>name(e));
       const pr = intel.filter(([,e])=>!e.shared).map(([,e])=>name(e));
-      h += `<div style="color:#998;font-size:10px;margin-top:2px;white-space:normal">знают о враге: ${sh.join(', ')||'—'}`+
-           (pr.length ? ` <span style="color:#555">(лично: ${pr.join(', ')})</span>` : '') + `</div>`;
+      h += `<div class="intel">знают о враге: ${sh.join(', ')||'—'}`+
+           (pr.length ? ` <span style="color:#6f6956">(лично: ${pr.join(', ')})</span>` : '') + `</div>`;
     }
-    h += `</div>`;
-    for(const [id,n] of ms.sort((a,b)=>(b[1].rank||0)-(a[1].rank||0))){
+    h += `<div class="members">`;
+    // командир первым, дальше по рангу
+    for(const [id,n] of ms.sort((a,b)=>(b[1].lead||0)-(a[1].lead||0) || (b[1].rank||0)-(a[1].rank||0))){
       const dead = !alive(n), isSelN = sel && sel.kind==='npc' && sel.id===+id;
       const role = s.roles[id], fl = [];
       if(n.wnd) fl.push('✚');
@@ -1435,14 +1507,16 @@ function renderRoster(force){
       if(n.kw) fl.push('⚔');
       if(n.be!=null && n.be>=0) fl.push((n.bsee?'◎':'○') + n.be);
       const hp = n.hp==null ? null : Math.max(0, Math.min(1, n.hp));
-      h += `<div class="m${dead?' dead':''}${isSelN?' sel':''}" data-npc="${id}">`+
-           `<span style="color:${fcolor(n.comm)}">●</span>${id}<span style="color:#777">${rankLetter(n.rank||0)}</span>`+
-           (hp==null || dead ? '' : `<span title="здоровье ${Math.round(hp*100)}%" style="display:inline-block;width:22px;height:5px;background:#222;align-self:center"><i style="display:block;height:100%;width:${hp*100}%;background:${hpColor(hp)}"></i></span>`)+
-           (n.wk && !dead ? `<span style="color:#998" title="${n.wpn||''}">${WEAPON_KIND[n.wk]||n.wk}</span>` : '')+
+      h += `<div class="m${dead?' dead':''}${isSelN?' sel':''}" data-npc="${id}" title="${rankName(n.rank||0)}${n.lead?', командир отряда':''}">`+
+           strapSVG(rankIdx(n.rank||0), 16) + `<span class="id">${id}</span>` +
+           (n.lead && !dead ? `<span class="star">★</span>` : '') +
+           (hp==null || dead ? '' : hpBarHTML(hp))+
+           (n.wk && !dead ? `<span class="wpn" title="${n.wpn||''}">${WEAPON_KIND[n.wk]||n.wk}</span>` : '')+
            (role && role!=='hold' ? `<span class="role">${ROLE_NAMES[role]||role}</span>` : '')+
            `<span class="fl">${fl.join(' ')}</span>`+
-           (dead ? '' : `<span style="color:#567;margin-left:auto">${actName(n)}</span>`) + `</div>`;
+           (dead ? '' : `<span class="act">${actName(n)}</span>`) + `</div>`;
     }
+    h += `</div></div>`;
     html.push(h);
   }
   document.getElementById('roster').innerHTML = html.join('');

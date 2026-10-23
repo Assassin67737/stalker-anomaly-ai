@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Ночной прогон (21.10.2026): N матчей → архив → закрыть игру → выключить компьютер.
 #
-#   tools/twin/match/night.sh [N] [спек]        по умолчанию 200 матчей, matches/l07_night.json
+#   tools/twin/match/night.sh [N] [спек]        по умолчанию 200 матчей, matches/night_ranks.json
 #   NO_POWEROFF=1 tools/twin/match/night.sh 2   проба: всё то же, но компьютер не выключать
+#   CONDUCTOR=A tools/twin/match/night.sh 200 matches/night_quads.json
+#                                               + дирижёр квадрантов (conductor.py) ведёт сторону A (или B, AB)
 #
-# Перед запуском: игра на Армейских складах (сейв загружен), g_always_active on, в опциях игры
+# Спеки night_ranks (бои по рангам 1–4 на 1–4) и night_squads (отряды 3–5) — "level": "here":
+# идут на той локе, где стоит игра, на любой из запечённых (tools/twin/levels/index.json).
+#
+# Перед запуском: игра на нужной локе (сейв загружен), g_always_active on, в опциях игры
 # выключены выброс и пси-шторм, запущен tools/twin/server.py, вкладку вьювера ЗАКРЫТЬ (за ночь
 # trace вырастет до сотен МБ, вьювер перечитывает его целиком раз в полсекунды).
 #
@@ -13,7 +18,7 @@
 # игра не отвечают — скрипт выходит сразу и компьютер НЕ выключает (заметишь, пока не лёг).
 set -u
 N=${1:-200}
-SPEC=${2:-matches/l07_night.json}
+SPEC=${2:-matches/night_ranks.json}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOGS=/mnt/games/ANOMALY_DEV/appdata/logs
 SERVER=${VARKA_SERVER:-http://localhost:8766}
@@ -41,11 +46,21 @@ fi
 
 mkdir -p "$ARCH"
 touch "$ARCH/runner.log.start"   # метка времени: дампы новее неё — ночные
+# живые обои (mpvpaper) жрут GPU всю ночь — гасим; при следующем входе в сессию стартуют сами
+pkill mpvpaper 2>/dev/null && echo "== обои (mpvpaper) погашены"
+COND_PID=""
+if [ -n "${CONDUCTOR:-}" ]; then
+    echo "== дирижёр квадрантов: сторона $CONDUCTOR, лог: $ARCH/conductor.log"
+    python3 -u conductor.py --side "$CONDUCTOR" > "$ARCH/conductor.log" 2>&1 &
+    COND_PID=$!
+    trap '[ -n "$COND_PID" ] && kill "$COND_PID" 2>/dev/null' EXIT
+fi
 echo "== серия: $N матчей ($SPEC), лог раннера: $ARCH/runner.log"
 echo "   примерно $((N * 5 / 2 / 60)) ч (матч в среднем ~2.5 мин с уборкой)"
 systemd-inhibit --what=idle:sleep:handle-lid-switch --who=varka --why="ночной прогон матчей" \
     python3 -u run.py "$SPEC" --n "$N" 2>&1 | tee "$ARCH/runner.log"
 
+[ -n "$COND_PID" ] && kill "$COND_PID" 2>/dev/null
 echo "== закрываю игру"
 curl -s -X POST -H 'Content-Type: application/json' -d '{"cmd":"quit","args":[]}' "$SERVER/cmd" >/dev/null
 for _ in $(seq 60); do

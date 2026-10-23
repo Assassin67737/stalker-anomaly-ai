@@ -1,0 +1,116 @@
+[
+ {
+  "name": "agr_smart_terrain_5_4",
+  "x": 102.049,
+  "z": -47.4905,
+  "vid": 284543
+ },
+ {
+  "name": "agr_smart_terrain_6_4",
+  "x": 251.6321,
+  "z": 66.0611,
+  "vid": 406645
+ },
+ {
+  "name": "agr_smart_terrain_7_4",
+  "x": 234.7401,
+  "z": -4.9012,
+  "vid": 394589
+ },
+ {
+  "name": "agr_smart_terrain_1_2",
+  "x": -197.4816,
+  "z": 122.7628,
+  "vid": 31400
+ },
+ {
+  "name": "agr_smart_terrain_1_6",
+  "x": -162.4915,
+  "z": -187.8834,
+  "vid": 56147
+ },
+ {
+  "name": "agr_smart_terrain_1_6_near_2",
+  "x": -133.0225,
+  "z": -199.9558,
+  "vid": 80725
+ },
+ {
+  "name": "agr_smart_terrain_4_4",
+  "x": -1.3902,
+  "z": 15.2618,
+  "vid": 197597
+ },
+ {
+  "name": "agr_smart_terrain_4_4_near_2",
+  "x": -40.8124,
+  "z": 1.7117,
+  "vid": 163843
+ },
+ {
+  "name": "agr_smart_terrain_4_6",
+  "x": 20.9088,
+  "z": -146.5037,
+  "vid": 217592
+ },
+ {
+  "name": "agr_smart_terrain_5_3",
+  "x": 147.086,
+  "z": 53.6401,
+  "vid": 323369
+ },
+ {
+  "name": "agr_smart_terrain_5_7",
+  "x": 80.7042,
+  "z": -237.6584,
+  "vid": 264783
+ },
+ {
+  "name": "agr_smart_terrain_6_6",
+  "x": 232.112,
+  "z": -252.9607,
+  "vid": 392852
+ },
+ {
+  "name": "agr_smart_terrain_7_5",
+  "x": 233.5277,
+  "z": -109.4011,
+  "vid": 394003
+ },
+ {
+  "name": "agr_smart_terrain_1_3",
+  "x": -211.261,
+  "z": -7.5682,
+  "vid": 22580
+ },
+ {
+  "name": "agr_smart_terrain_1_6_near_1",
+  "x": -190.7855,
+  "z": -140.1301,
+  "vid": 35600
+ },
+ {
+  "name": "agr_smart_terrain_2_2",
+  "x": -93.8174,
+  "z": 138.3684,
+  "vid": 115497
+ },
+ {
+  "name": "agr_smart_terrain_4_4_near_1",
+  "x": 9.1067,
+  "z": 32.6533,
+  "vid": 207132
+ },
+ {
+  "name": "agr_smart_terrain_4_4_near_3",
+  "x": 63.6681,
+  "z": 34.9593,
+  "vid": 251369
+ },
+ {
+  "name": "agr_smart_terrain_5_2",
+  "x": 69.755,
+  "z": 146.7446,
+  "vid": 256387
+ }
+]

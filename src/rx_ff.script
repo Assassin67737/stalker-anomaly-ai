@@ -1,0 +1,305 @@
+--[[
+	scheme_type: generic
+	author: Rulix
+	modified_by: Alundaio, VARKA (22.10.2026: геометрия «свой на линии», запрет 2.5 → 0.8 с, событие ff_block)
+--]]
+
+--------------------------------------
+evaid = 18803
+actid = evaid
+--------------------------------------
+
+local STEP_SIZE = 15
+
+-- VARKA 22.10: ваниль считала «свой на линии» любого своего ближе 2.1 м — в любую сторону, даже за спиной —
+-- и держала запрет 2.5 с. Отряд идёт кучей → молчит весь отряд. Замер (Агропром, 11 боёв): 23% времени
+-- «вижу врага» уходит сюда, выстрел — в 4% этого времени (самая большая утечка огня, match/friction.py).
+-- Теперь свой мешает, только если стоит перед стволом и линия ствол→враг (и дальше за врага — промах летит
+-- туда же) проходит ближе FF_BODY + FF_SPREAD×дальность от его груди или головы. Сидит ниже линии —
+-- стреляем поверх. Впритык — только если стоит спереди, а не сбоку.
+local FF_BODY   = 0.4   -- полуширина тела, м
+local FF_SPREAD = 0.05  -- разброс ≈ 3°: +5 см запаса на метр до своего
+local FF_TOUCH  = 1.0   -- впритык, м
+local FF_BEHIND = 10    -- свой в 10 м за целью тоже под промахом
+local FF_HOLD   = 800   -- держать запрет после проверки, мс (ваниль 2500)
+
+-- как далеко точка p от отрезка a→b (продлённого на FF_BEHIND за b) и где её проекция (м от a)
+local function miss_of(a, b, p)
+	local abx, aby, abz = b.x - a.x, b.y - a.y, b.z - a.z
+	local len = math.sqrt(abx*abx + aby*aby + abz*abz)
+	local apx, apy, apz = p.x - a.x, p.y - a.y, p.z - a.z
+	if len < 0.01 then return math.sqrt(apx*apx + apy*apy + apz*apz), 0 end
+	local along = (apx*abx + apy*aby + apz*abz) / len
+	local k = math.max(0, math.min(along, len + FF_BEHIND)) / len
+	local dx, dy, dz = apx - abx*k, apy - aby*k, apz - abz*k
+	return math.sqrt(dx*dx + dy*dy + dz*dz), along
+end
+
+local function validate(npc,vid)
+	if (vid and vid < 4294967295 and npc:accessible(vid) and vid ~= npc:level_vertex_id()) then 
+		return db.used_level_vertex_ids[vid] == nil or db.used_level_vertex_ids[vid] == npc:id()
+	end 
+	return false
+end
+
+local function get_vertex(npc,dir,st)
+	local base_dir = npc:direction()
+	local dir = {}
+	dir[1] = vector_rotate_y(vec_set(base_dir),-90)
+	dir[2] = vector_rotate_y(vec_set(base_dir),90)
+	dir[3] = vector_rotate_y(vec_set(base_dir),-30)
+	dir[4] = vector_rotate_y(vec_set(base_dir),30)
+	local vid
+	local radius = 5
+	local base_point = npc:level_vertex_id()
+	for i=1,2 do
+		while (radius <= 10) do
+			vid = level.vertex_in_direction(base_point,dir[i],radius)
+			if (validate(npc,vid)) then
+				return vid
+			end
+			radius = radius + 1
+		end
+	end
+end
+
+class "evaluator_dont_shoot" (property_evaluator)
+function evaluator_dont_shoot:__init(npc,name,storage) super (nil, name)
+	self.st = storage
+	self.st.stage = 0
+end
+
+local function set_flag(npc,val)
+	db.storage[npc:id()].rx_dont_shoot = val
+	return val or false
+end 
+
+function evaluator_dont_shoot:check_in_los(friend,be,be_pos)
+	if (friend and friend:alive() and self.object:relation(friend) < 2 and self.object:see(friend)) then
+		local pos = utils_obj.safe_bone_pos(self.object,"bip01_r_finger02") --self.object:bone_position("bip01_spine")
+		local friend_pos = utils_obj.safe_bone_pos(friend,"bip01_spine")
+		local friend_dist = pos:distance_to(friend_pos)
+
+		local miss, along = miss_of(pos, be_pos, friend_pos)
+		if (friend_dist <= FF_TOUCH) then
+			-- впритык мешает только тот, кто спереди (в пределах 60° от линии огня)
+			if (along > friend_dist * 0.5) then
+				self.ff_why, self.ff_fd, self.ff_miss = "touch", friend_dist, miss
+				return true
+			end
+			return false
+		end
+
+		miss = math.min(miss, (miss_of(pos, be_pos, utils_obj.safe_bone_pos(friend,"bip01_head"))))
+		if (along > 0 and miss < FF_BODY + FF_SPREAD * along) then
+			self.ff_why, self.ff_fd, self.ff_miss = "line", friend_dist, miss
+			return true
+		end
+	end
+end
+
+function evaluator_dont_shoot:check_all_in_los()
+	local be = self.object:best_enemy()
+	local be_pos = utils_obj.safe_bone_pos(be,"bip01_spine")
+	
+	-- check if actor in los
+	if (self:check_in_los(db.actor,be,be_pos) == true) then
+		self.st.friend_id = AC_ID
+		return true 
+	end
+	
+	if not (db.OnlineStalkers) then
+		return
+	end
+
+	local size = #db.OnlineStalkers
+	if (size == 0) then
+		return
+	end
+
+	local sid = self.object:id()
+	local id
+	
+	-- check if any neutral or ally in los
+	for i=1,size do
+		id = db.OnlineStalkers[i]
+		local friend = id  and id ~= sid and db.storage[id] and db.storage[id].object
+
+		if (friend and IsStalker(friend) and self:check_in_los(friend,be,be_pos) == true) then 
+			self.st.friend_id = id
+			return true 
+		end
+	end
+
+	return false
+end
+
+function evaluator_dont_shoot:evaluate()
+	--utils_data.debug_write("eva_dont_shoot")
+	local npc = self.object
+	if not (npc:alive()) then 
+		return false 
+	end 
+	
+	local be = npc:best_enemy()
+	if not (be and be:alive() and npc:see(be)) then
+		return set_flag(npc,false)
+	end
+
+	if (db.storage[npc:id()].panicked) then 
+		return set_flag(npc,false)
+	end 
+
+	if (self.st.__hold_until and validate(npc,self.st.vertex_id) and time_global() < self.st.__hold_until) then 
+		return set_flag(npc,true)
+	end
+	
+	if (self:check_all_in_los()) then
+		-- новый запрет (а не продление): кто, почему, насколько близко к линии — для match/friction.py
+		if varka_trace and not db.storage[npc:id()].rx_dont_shoot then
+			varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "ff_block", {
+				why = self.ff_why or "?", friend = self.st.friend_id or -1,
+				fd = self.ff_fd or -1, miss = self.ff_miss or -1, ed = npc:position():distance_to(be:position()),
+			})
+		end
+		self.st.__hold_until = time_global() + FF_HOLD
+		return set_flag(npc,true)
+	end
+	
+	self.st.friend_id = nil
+	if (self.st.vertex_id) then 
+		db.used_level_vertex_ids[self.st.vertex_id] = nil
+		self.st.vertex_id = nil
+	end
+
+	return set_flag(npc,false)
+end
+
+class "action_verso" (action_base)
+function action_verso:__init (npc,name,storage) super (nil,name)
+	self.st = storage
+end
+
+function action_verso:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	--npc:set_desired_position()
+	--npc:set_desired_direction()
+end
+
+function action_verso:execute()
+	action_base.execute(self)
+	
+	local npc = self.object
+
+	local be = npc:best_enemy()
+	if not (be) then 
+		return 
+	end 
+
+	local friend = self.st.friend_id and db.storage[self.st.friend_id] and db.storage[self.st.friend_id].object 
+	if not (self.st.vertex_id) then
+		local be_pos = be:position()
+		self.st.vertex_id = utils_obj.try_to_strafe(npc) or utils_obj.try_go_aside_object(npc,friend,be_pos) or utils_obj.try_go_position(npc,be_pos)
+	end
+	
+	if (self.st.vertex_id == nil or self.st.vertex_id == npc:level_vertex_id()) then
+		if (self.st.vertex_id) then 
+			db.used_level_vertex_ids[self.st.vertex_id] = nil
+			self.st.vertex_id = nil
+		end
+		state_mgr.set_state(npc,"threat",nil,nil,{look_object = be})
+		return 
+	end
+
+	state_mgr.set_state(npc,"raid",nil,nil,{look_object = be})
+end
+
+function action_verso:finalize()
+    action_base.finalize(self)
+	if (self.st.vertex_id) then 
+		db.used_level_vertex_ids[self.st.vertex_id] = nil
+		self.st.vertex_id = nil
+	end
+end
+------------------------------------------------------------------
+----------------- binder 
+
+function setup_generic_scheme(npc,ini,scheme,section,stype,temp)
+	local st = xr_logic.assign_storage_and_bind(npc,ini,"rx_ff",section,temp)
+end
+
+function add_to_binder(npc,ini,scheme,section,st,temp)
+	if not npc then return end
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+
+	if (not npc:alive()) or (character_community(npc) == "zombied" or npc:section() == "actor_visual_stalker") then
+		manager:add_evaluator(evaid,property_evaluator_const(false))
+		temp.needs_configured = false
+		return 
+	end
+
+	local evaluator = evaluator_dont_shoot(npc,"eva_dont_shoot",st)
+	temp.action = action_verso(npc,"act_dont_shoot",st)
+
+	if not evaluator or not temp.action then return end
+	manager:add_evaluator(evaid,evaluator)
+	
+	temp.action:add_precondition(world_property(stalker_ids.property_alive,true))
+	temp.action:add_precondition(world_property(stalker_ids.property_enemy,true))
+	temp.action:add_precondition(world_property(evaid,true))
+	temp.action:add_effect(world_property(evaid,false))	
+	
+	manager:add_action(actid,temp.action)
+end
+
+function configure_actions(npc,ini,scheme,section,stype,temp)
+	if not npc then return end
+	local manager = npc:motivation_action_manager()
+	if not manager or not temp.action then return end
+
+	temp.action:add_precondition(world_property(xr_evaluators_id.sidor_wounded_base,false))
+	temp.action:add_precondition(world_property(xr_evaluators_id.wounded_exist,false))
+	--temp.action:add_precondition(world_property(xr_evaluators_id.state_mgr+1,true))
+
+	if (_G.schemes["gl"]) then
+		temp.action:add_precondition(world_property(rx_gl.evid_gl_reload,false))
+	end
+	if (_G.schemes["facer"]) then
+		temp.action:add_precondition(world_property(xrs_facer.evid_facer,false))
+		temp.action:add_precondition(world_property(xrs_facer.evid_steal_up_facer,false))
+	end
+	--if (_G.schemes["fight_from_cover"]) then 
+	--	temp.action:add_precondition(world_property(axr_fight_from_cover.evaid,false))
+	--end
+	
+	local action
+	local p = {
+				stalker_ids.action_combat_planner,
+				--xr_actions_id.state_mgr + 1,
+				xr_actions_id.state_mgr + 2,
+				xr_actions_id.alife
+	}
+	for i=1,#p do
+		--printf("ACTION_ALIFE_ID(rx_ff.configure_actions): " .. tostring(p[i]))
+		action = manager:action(p[i])
+		if (action) then
+			action:add_precondition(world_property(evaid,false))
+		else
+			printf("xr_corpse_detection: no action id p[%s]",i)
+		end
+	end
+end 
+
+function disable_generic_scheme(npc,scheme,stype)
+	local st = db.storage[npc:id()]["rx_ff"]
+	if st then
+		st.enabled = false
+	end
+end
+
+function npc_add_precondition(action)
+	if not action then return end
+	action:add_precondition(world_property(evaid,false))
+end

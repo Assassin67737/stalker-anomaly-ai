@@ -1,0 +1,738 @@
+-- varka_belief.script — ВЕРА v2, ось 1 «облако» (голая, 22.10.2026)
+--
+-- Вера принадлежит ОТРЯДУ (дирижёру), исполняется глазами бойцов через «чисто» (clear конструктора:
+-- «тут его нет — вычеркнуть»). Старый веер varka_lkp живёт рядом (trace npc_pos, эхо, тревоги),
+-- но поиск при V2 (varka_search_action) читает только это облако.
+--
+-- ФИЗИКА (без Сталкера): беглец — точка, бежит не быстрее V по проходимой земле; ищущие — глаза.
+--   1. Движение — волна, не диффузия: масса едет со скоростью V по навмешу, стены держат, углы обходит.
+--   2. Свет вычёркивает: что видит хоть один боец — «чисто». Облако живёт только в тени.
+--   3. Тень затекает обратно: бегущая масса едет в любую сторону, в том числе в вычищенное, если туда
+--      никто не смотрит. Край между вычищенным и грязным — ЩЕЛЬ.
+--   4. Масса сохраняется: пока нет вестей, он где-то есть. Глаза съедают массу (eaten), утечка за
+--      район — lost. Остаток u = «он может быть здесь, и мы его ещё не нашли». u < FORGET — вера кончилась.
+--   5. Бегущие и залёгшие: бегущий каждую секунду с вероятностью LAMBDA прячется → осадок (h).
+--   6. Инерция: в момент потери он бежал туда — масса сначала едет по курсу, потом курс теряется (TURN_S).
+--   7. Глаз не мгновенный: близко вычёркивает за полсекунды, далеко — за секунды (KAPPA_*).
+--   8. Вести схлопывают: увидели — облака нет; новая память движка (звук, попадание) — облако заново.
+--
+-- Клетки: сетка CELL м по навмешу. В клетке 8 «бегущих» по курсам (r[1..8]) и залёгшие (h).
+-- Соседи клетки — level.vertex_in_direction от её ноды к центру соседней клетки (упёрлись — стена).
+--
+-- Раздача (голая, без формаций): тени (связные куски облака) сортируются по массе. Самую тяжёлую —
+-- ЗАГЛЯНУТЬ (ближний боец идёт к её краю и смотрит в неё). Следующие — ДЕРЖАТЬ КРАЙ (сесть так, чтобы
+-- видеть щель, и смотреть в неё: что потечёт из тени, съедят глаза). Лишние бойцы заглядывают дальше.
+--
+-- API (для рук — varka_clear):
+--   alive(npc)           → есть ли у отряда живое облако
+--   role(npc)            → роль бойца {kind="peek"|"hold", vid, x, y, z, look, deep [, avid, ax, ay, az]} или nil;
+--                          роли нет, если боец видит врага, ранен или под приказом дирижёра
+--   sees_point(npc, pos) → видит ли боец точку (луч по статике от глаз)
+--
+-- Trace: bel (раз в секунду на отряд: клетки, щели, роли), bel_seed, bel_end.
+
+local DEBUG       = true
+local CELL        = 3      -- м, сторона клетки
+local BAND        = 2.5    -- м, «этаж»: клетки на разной высоте — разные
+local V           = 4.0    -- м/с, предел бега беглеца (закон 1)
+local LAMBDA      = 1/6    -- 1/с, как часто бегущий прячется (закон 5): в среднем бежит 6 с
+local TURN_S      = 2.5    -- с, сколько держит курс (закон 6)
+local R_AREA      = 90     -- м от точки потери: дальше — «ушёл из района»
+local EYE_R       = 60     -- м, дальность глаз
+local EYE_FOV     = 65     -- °, полуугол обзора от направления тела
+local EYE_H       = 1.6    -- м, глаза стоя
+local EYE_H_CR    = 1.0    -- м, глаза сидя
+local TARGET_H    = 1.0    -- м, «он» над землёй: грудь сидящего, пояс стоящего
+local KAPPA_NEAR  = 4.0    -- 1/с, скорость вычёркивания вблизи (закон 7)
+local KAPPA_FAR   = 0.8    -- 1/с, на дальности EYE_R
+local NEAR_D      = 15     -- м, «вблизи»
+local TOUCH_R     = 2.5    -- м, клетку под ногами вычёркиваем без луча
+local RAYS        = 40     -- новых лучей на бойца за взгляд (повторные — из кэша)
+local EPS         = 5e-5   -- масса клетки меньше — в клетке его нет
+local FORGET      = 0.05   -- u меньше — вера кончилась
+local HOLD_MIN    = 0.03   -- тень легче — её щель не держим
+local PEEK_MIN    = 0.01   -- тень легче — крошка, туда не ходим
+local MAX_SHADOWS = 6
+local GAP_SEP     = 7      -- м, вторая щель тени не ближе к первой
+local PEEK_LOOK   = 25     -- м, заглядывающий смотрит на самую густую клетку тени, если она не дальше
+local MAX_AGE     = 120000 -- мс, дольше вера не живёт
+local LOST_MS     = 900    -- мс без взгляда отряда — враг потерян
+local GRACE_MS    = 6000   -- мс без контакта со своей целью — боец свободен для веры. Было 2000; аудит ночи 22.10
+                           -- (80 боёв): руки брали бойца через 3.5 с (медиана) — враг ещё за тем же укрытием,
+                           -- «заглянуть» = лобовая; за 10 с убит 17% (до 3 с) против 10% (6–20 с) при тех же ~28%
+                           -- попаданий, бои 6–8 бойцов сжались втрое. За 6 с беглец уходит на V·6 ≈ 24 м — искать есть смысл.
+local SEED_WINDOW = 30000  -- мс, насколько старую память движка можно взять в посев
+local FF_MAX      = 10     -- с, перемотка возраста при посеве
+local TICK_MS     = 500
+local ASSIGN_MS   = 1000
+local EMIT_MS     = 1000
+local EXPAND_MAX  = 120    -- новых клеток за тик (×8 запросов навмеша)
+local EMIT_CELLS  = 250    -- клеток в trace за раз (самые густые)
+local RQT_STATIC  = 2      -- collide::rqtStatic
+local INVALID_VID = 4294967295
+
+-- курсы: (dx, dz) по сетке; 1 = +x, дальше против часовой
+local DIRS = { {1,0}, {1,1}, {0,1}, {-1,1}, {-1,0}, {-1,-1}, {0,-1}, {1,-1} }
+local DLEN = {}
+for k, d in ipairs(DIRS) do DLEN[k] = CELL * math.sqrt(d[1] * d[1] + d[2] * d[2]) end
+
+local G = {}               -- [key] = { vid, x, y, z, ix, iz, nb = nil | {[курс] = key | false} }
+local squads = {}          -- [ключ отряда] = S
+local last = {}            -- [npc id] = время последнего апдейта
+local los, los_n = {}, 0   -- кэш лучей: [клетка глаз .. ">" .. клетка цели] = true | false
+local expanded = 0         -- сколько клеток раскрыто в этом тике
+
+local function emit(key, id, ev, f)
+	if varka_trace then varka_trace.emit(key, id, ev, f) end
+end
+
+-- ============ КЛЕТКИ ============
+
+local function key_of(x, y, z)
+	local ix, iz = math.floor(x / CELL), math.floor(z / CELL)
+	return ix .. "," .. iz .. "," .. math.floor(y / BAND), ix, iz
+end
+
+local function cell_by_vid(vid)
+	if not (vid and vid < INVALID_VID) then return nil end
+	local p = level.vertex_position(vid)
+	local key, ix, iz = key_of(p.x, p.y, p.z)
+	if not G[key] then G[key] = { vid = vid, x = p.x, y = p.y, z = p.z, ix = ix, iz = iz } end
+	return key
+end
+
+-- Клетка точки. Точка вне навмеша (на ящике, на трупе) — шагаем к ней от ноды бойца:
+-- vertex_in_direction вернёт ближайшую достижимую ноду по пути.
+local function cell_near(npc, pos)
+	local key = cell_by_vid(level.vertex_id(pos))
+	if key then return key end
+	local p = npc:position()
+	local dir = vector():set(pos.x - p.x, 0, pos.z - p.z)
+	local d = dir:magnitude()
+	if d < 0.1 then return cell_by_vid(npc:level_vertex_id()) end
+	return cell_by_vid(level.vertex_in_direction(npc:level_vertex_id(), dir, d))
+end
+
+-- Соседи клетки: от её ноды по прямой к центру соседней клетки. Упёрлись раньше — стена (false).
+-- Раскрываем лениво, когда в клетку пришла бегущая масса; nil — бюджет тика кончился.
+local function expand(key)
+	local c = G[key]
+	if c.nb then return c.nb end
+	if expanded >= EXPAND_MAX then return nil end
+	expanded = expanded + 1
+	local nb = {}
+	for k, d in ipairs(DIRS) do
+		local tx, tz = (c.ix + d[1] + 0.5) * CELL, (c.iz + d[2] + 0.5) * CELL
+		local dir = vector():set(tx - c.x, 0, tz - c.z)
+		local vid = level.vertex_in_direction(c.vid, dir, dir:magnitude())
+		nb[k] = false
+		if vid and vid < INVALID_VID and vid ~= c.vid then
+			local p = level.vertex_position(vid)
+			if math.floor(p.x / CELL) == c.ix + d[1] and math.floor(p.z / CELL) == c.iz + d[2] then
+				nb[k] = cell_by_vid(vid)
+			end
+		end
+	end
+	c.nb = nb
+	return nb
+end
+
+-- ============ ОБЛАКО ============
+
+local function zero8() return { 0, 0, 0, 0, 0, 0, 0, 0 } end
+
+-- Посевная клетка: масса 1, вся бегущая. Есть скорость (закон 6) — половина по курсу.
+local function new_cloud(eid, key, stamp, vx, vz)
+	local r = zero8()
+	local sp = vx and math.sqrt(vx * vx + vz * vz) or 0
+	if sp > 1 then
+		local k = math.floor(math.atan2(vz, vx) / (math.pi / 4) + 0.5) % 8 + 1
+		r[k] = 0.3
+		r[k % 8 + 1] = 0.1          -- соседний курс против часовой
+		r[(k + 6) % 8 + 1] = 0.1    -- соседний по часовой
+		for i = 1, 8 do r[i] = r[i] + 0.5 / 8 end
+	else
+		for i = 1, 8 do r[i] = 1 / 8 end
+	end
+	local c = G[key]
+	return { eid = eid, born = time_global(), stamp = stamp, ox = c.x, oz = c.z,
+	         cells = { [key] = { r = r, h = 0, t = 1 } }, u = 1, eaten = 0, lost = 0 }
+end
+
+-- Один шаг законов 1, 3, 5, 6. Двухфазно: уехавшее кладём после прохода — за шаг не дальше клетки.
+local function flow(cl, dt)
+	local stop = 1 - math.exp(-LAMBDA * dt)
+	local turn = 1 - math.exp(-dt / TURN_S)
+	local moved = {}
+	for key, m in pairs(cl.cells) do
+		local r = m.r
+		local run = 0
+		for k = 1, 8 do run = run + r[k] end
+		if run > EPS * 1e-3 then
+			-- закон 5: часть бегущих залегла
+			m.h = m.h + run * stop
+			-- закон 6: часть оставшихся выбрала курс заново (поровну во все стороны)
+			local keep = 1 - stop
+			local even = run * keep * turn / 8
+			for k = 1, 8 do r[k] = r[k] * keep * (1 - turn) + even end
+			local nb = expand(key)
+			if nb then
+				local bounce = nil
+				for k = 1, 8 do
+					local out = r[k] * math.min(1, V * dt / DLEN[k])
+					if out > 0 then
+						r[k] = r[k] - out
+						local to = nb[k]
+						if to then
+							local t = G[to]
+							local dx, dz = t.x - cl.ox, t.z - cl.oz
+							if dx * dx + dz * dz > R_AREA * R_AREA then
+								cl.lost = cl.lost + out              -- ушёл из района
+							else
+								local add = moved[to]
+								if not add then add = zero8(); moved[to] = add end
+								add[k] = add[k] + out
+							end
+						else
+							-- стена: скользит вдоль неё (курсы ±45° вдвое охотнее, чем ±90°)
+							bounce = bounce or zero8()
+							local a1, b1 = (k % 8) + 1, ((k + 6) % 8) + 1
+							local a2, b2 = ((k + 1) % 8) + 1, ((k + 5) % 8) + 1
+							local w = { [a1] = nb[a1] and 2 or 0, [b1] = nb[b1] and 2 or 0,
+							            [a2] = nb[a2] and 1 or 0, [b2] = nb[b2] and 1 or 0 }
+							local sum = w[a1] + w[b1] + w[a2] + w[b2]
+							if sum > 0 then
+								for i, wi in pairs(w) do bounce[i] = bounce[i] + out * wi / sum end
+							else
+								m.h = m.h + out                       -- тупик: залёг
+							end
+						end
+					end
+				end
+				if bounce then for k = 1, 8 do r[k] = r[k] + bounce[k] end end
+			end
+		end
+	end
+	for key, add in pairs(moved) do
+		local m = cl.cells[key]
+		if not m then m = { r = zero8(), h = 0, t = 0 }; cl.cells[key] = m end
+		for k = 1, 8 do m.r[k] = m.r[k] + add[k] end
+	end
+end
+
+local function cell_total(m)
+	local t = m.h
+	for k = 1, 8 do t = t + m.r[k] end
+	m.t = t
+	return t
+end
+
+-- ============ ОТРЯД ============
+
+local function squad_of(key)
+	local S = squads[key]
+	if not S then
+		-- lit[клетка] = когда её последний раз осветили глаза отряда
+		S = { clouds = {}, seen = {}, known = {}, members = {}, roles = {}, shadows = {}, M = {}, lit = {} }
+		squads[key] = S
+	end
+	return S
+end
+
+local function end_cloud(S, key, eid, why)
+	local cl = S.clouds[eid]
+	if not cl then return end
+	S.clouds[eid] = nil
+	emit(key, 0, "bel_end", { eid = eid, why = why, u = cl.u, eaten = cl.eaten, lost = cl.lost,
+	                          age = time_global() - cl.born })
+	if DEBUG then printf(string.format("VARKA-BEL: sq %s enemy %s — вера кончилась: %s (u=%.2f)", tostring(key), eid, why, cl.u)) end
+end
+
+-- Закон 8: посев. age — сколько мс назад была весть; облако перематываем на этот возраст.
+local function seed(S, key, eid, ckey, age, vx, vz, why)
+	if not ckey then return end
+	local now = time_global()
+	local cl = new_cloud(eid, ckey, now - age, vx, vz)
+	local ff = math.min(age / 1000, FF_MAX)
+	while ff > 0.01 do
+		expanded = 0
+		local dt = math.min(0.5, ff)
+		flow(cl, dt)
+		ff = ff - dt
+	end
+	S.clouds[eid] = cl
+	local c = G[ckey]
+	emit(key, 0, "bel_seed", { eid = eid, px = c.x, pz = c.z, vx = vx or 0, vz = vz or 0, age = age, why = why })
+	if DEBUG then printf(string.format("VARKA-BEL: sq %s enemy %s — посев (%s, %d мс)", tostring(key), eid, why, age)) end
+end
+
+-- Что видит и помнит боец о своей цели: взгляд, потеря, свежая память движка.
+-- S.known[eid] — время последней вести, которую отряд уже пустил в дело: старая память движка
+-- не сеет облако повторно (иначе «чисто» → посев из той же памяти → «чисто» по кругу).
+local function sense(S, key, npc, now)
+	local e = npc:best_enemy()
+	if not (e and e:alive()) then return end
+	local eid = e:id()
+	local s = S.seen[eid]
+	if npc:see(e) then
+		if not s or now - s.t >= 300 then
+			local p = e:position()
+			local vx, vz = 0, 0
+			if s and now - s.t < 2500 then
+				local dt = (now - s.t) / 1000
+				vx, vz = (p.x - s.x) / dt, (p.z - s.z) / dt
+			end
+			S.seen[eid] = { x = p.x, y = p.y, z = p.z, t = now, vx = vx, vz = vz, vid = e:level_vertex_id() }
+		end
+		S.known[eid] = now
+		if S.clouds[eid] then end_cloud(S, key, eid, "seen") end
+		return
+	end
+	local mt = npc:memory_time(e)
+	local fresh_mem = mt and mt > (S.known[eid] or 0) + 1000 and now - mt < SEED_WINDOW
+	if fresh_mem then
+		-- новая весть от движка (услышал, получил пулю) — облако заново из неё
+		S.known[eid] = mt
+		seed(S, key, eid, cell_near(npc, npc:memory_position(e)), now - mt, nil, nil, "mem")
+	elseif s and not S.clouds[eid] and now - s.t >= LOST_MS then
+		if now - s.t < SEED_WINDOW then
+			seed(S, key, eid, cell_by_vid(s.vid), now - s.t, s.vx, s.vz, "lost")
+		end
+		S.seen[eid] = nil                  -- потеря отработана; следующая — после нового взгляда
+	end
+end
+
+-- Тик облаков отряда: законы 1–6, итог массы, конец веры.
+local function tick(S, key, now)
+	local dt = math.min(1, (now - (S.tick_t or now - TICK_MS)) / 1000)
+	S.tick_t = now
+	expanded = 0
+	for eid, cl in pairs(S.clouds) do
+		flow(cl, dt)
+		local u = 0
+		for _, m in pairs(cl.cells) do u = u + cell_total(m) end
+		cl.u = u
+		if u < FORGET then end_cloud(S, key, eid, cl.eaten >= cl.lost and "clear" or "away")
+		elseif now - cl.born > MAX_AGE then end_cloud(S, key, eid, "old") end
+	end
+	local M = {}
+	for _, cl in pairs(S.clouds) do
+		for k, m in pairs(cl.cells) do M[k] = (M[k] or 0) + m.t end
+	end
+	S.M = M
+end
+
+-- ============ ГЛАЗА (законы 2, 7) ============
+
+-- Луч движка не ловит задние грани: тонкую стену «изнутри» он не видит. Поэтому пускаем в обе
+-- стороны (как rays.c двойника) — стена между точками закроет хотя бы один из двух лучей.
+local rp
+local function ray_free(from, dir, d)
+	rp:set_position(from)
+	rp:set_direction(dir)
+	rp:set_range(d)
+	return not rp:query() or rp:get_distance() >= d - 0.3
+end
+
+local function line_clear(from, to)
+	if not rp then
+		rp = ray_pick()
+		rp:set_flags(RQT_STATIC)
+	end
+	local dir = vector():set(to):sub(from)
+	local d = dir:magnitude()
+	if d < 0.5 then return true end
+	dir:normalize()
+	if not ray_free(from, dir, d) then return false end
+	return ray_free(to, vector():set(dir):mul(-1), d)
+end
+
+local function eye_of(npc)
+	local p = npc:position()
+	local crouch = npc:body_state() == move.crouch
+	return vector():set(p.x, p.y + (crouch and EYE_H_CR or EYE_H), p.z), p, crouch
+end
+
+local function kappa(d)
+	if d <= NEAR_D then return KAPPA_NEAR end
+	local f = math.min(1, (d - NEAR_D) / (EYE_R - NEAR_D))
+	return KAPPA_NEAR + (KAPPA_FAR - KAPPA_NEAR) * f
+end
+
+-- Боец смотрит: клетки в секторе и на прямой видимости теряют массу exp(-κ·dt).
+local function eyes(S, npc, dt)
+	local eye, p, crouch = eye_of(npc)
+	local fkey = key_of(p.x, p.y, p.z) .. (crouch and "c" or "s")
+	local d = npc:direction()
+	local dl = math.sqrt(d.x * d.x + d.z * d.z)
+	if dl < 0.01 then return end
+	local fx, fz = d.x / dl, d.z / dl
+	local cosf = math.cos(math.rad(EYE_FOV))
+	local lit, todo = {}, {}
+	for key, m in pairs(S.M) do
+		if m >= EPS then
+			local c = G[key]
+			local dx, dz = c.x - p.x, c.z - p.z
+			local dist = math.sqrt(dx * dx + dz * dz)
+			if dist <= TOUCH_R then
+				lit[key] = 0.05
+			elseif dist <= EYE_R and (dx * fx + dz * fz) / dist >= cosf then
+				local seen = los[fkey .. ">" .. key]
+				if seen == nil then todo[#todo + 1] = key
+				elseif seen then lit[key] = math.exp(-kappa(dist) * dt) end
+			end
+		end
+	end
+	if #todo > RAYS then table.sort(todo, function(a, b) return S.M[a] > S.M[b] end) end
+	for i = 1, math.min(#todo, RAYS) do
+		local key = todo[i]
+		local c = G[key]
+		local ok = line_clear(eye, vector():set(c.x, c.y + TARGET_H, c.z))
+		if los_n > 60000 then los, los_n = {}, 0 end
+		los[fkey .. ">" .. key] = ok
+		los_n = los_n + 1
+		if ok then
+			local dx, dz = c.x - p.x, c.z - p.z
+			lit[key] = math.exp(-kappa(math.sqrt(dx * dx + dz * dz)) * dt)
+		end
+	end
+	local now = time_global()
+	for key, f in pairs(lit) do
+		S.lit[key] = now
+		for _, cl in pairs(S.clouds) do
+			local m = cl.cells[key]
+			if m then
+				local before = m.t or cell_total(m)
+				m.h = m.h * f
+				for k = 1, 8 do m.r[k] = m.r[k] * f end
+				local after = cell_total(m)
+				cl.eaten = cl.eaten + before - after
+			end
+		end
+		if S.M[key] then S.M[key] = S.M[key] * f end
+	end
+end
+
+-- ============ РАЗДАЧА: тени, щели, роли ============
+
+-- Тень — связный кусок облака (клетки с массой ≥ EPS). Край тени — её клетки рядом с вычищенными
+-- (облако туда дошло, глаза её осветили при живых облаках, массы там нет). Щель тени — самая густая
+-- клетка края.
+local function find_shadows(S)
+	local M, lit = S.M, S.lit
+	local since = math.huge
+	for _, cl in pairs(S.clouds) do since = math.min(since, cl.born) end
+	local comp, list = {}, {}
+	for key, m in pairs(M) do
+		if m >= EPS and not comp[key] then
+			local sh = { mass = 0, top = key, topm = 0, front = {} }
+			list[#list + 1] = sh
+			comp[key] = sh
+			local stack = { key }
+			while #stack > 0 do
+				local k = stack[#stack]
+				stack[#stack] = nil
+				local mk = M[k]
+				sh.mass = sh.mass + mk
+				if mk > sh.topm then sh.top, sh.topm = k, mk end
+				local nb = G[k].nb
+				if nb then
+					local edge = false
+					for dk = 1, 8 do
+						local n = nb[dk]
+						if n then
+							if (M[n] or 0) >= EPS then
+								if not comp[n] then comp[n] = sh; stack[#stack + 1] = n end
+							elseif M[n] and lit[n] and lit[n] >= since then
+								edge = true
+							end
+						end
+					end
+					if edge then sh.front[#sh.front + 1] = k end
+				end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.mass > b.mass end)
+	while #list > MAX_SHADOWS do list[#list] = nil end
+	for _, sh in ipairs(list) do
+		table.sort(sh.front, function(a, b) return M[a] > M[b] end)
+		sh.gap = sh.front[1]
+		if sh.gap then
+			local g = G[sh.gap]
+			for i = 2, #sh.front do
+				local c = G[sh.front[i]]
+				local dx, dz = c.x - g.x, c.z - g.z
+				if dx * dx + dz * dz >= GAP_SEP * GAP_SEP then sh.gap2 = sh.front[i]; break end
+			end
+		end
+	end
+	return list
+end
+
+-- Свободен для веры: жив, не ранен, не под приказом дирижёра и GRACE_MS не видел и не слышал свою
+-- цель (свежий контакт — дело ванильного боя; без паузы боец метался бы между боем и поиском при
+-- каждом нырке врага за укрытие).
+local function free(o)
+	if not (o and o:alive()) or IsWounded(o) then return false end
+	local st = db.storage[o:id()]
+	if st and st.varka_order_active then return false end
+	local be = o:best_enemy()
+	if not be then return true end
+	if o:see(be) then return false end
+	local mt = o:memory_time(be)
+	return not (mt and mt > 0 and time_global() - mt < GRACE_MS)
+end
+
+local function fighters(S, now)
+	local out = {}
+	for id, t in pairs(S.members) do
+		if now - t < 1500 then
+			local o = level.object_by_id(id)
+			if free(o) then
+				local p = o:position()
+				out[#out + 1] = { id = id, x = p.x, z = p.z }
+			end
+		end
+	end
+	return out
+end
+
+-- ЗАСАДА У УГЛА (деталь II порядка, 22.10, юзер: «гусиным шагом вдоль стены к углу и ждать, нацелившись
+-- на место выхода»). Точка засады — вычищенная клетка в 1–2 шагах от щели: оттуда щель видна сидя, и
+-- стена прикрывает со стороны тени (стены = навмеш кончился: nb[курс] == false). Ближнее кольцо чуть лучше.
+local function wall_toward(c, t)
+	local nb = G[c].nb
+	if not nb then return 0 end
+	local dx, dz = G[t].x - G[c].x, G[t].z - G[c].z
+	local l = math.sqrt(dx * dx + dz * dz)
+	if l < 0.1 then return 0 end
+	local s = 0
+	for k, d in ipairs(DIRS) do
+		if nb[k] == false then
+			local cos = (d[1] * dx + d[2] * dz) / (l * DLEN[k] / CELL)
+			if cos > 0 then s = s + cos end
+		end
+	end
+	return s
+end
+
+local function sees_cell(c, g)
+	local key = "a" .. c .. ">" .. g
+	local ok = los[key]
+	if ok == nil then
+		local a, b = G[c], G[g]
+		ok = line_clear(vector():set(a.x, a.y + EYE_H_CR, a.z), vector():set(b.x, b.y + TARGET_H, b.z))
+		los[key] = ok
+		los_n = los_n + 1
+	end
+	return ok
+end
+
+local function ambush_of(S, gap, toward, since)
+	local best, bs = nil, -1
+	local ring, seen = { gap }, { [gap] = true }
+	for depth = 1, 2 do
+		local nxt = {}
+		for _, k in ipairs(ring) do
+			local nb = G[k].nb
+			if nb then
+				for d = 1, 8 do
+					local c = nb[d]
+					if c and not seen[c] then
+						seen[c] = true
+						nxt[#nxt + 1] = c
+						if (S.M[c] or 0) < EPS and (S.lit[c] or 0) >= since then
+							local sc = wall_toward(c, toward) - (depth - 1) * 0.5
+							if sc > bs and sees_cell(c, gap) then best, bs = c, sc end
+						end
+					end
+				end
+			end
+		end
+		ring = nxt
+	end
+	return best
+end
+
+-- Роль: at — щель (или гуща тени, если щели ещё нет), look — куда целиться (в саму щель = место выхода),
+-- deep — гуща тени (туда смотрит, шагнув за угол), amb* — точка засады (нет — идём прямо к at).
+local function make_role(S, kind, at, deep, since)
+	local a, d = G[at], G[deep]
+	local r = { kind = kind, vid = a.vid, x = a.x, y = a.y, z = a.z,
+	            look = vector():set(a.x, a.y + TARGET_H, a.z), deep = vector():set(d.x, d.y + TARGET_H, d.z) }
+	local amb = ambush_of(S, at, deep, since)
+	if amb then
+		local c = G[amb]
+		r.avid, r.ax, r.ay, r.az = c.vid, c.x, c.y, c.z
+	end
+	return r
+end
+
+-- Заглядывающий смотрит в гущу тени, если она недалеко от края, иначе — на сам край.
+local function peek_look(sh, at)
+	local a, t = G[at], G[sh.top]
+	local dx, dz = t.x - a.x, t.z - a.z
+	return dx * dx + dz * dz <= PEEK_LOOK * PEEK_LOOK and sh.top or at
+end
+
+local function assign(S, now)
+	S.assign_t = now
+	if not next(S.clouds) then S.roles, S.shadows = {}, {}; return end
+	local shadows = find_shadows(S)
+	S.shadows = shadows
+	-- цели по порядку важности:
+	--   1) заглянуть в самую тяжёлую тень; 2) держать щели остальных тяжёлых теней;
+	--   3) заглянуть во вторую щель главной тени; 4) заглянуть в лёгкие тени (крошки < PEEK_MIN — нет);
+	--   5) остальные прикрывают заглядывающего: держат край той же тени
+	local targets = {}
+	local first = shadows[1]
+	if first then
+		local at = first.gap or first.top
+		targets[#targets + 1] = { kind = "peek", at = at, deep = peek_look(first, at) }
+	end
+	for i = 2, #shadows do
+		local sh = shadows[i]
+		if sh.gap and sh.mass >= HOLD_MIN then
+			targets[#targets + 1] = { kind = "hold", at = sh.gap, deep = peek_look(sh, sh.gap) }
+		end
+	end
+	if first and first.gap2 then
+		targets[#targets + 1] = { kind = "peek", at = first.gap2, deep = peek_look(first, first.gap2) }
+	end
+	for i = 2, #shadows do
+		local sh = shadows[i]
+		if sh.mass >= PEEK_MIN and not (sh.gap and sh.mass >= HOLD_MIN) then
+			local at = sh.gap or sh.top
+			targets[#targets + 1] = { kind = "peek", at = at, deep = peek_look(sh, at) }
+		end
+	end
+	if first then
+		for _ = 1, 4 do
+			if first.gap then targets[#targets + 1] = { kind = "hold", at = first.gap, deep = peek_look(first, first.gap) }
+			else targets[#targets + 1] = { kind = "peek", at = first.top, deep = first.top } end
+		end
+	end
+	-- каждой цели — ближний свободный боец; кто уже делал то же рядом (6 м), тот в приоритете
+	local fs, used, roles = fighters(S, now), {}, {}
+	local since = math.huge
+	for _, cl in pairs(S.clouds) do since = math.min(since, cl.born) end
+	for _, tg in ipairs(targets) do
+		local c = G[tg.at]
+		local best, bd = nil, nil
+		for _, f in ipairs(fs) do
+			if not used[f.id] then
+				local dx, dz = f.x - c.x, f.z - c.z
+				local d = math.sqrt(dx * dx + dz * dz)
+				local pr = S.roles[f.id]
+				if pr and pr.kind == tg.kind then
+					local px, pz = pr.x - c.x, pr.z - c.z
+					if px * px + pz * pz < 36 then d = d - 10 end
+				end
+				if not bd or d < bd then best, bd = f, d end
+			end
+		end
+		if not best then break end
+		used[best.id] = true
+		roles[best.id] = make_role(S, tg.kind, tg.at, tg.deep, since)
+	end
+	S.roles = roles
+end
+
+local function emit_state(S, key, now)
+	S.emit_t = now
+	if not (varka_trace and next(S.clouds)) then return end
+	local list = {}
+	for k, m in pairs(S.M) do if m >= EPS then list[#list + 1] = k end end
+	table.sort(list, function(a, b) return S.M[a] > S.M[b] end)
+	local cells = {}
+	for i = 1, math.min(#list, EMIT_CELLS) do
+		local c = G[list[i]]
+		-- ix, iz клетки; высота ×10; масса в стотысячных
+		cells[i] = string.format("%d,%d,%d,%d", c.ix, c.iz, math.floor(c.y * 10 + 0.5),
+		                         math.floor(S.M[list[i]] * 1e5 + 0.5))
+	end
+	local gaps = {}
+	for _, sh in ipairs(S.shadows) do
+		if sh.gap then
+			local g = G[sh.gap]
+			gaps[#gaps + 1] = string.format("%.1f,%.1f,%d", g.x, g.z, math.floor(sh.mass * 1000 + 0.5))
+		end
+	end
+	-- роль: id, вид, щель x z, гуща тени x z [, засада x z]
+	local roles = {}
+	for id, r in pairs(S.roles) do
+		local amb = r.ax and string.format(",%.1f,%.1f", r.ax, r.az) or ""
+		roles[#roles + 1] = string.format("%d,%s,%.1f,%.1f,%.1f,%.1f", id, r.kind == "hold" and "h" or "p",
+		                                  r.x, r.z, r.deep.x, r.deep.z) .. amb
+	end
+	local u, eaten, lost, n = 0, 0, 0, 0
+	for _, cl in pairs(S.clouds) do
+		u, eaten, lost, n = u + cl.u, eaten + cl.eaten, lost + cl.lost, n + 1
+	end
+	emit(key, 0, "bel", { cs = CELL, u = u, eaten = eaten, lost = lost, clouds = n, cells = #list,
+	                      c = table.concat(cells, ";"), g = table.concat(gaps, ";"), a = table.concat(roles, ";") })
+end
+
+-- ============ ПУБЛИЧНОЕ API ============
+
+local function squad_key(npc)
+	return varka_lkp.get_squad_key(npc)
+end
+
+function alive(npc)
+	if IsWounded(npc) then return false end
+	local S = squads[squad_key(npc)]
+	return S ~= nil and next(S.clouds) ~= nil
+end
+
+function role(npc)
+	local S = squads[squad_key(npc)]
+	if not (S and next(S.clouds) and free(npc)) then return nil end
+	return S.roles[npc:id()]
+end
+
+function sees_point(npc, pos)
+	local eye = eye_of(npc)
+	return line_clear(eye, pos)
+end
+
+-- ============ КОЛБЭКИ ============
+
+local function npc_update(npc)
+	local id = npc:id()
+	local now = time_global()
+	if last[id] and now - last[id] < TICK_MS then return end
+	local dt = math.min(1, last[id] and (now - last[id]) / 1000 or TICK_MS / 1000)
+	last[id] = now
+	if not (npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local key = squad_key(npc)
+	if not squads[key] and not npc:best_enemy() then return end
+	local S = squad_of(key)
+	S.members[id] = now
+	sense(S, key, npc, now)
+	if not next(S.clouds) then return end
+	if now - (S.tick_t or 0) >= TICK_MS then tick(S, key, now) end
+	eyes(S, npc, dt)
+	if now - (S.assign_t or 0) >= ASSIGN_MS then assign(S, now) end
+	if now - (S.emit_t or 0) >= EMIT_MS then emit_state(S, key, now) end
+end
+
+-- Цель умерла — её облака нет ни у кого (закон 8: весть о смерти тоже весть).
+local function npc_death(victim)
+	if not victim then return end
+	local vid = victim:id()
+	last[vid] = nil
+	for key, S in pairs(squads) do
+		end_cloud(S, key, vid, "dead")
+		S.seen[vid] = nil
+		S.members[vid] = nil
+		S.roles[vid] = nil
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update",         npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

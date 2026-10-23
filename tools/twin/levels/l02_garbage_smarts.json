@@ -1,0 +1,116 @@
+[
+ {
+  "name": "gar_smart_terrain_1_5",
+  "x": -204.9933,
+  "z": -28.9351,
+  "vid": 20530
+ },
+ {
+  "name": "gar_smart_terrain_1_7",
+  "x": -221.8706,
+  "z": -144.669,
+  "vid": 12451
+ },
+ {
+  "name": "gar_smart_terrain_2_4",
+  "x": -176.8745,
+  "z": 42.2162,
+  "vid": 37438
+ },
+ {
+  "name": "gar_smart_terrain_4_5",
+  "x": 14.6996,
+  "z": -14.7155,
+  "vid": 172192
+ },
+ {
+  "name": "gar_smart_terrain_5_2",
+  "x": 39.7599,
+  "z": 218.0324,
+  "vid": 200351
+ },
+ {
+  "name": "gar_smart_terrain_5_4",
+  "x": 1.3097,
+  "z": 92.5925,
+  "vid": 160704
+ },
+ {
+  "name": "gar_smart_terrain_5_5",
+  "x": 79.573,
+  "z": -19.1771,
+  "vid": 235839
+ },
+ {
+  "name": "gar_smart_terrain_5_6",
+  "x": 81.1868,
+  "z": -134.4153,
+  "vid": 236848
+ },
+ {
+  "name": "gar_smart_terrain_5_8",
+  "x": 41.469,
+  "z": -292.906,
+  "vid": 201184
+ },
+ {
+  "name": "gar_smart_terrain_6_1",
+  "x": 163.8155,
+  "z": 256.2296,
+  "vid": 299703
+ },
+ {
+  "name": "gar_smart_terrain_6_3",
+  "x": 99.4084,
+  "z": 169.3987,
+  "vid": 251516
+ },
+ {
+  "name": "gar_smart_terrain_6_6",
+  "x": 181.321,
+  "z": -120.314,
+  "vid": 312536
+ },
+ {
+  "name": "gar_smart_terrain_6_7",
+  "x": 96.6073,
+  "z": -224.656,
+  "vid": 248966
+ },
+ {
+  "name": "gar_smart_terrain_7_4",
+  "x": 168.2492,
+  "z": 49.9409,
+  "vid": 302890
+ },
+ {
+  "name": "gar_smart_terrain_8_3",
+  "x": 249.9987,
+  "z": 155.1642,
+  "vid": 345704
+ },
+ {
+  "name": "gar_smart_terrain_8_5",
+  "x": 280.0445,
+  "z": 6.2843,
+  "vid": 354673
+ },
+ {
+  "name": "gar_smart_terrain_4_2",
+  "x": -74.1605,
+  "z": 149.7702,
+  "vid": 115579
+ },
+ {
+  "name": "gar_smart_terrain_3_7",
+  "x": -76.9957,
+  "z": -212.063,
+  "vid": 113942
+ },
+ {
+  "name": "gar_smart_terrain_3_5",
+  "x": -100.8105,
+  "z": 8.4093,
+  "vid": 100347
+ }
+]

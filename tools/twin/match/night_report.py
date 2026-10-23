@@ -46,9 +46,13 @@ def events(path):
             pass
 
 
+RANK = ['novice', 'trainee', 'experienced', 'professional', 'veteran', 'expert', 'master', 'legend']
+
+
 def side_force(st):
     q = st['squads']
-    return sum(TIER.get(s['tier'], 1) * s['n'] for s in q) / max(1, sum(s['n'] for s in q)), \
+    lv = lambda s: RANK.index(s['rank']) * 2 / 7 if s.get('rank') else TIER.get(s['tier'], 1)  # бои по рангам: 0..7 → 0..2
+    return sum(lv(s) * s['n'] for s in q) / max(1, sum(s['n'] for s in q)), \
         sum(s['n'] for s in q)
 
 

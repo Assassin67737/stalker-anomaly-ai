@@ -1,0 +1,64 @@
+{
+  "id": "night_squads",
+  "level": "here",
+  "hour": 10,
+  "limit_s": 300,
+  "zone": {
+    "smart": "random",
+    "r": 15,
+    "defend": ["agr_smart_terrain_6_4"]
+  },
+  "spectator": {
+    "aside": 30
+  },
+  "clear_r": 150,
+  "ghost": true,
+  "speed": 1,
+  "cvars": {
+    "ai_aim_fire_angle": 0.087,
+    "ai_reload_threshold": 0.2
+  },
+  "matchup": "random",
+  "sides": {
+    "A": {
+      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "tier": "random",
+          "n": [
+            3,
+            5
+          ],
+          "at": {
+            "smart_ring": [
+              50,
+              120
+            ]
+          }
+        }
+      ]
+    },
+    "B": {
+      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "random",
+          "tier": "random",
+          "n": [
+            3,
+            5
+          ],
+          "at": {
+            "smart_ring": [
+              50,
+              120
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -17,6 +17,9 @@
 //       (u16), 65535 = до range ничего нет.
 //   rays probe <cform> <rays.f32> <out.bin>
 //       rays = N × (ox,oy,oz, dx,dy,dz, range). Ответ: N × (dist f32, tri i32), tri = -1 мимо.
+//   rays seg   <cform> <segs.f32> <out.u8>
+//       segs = N × (ax,ay,az, bx,by,bz). Ответ: N × u8, 1 — отрезок свободен в обе стороны (как rays_clear).
+//       Для квадрантов (quads/bake_quads.py, 23.10): кто кого видит.
 //
 // Сборка: gcc -O3 -fopenmp -o rays rays.c -lm
 // Библиотека для двойника (LuaJIT FFI, sim/): gcc -O3 -fPIC -shared -DRAYS_LIB -o librays.so rays.c -lm
@@ -270,7 +273,22 @@ int main(int argc, char **argv) {
 			fwrite(&t, 4, 1, out);
 		}
 		fprintf(stderr, "rays: probe %zu лучей\n", nr);
-	} else die("режим pano или probe");
+	} else if (!strcmp(argv[1], "seg")) {
+		size_t ns = nb / 24;
+		uint8_t *res = malloc(ns);
+		#pragma omp parallel for schedule(dynamic, 1024)
+		for (size_t i = 0; i < ns; i++) {
+			float *a = &in[i * 6], *b = a + 3;
+			float d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+			float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+			if (len < 1e-4f) { res[i] = 1; continue; }
+			for (int k = 0; k < 3; k++) d[k] /= len;
+			float back[3] = {-d[0], -d[1], -d[2]};
+			res[i] = cast(a, d, len, NULL) < 0 && cast(b, back, len, NULL) < 0;
+		}
+		fwrite(res, 1, ns, out);
+		fprintf(stderr, "rays: seg %zu отрезков\n", ns);
+	} else die("режим pano, probe или seg");
 	fclose(out);
 	return 0;
 }

@@ -1,0 +1,249 @@
+-- varka_survive.script — «ЖИТЬ ХОЧУ» (23.10.2026): боец не располагает своей жизнью глупо
+--
+-- Юзер 23.10: «НПС слишком туннелируются на одного… если по нему палят, пусть меняет приоритет; а в идеале —
+-- не располагать своей жизнью так глупо. После этого бои станут засидчивее — и тогда марш-броски и командные
+-- прорывы будут смотреться». Замер 134 смертей (три серии Агропрома 22–23.10): 49 убиты НЕ тем, в кого целились;
+-- 66 перед смертельным уже получили пулю (за 10 с) и ничего не поменяли; 85 за последние 5 с шли больше 3 м.
+--
+-- Две части:
+--
+-- 1. ФОКУС НА СТРЕЛКА. Движок выбирает цель минимумом счёта (enemy_manager.cpp): видимый −1000, «меня видит»
+--    −300, «последний, кто меня ранил» — всего −5 ближе 30 м. Стрелок сбоку почти не перевешивает того, в кого
+--    уже смотришь. Рычаг из Lua один — колбэк «полезен ли враг» (xr_combat_ignore.action_process_enemy.
+--    enemy_callback): ранил ДРУГОЙ враг → FOCUS_MS остальные «бесполезны», цель — он. В упор (текущая цель
+--    ближе CQB_M, стрелок дальше) не дёргаемся. npc:set_enemy для сталкера не работает (в движке только
+--    кровосос) — поэтому колбэк.
+--
+-- 2. РЫВОК ИЗ-ПОД ВЗГЛЯДА. Попали, и стрелок меня видит → ближайшая нода в 2–8 м, которую с его глаз не видно
+--    (лучи по статике в обе стороны, как движок), — бегом туда, присесть и пересидеть HOLD_MS (дольше, если
+--    мало здоровья). Видно врага с места — бить сидя. Действие — в ГЛАВНОМ планировщике (своё только туда,
+--    см. PLANNER_MAP), главнее боя, веры, приказов и добивания. Граната рядом / ранен лежит — уступаем.
+--    Места нет (голое поле) — ничего не делаем, пусть ваниль. После — RETRY_MS без нового рывка, чтобы не
+--    прятаться вечно от одной очереди.
+--
+-- id: 188211 оценщик, 188212 действие.
+
+local EVA_SURV, ACT_SURV = 188211, 188212
+local FOCUS_MS = 4000
+local CQB_M    = 6
+local HOLD_MS  = 3500       -- пересидеть: основа, + до HOLD_HURT при пустом здоровье
+local HOLD_HURT = 5000
+local RUN_MS   = 4000       -- не добежал за это время — бросаем
+local RETRY_MS = 3000
+local DIRS     = 12
+local RINGS    = { 2, 4, 6, 8 }
+local EYE, CHEST_CR = 1.6, 0.9   -- глаза стрелка; голова присевшего
+local RQT_STATIC = 2
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), ev, f) end
+end
+
+-- ─── 1. фокус ────────────────────────────────────────────────────────────────────────
+local focus = {}  -- id бойца → { id = стрелок, t = до какого времени }
+
+local function focus_blocks(npc, enemy)
+	local f = focus[npc:id()]
+	if not f or enemy:id() == f.id then return false end
+	if time_global() > f.t then focus[npc:id()] = nil; return false end
+	local s = level.object_by_id(f.id)
+	if not (s and s:alive()) then focus[npc:id()] = nil; return false end
+	return true
+end
+
+local function patch_enemy_callback()
+	local cls = xr_combat_ignore and xr_combat_ignore.action_process_enemy
+	if not cls or cls.varka_focus then return end
+	local base = cls.enemy_callback
+	cls.enemy_callback = function(self, npc, enemy)
+		local ok = base(self, npc, enemy)
+		if ok and focus_blocks(npc, enemy) then return false end
+		return ok
+	end
+	cls.varka_focus = true
+end
+
+-- ─── 2. рывок ────────────────────────────────────────────────────────────────────────
+local rp
+local function clear(a, b)
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.3 then return true end
+	dir:normalize()
+	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
+	if rp:query() and rp:get_distance() < d - 0.3 then return false end
+	-- задние грани луч не ловит — второй луч навстречу
+	local back = vector():set(dir):invert()
+	rp:set_position(b); rp:set_direction(back); rp:set_range(d)
+	return not (rp:query() and rp:get_distance() < d - 0.3)
+end
+
+-- ближайшая нода, где присевшего не видно с глаз стрелка
+local function hide_spot(npc, shooter)
+	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
+	local eye = vector():set(shooter:position()); eye.y = eye.y + EYE
+	local base = npc:level_vertex_id()
+	local away = vector():set(npc:position()):sub(shooter:position()); away.y = 0
+	if away:magnitude() < 0.1 then away = vector():set(1, 0, 0) end
+	away:normalize()
+	local best, best_s
+	for _, r in ipairs(RINGS) do
+		for i = 0, DIRS - 1 do
+			local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
+			local v = level.vertex_in_direction(base, dir, r)
+			if v and v < 4294967295 and v ~= base and npc:accessible(v)
+				and (not db.used_level_vertex_ids or not db.used_level_vertex_ids[v]) then
+				local p = level.vertex_position(v)
+				local head = vector():set(p); head.y = head.y + CHEST_CR
+				if not clear(eye, head) then
+					-- короче лучше; к стрелку — хуже (выбегать на него не надо)
+					local s = r + 2 * math.max(0, dir:dotproduct(vector():set(0, 0, 0):sub(away)))
+					if not best_s or s < best_s then best, best_s = v, s end
+				end
+			end
+		end
+		if best then break end   -- нашлось на этом кольце — дальше не бежим
+	end
+	return best
+end
+
+local surv = {}  -- id бойца → { shooter, vid, phase = "run"|"hold", t0, until }
+
+local function on_hit(npc, amount, dir, who, bone)
+	if not (npc and npc:alive() and who and amount and amount > 0) then return end
+	if not (IsStalker(who) and who:alive() and who:id() ~= npc:id()) then return end
+	if npc:relation(who) ~= game_object.enemy then return end
+	local id, now = npc:id(), time_global()
+
+	-- фокус: ранил не тот, в кого смотрю
+	local be = npc:best_enemy()
+	if be and be:id() ~= who:id() then
+		local close = be:position():distance_to(npc:position()) < CQB_M and who:position():distance_to(npc:position()) > CQB_M
+		if not close then
+			focus[id] = { id = who:id(), t = now + FOCUS_MS }
+			emit(npc, "focus", { who = who:id(), was = be:id() })
+		end
+	end
+
+	-- рывок: стрелок меня видит, рывка сейчас нет и пауза после прошлого прошла
+	local s = surv[id]
+	if s and (s.phase or now < (s.retry or 0)) then return end
+	if not who:see(npc) or IsWounded(npc) then return end
+	local v = hide_spot(npc, who)
+	if not v then emit(npc, "survive_none", { who = who:id() }); return end
+	local hp = npc.health or 1
+	surv[id] = { shooter = who:id(), vid = v, phase = "run", t0 = now,
+		hold = HOLD_MS + HOLD_HURT * (1 - math.max(0, math.min(1, hp))) }
+	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp })
+end
+
+local function finish(npc, why)
+	local s = surv[npc:id()]
+	if not s or not s.phase then return end
+	s.phase, s.retry = nil, time_global() + RETRY_MS
+	emit(npc, "survive_end", { why = why })
+end
+
+class "eva_varka_survive" (property_evaluator)
+function eva_varka_survive:__init(name) super(nil, name) end
+function eva_varka_survive:evaluate()
+	local npc = self.object
+	local s = surv[npc:id()]
+	if not (s and s.phase) then return false end
+	if not npc:alive() or IsWounded(npc) then finish(npc, "wounded"); return false end
+	local bd = npc:best_danger()
+	if bd and bd:type() == danger_object.grenade then finish(npc, "grenade"); return false end
+	local now = time_global()
+	if s.phase == "run" and now - s.t0 > RUN_MS then finish(npc, "stuck"); return false end
+	if s.phase == "hold" and now > s.hold_until then finish(npc, "rested"); return false end
+	return true
+end
+
+class "act_varka_survive" (action_base)
+function act_varka_survive:__init(name) super(nil, name) end
+function act_varka_survive:initialize()
+	action_base.initialize(self)
+	self.object:set_path_type(game_object.level_path)
+end
+function act_varka_survive:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	local s = surv[npc:id()]
+	if not (s and s.phase) then return end
+	local shooter = level.object_by_id(s.shooter)
+	local spot = level.vertex_position(s.vid)
+	if s.phase == "run" then
+		if npc:position():distance_to_sqr(spot) > 1.0 then
+			-- бегом, ствол наготове, взгляд — по ходу (смотреть на стрелка на бегу = подставляться дольше)
+			state_mgr.set_state(npc, "assault", nil, nil, nil)
+			utils_obj.send_to_nearest_accessible_vertex(npc, s.vid, "varka_survive")
+			return
+		end
+		s.phase, s.hold_until = "hold", time_global() + s.hold
+		emit(npc, "survive_hold", { ms = math.floor(s.hold) })
+	end
+	-- пересидеть: сидя; виден враг — бить сидя, нет — ствол туда, где был стрелок
+	local be = npc:best_enemy()
+	if be and npc:see(be) then
+		state_mgr.set_state(npc, "hide_fire", nil, nil, { look_object = be })
+	else
+		state_mgr.set_state(npc, "hide", nil, nil, shooter and { look_position = shooter:position() } or nil)
+	end
+	utils_obj.send_to_nearest_accessible_vertex(npc, s.vid, "varka_survive")
+end
+function act_varka_survive:finalize()
+	finish(self.object, "yield")
+	action_base.finalize(self)
+end
+
+-- Встраивание — после varka_cmd и varka_clear. Условие вешаем ТОЛЬКО на действия, которые у бойца точно есть:
+-- manager:action(id) ищет lower_bound (problem_solver_inline.h) — нет такого id, и вернётся СЛЕДУЮЩЕЕ по номеру
+-- действие, условие повиснет не туда. Наличие ванильных схем — по их хранилищу (assign_storage_and_bind).
+local function yield_ids(npc)
+	local st = db.storage[npc:id()]
+	local ids = { xr_actions_id.alife, xr_actions_id.state_mgr + 2, stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	if st.varka_cmd_hooked then ids[#ids + 1] = 188202; ids[#ids + 1] = 188204 end    -- приказы мягкий / жёсткий
+	if st.varka_clear_hooked then ids[#ids + 1] = 188210 end                            -- вера: заглянуть / держать край
+	if st.rx_ff then ids[#ids + 1] = 18803 end                                           -- свой на линии
+	if st.kill_wounded and xrs_kill_wounded and xrs_kill_wounded.is_enabled() then ids[#ids + 1] = 188112 end
+	if st.fight_from_cover or st.axr_fight_from_cover then ids[#ids + 1] = 188118 end                              -- бой из укрытия
+	return ids
+end
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+	manager:add_evaluator(EVA_SURV, eva_varka_survive("eva_varka_survive"))
+	local act = act_varka_survive("act_varka_survive")
+	act:add_precondition(wp(stalker_ids.property_alive, true))
+	act:add_precondition(wp(EVA_SURV, true))
+	act:add_effect(wp(EVA_SURV, false))
+	manager:add_action(ACT_SURV, act)
+	for _, id in ipairs(yield_ids(npc)) do
+		local a = manager:action(id)
+		if a then a:add_precondition(wp(EVA_SURV, false)) end
+	end
+end
+
+local function npc_update(npc)
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local st = db.storage[npc:id()]
+	if not st or st.varka_survive_hooked then return end
+	if varka_clear and not st.varka_clear_hooked then return end
+	if varka_cmd and not st.varka_cmd_hooked then return end
+	st.varka_survive_hooked = true
+	hook_npc(npc)
+end
+
+local function on_death(npc)
+	if npc then surv[npc:id()] = nil; focus[npc:id()] = nil end
+end
+
+function on_game_start()
+	patch_enemy_callback()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_hit_callback", on_hit)
+	RegisterScriptCallback("npc_on_death_callback", on_death)
+end

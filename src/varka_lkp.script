@@ -22,6 +22,7 @@
 --     выстрел услышан / труп найден. Кормит облако не только визуалом best_enemy
 
 local DEBUG       = true       -- маркеры в мире + события в лог (полигонный режим)
+local PAINT       = false      -- v0.24: маркеры веера в мире выключены — вера v2 (varka_belief) своя
 local VERBOSE     = false      -- построчный лог лучей веера (только для отладки семантики)
 local TICK_MS     = 500        -- как часто один NPC обновляет облако
 local MARK_MS     = 1000       -- как часто перерисовываются маркеры
@@ -390,7 +391,7 @@ local function paint(now)
 	if now - last_mark < MARK_MS then return end
 	last_mark = now
 	snapshot(now)          -- TC: snapshot всегда, независимо от DEBUG
-	if not DEBUG then return end  -- визуальные маркеры только в DEBUG
+	if not (DEBUG and PAINT) then return end  -- визуальные маркеры только в DEBUG
 	local painted = 0
 	for key,b in pairs(beliefs) do
 		if painted < MAX_PAINTED then
@@ -475,6 +476,7 @@ local function npc_update(npc)
 		-- вызов = краш (21.10). Поля cke/ckm оставлены -1, пока не решим с exe.
 		local hd = be and npc:head_orientation()
 		local cke, ckm = -1, -1
+		local squad = get_object_squad(npc)
 		varka_trace.emit(squad_key(npc), id, "npc_pos", {
 			px=pos.x, py=pos.y, pz=pos.z,
 			dx=dir.x, dz=dir.z,
@@ -493,7 +495,8 @@ local function npc_update(npc)
 			cr=npc:body_state() == move.crouch and 1 or 0,                   -- сидит ли (позиционка)
 			wear=varka_stress and varka_stress.get(id) or -1,               -- износ от угрозы (varka_stress)
 			hx=hd and hd.x or 0, hz=hd and hd.z or 0,                       -- куда смотрит голова
-			cke=cke, ckm=ckm                                                -- луч ствола: враг / свой (-1 — не меряли)
+			cke=cke, ckm=ckm,                                               -- луч ствола: враг / свой (-1 — не меряли)
+			lead=squad and squad:commander_id() == id and 1 or 0            -- командир отряда (вьювер: звезда)
 		})
 	end
 

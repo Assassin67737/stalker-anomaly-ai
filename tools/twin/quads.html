@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VARKA — квадранты</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Mono&family=PT+Sans+Narrow:wght@400;700&display=swap">
+<link rel="stylesheet" href="kpk.css">
+<style>
+/* Квадранты (23.10): площадки навмеша, песочница трассы и редактор территорий. Данные — quads/bake_quads.py,
+   разметка — levels/<имя>_areas.json. Логика — quads_core.js, areas_core.js, панель — areas_ui.js. */
+#top{display:flex;flex:1;overflow:hidden}
+#wrap{flex:1;position:relative;min-width:0}
+canvas{display:block;width:100%;height:100%;cursor:crosshair}
+canvas.drag{cursor:grabbing}
+#side{width:340px;border-left:1px solid var(--rule);background:var(--panel);overflow-y:auto}
+#side p{color:var(--ink-2);line-height:1.45;margin-top:4px}
+#side .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font:12px var(--f-mono);color:var(--ink-2)}
+#side .kv b{color:var(--ink);font-weight:400}
+#path-list{font:11.5px var(--f-mono);color:var(--ink-2);word-break:break-all;margin-top:5px}
+.leg{display:flex;align-items:center;gap:6px;color:var(--ink-2);font-size:12px;margin-top:3px}
+.leg i{display:inline-block;width:46px;height:8px;border-radius:1px}
+#hint{position:absolute;left:10px;bottom:10px;background:rgba(18,17,13,.85);border:1px solid var(--rule);
+      padding:5px 9px;color:var(--ink-2);font-size:12px;pointer-events:none}
+a{color:var(--rust)}
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="wrap"><canvas id="cv"></canvas>
+    <div id="hint">колесо — масштаб · правая кнопка — двигать · левая — инструмент · Ctrl+Z — назад · Ctrl+S — сохранить</div></div>
+  <div id="side">
+    <div class="box">
+      <b>Квадранты</b>
+      <div class="row">
+        <select id="level" title="уровень (у которого есть запечка квадрантов)"></select>
+        <a href="quads3d.html" id="to3d">квадранты 3D</a> · <a href="viewer.html">бои 2D</a> · <a href="viewer3d.html">бои 3D</a>
+      </div>
+      <div class="row" id="floors" title="этаж от земли: выбранный ярко, ниже — бледно, выше — не видно"></div>
+      <div class="row">
+        <select id="color" title="как красить">
+          <option value="areas">территории (разметка)</option>
+          <option value="quad">площадки (границы)</option>
+          <option value="floor">этаж</option>
+          <option value="height">высота</option>
+          <option value="cover">укрытость</option>
+          <option value="sees">обзор (сколько видит)</option>
+          <option value="threat" selected>угроза (от поставленных)</option>
+        </select>
+      </div>
+      <p class="muted" id="stats"></p>
+    </div>
+    <div class="box">
+      <b>Разметка территорий</b>
+      <div id="editor"></div>
+    </div>
+    <details class="box tools" open>
+      <summary>Песочница трассы</summary>
+      <div class="row" id="toolbar">
+        <button data-t="look" class="on" title="клик — кого видит площадка">◎ смотреть</button>
+        <button data-t="threat" title="враг точно здесь">✕ угроза</button>
+        <button data-t="prob" title="враг, может быть, где-то тут (круг)">◌ вероятная</button>
+        <button data-t="me" title="откуда идёт боец">● боец</button>
+        <button data-t="goal" title="куда ему надо">⚑ цель</button>
+        <button data-t="erase" title="убрать угрозу у места клика">⌫</button>
+      </div>
+      <div class="row"><label title="радиус вероятной угрозы">радиус <input type="number" id="prob-r" value="25" min="5" max="80"> м</label>
+        <button onclick="clearAll()">очистить</button></div>
+      <div class="row"><label title="во сколько раз дороже метр под взглядом врага">вес угрозы
+        <input type="range" id="k" min="0" max="20" step="0.5" value="6"> <span id="kv">6</span></label></div>
+      <div class="row"><label title="враг выше — опаснее: +доля за каждые 8 м превышения">вес высоты
+        <input type="range" id="kh" min="0" max="2" step="0.1" value="1"> <span id="khv">1</span></label></div>
+      <p>Цена шага в соседнюю площадку = длина × (1 + вес × угроза). Пунктир — путь без учёта угрозы.</p>
+      <div class="kv" id="path-kv"></div>
+      <div id="path-list"></div>
+    </details>
+    <div class="box"><b>Под курсором</b><div class="kv" id="hover-kv"><span>—</span></div></div>
+    <div class="box"><b>Шкала</b><div id="legend"></div></div>
+  </div>
+</div>
+<script src="quads_core.js"></script>
+<script src="areas_core.js"></script>
+<script src="areas_ui.js"></script>
+<script>
+'use strict';
+// 2D: растр нод по картинке уровня. Песочница — quads_core.js; разметка — areas_core.js + areas_ui.js.
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const PAINT = new Set(['paint', 'wipe']);
+let LV = null, AM = null, view = null, floor = 'all', tool = 'look';
+let threats = [], me = null, goal = null, sel = null;
+let raster = null, pixQ = null, pixN = null, pixDim = null, expo = null, route = null, plain = null;
+let line = null, point = null, cursor = null;   // недорисованная линия / точка без взгляда; где мышь (мир)
+
+async function loadLevel(name){
+  LV = await quadsLoad(name);
+  $('to3d').href = 'quads3d.html?level=' + name;
+  AM = await areasLoad(LV); AE.AM = AM; AE.active = -1; aeRender(true);
+  // есть разметка (или смотрим авточерновик) — сразу красить территориями, а не угрозой
+  if(AREAS_SRC === 'auto' || AM.areas.length){ $('color').value = 'areas'; legend(); }
+  buildFloors(); restore();
+  const b = LV.meta.box; fit(b[0], b[3], b[2], b[5]);
+  const fl = {}; LV.quads.forEach(d => fl[d.floor] = (fl[d.floor] || 0) + 1);
+  $('stats').textContent = `площадок ${LV.quads.length}, клетка ${LV.Q.q} м; по этажам: ` +
+    Object.entries(fl).sort((a, b) => a[0] - b[0]).map(([f, c]) => `${quadsFloorName(+f)}: ${c}`).join(', ');
+  recompute();
+}
+
+// ─── этажи и растр ──────────────────────────────────────────────────────────────────
+function buildFloors(){
+  const f = $('floors'); f.innerHTML = '';
+  const mk = (v, t) => { const b = document.createElement('button'); b.textContent = t;
+    b.className = String(v) === String(floor) ? 'on' : ''; b.onclick = () => { floor = v; buildFloors(); rasterize(); draw(); }; f.appendChild(b); };
+  mk('all', 'все этажи'); const [f0, f1] = quadsFloorRange(LV); for(let i = f0; i <= f1; i++) mk(i, quadsFloorName(i));
+}
+function rasterize(){
+  if(!LV) return;
+  const {W, H, ni, nj, nq, quads} = LV;
+  pixQ = new Int32Array(W*H).fill(-1); pixN = new Int32Array(W*H).fill(-1); pixDim = new Uint8Array(W*H);
+  const py = new Float32Array(W*H).fill(-1e9);
+  for(let k = 0; k < nq.length; k++){
+    const q = nq[k], d = quads[q], p = nj[k]*W + ni[k], y = LV.ny[k];
+    if(floor === 'all'){ if(y > py[p]){ py[p] = y; pixQ[p] = q; pixN[p] = k; } continue; }
+    // выбранный этаж ярко, нижние под ним — бледно, верхние не видно
+    if(d.floor === +floor){ if(pixDim[p] || pixQ[p] < 0 || y > py[p]){ pixQ[p] = q; pixN[p] = k; py[p] = y; pixDim[p] = 0; } }
+    else if(d.floor < +floor && (pixQ[p] < 0 || (pixDim[p] && y > py[p]))){ pixQ[p] = q; pixN[p] = k; py[p] = y; pixDim[p] = 1; }
+  }
+  const img = new ImageData(W, H), px = img.data, cache = new Map(), mode = $('color').value;
+  const s = tool === 'look' ? sel : null, areas = mode === 'areas';
+  for(let p = 0; p < W*H; p++){
+    const q = pixQ[p]; if(q < 0) continue;
+    let c, k = 1;
+    if(areas){
+      const a = AM.node[pixN[p]];
+      if(a >= 0){ c = areasColor(AM, a); if(a === AE.active) k = 1.25; }
+      else { c = cache.get(q); if(!c){ c = quadsColor(LV, q, 'quad', expo, null); cache.set(q, c); } k = 0.32; }
+      // кромка территории — светлая
+      const other = j => pixQ[j] >= 0 && AM.node[pixN[j]] !== a;
+      if(a >= 0 && ((p % W < W-1 && other(p+1)) || (p + W < W*H && other(p+W)) || (p % W > 0 && other(p-1)) || (p >= W && other(p-W)))){
+        // кромка активной — пунктир «пурпур/чёрный» (контраст к любой категории), остальных — светлая
+        if(a === AE.active) c = ((((p % W) + ((p / W) | 0)) >> 1) & 1) ? AE_DASH[0] : AE_DASH[1];
+        else c = [235,230,215];
+        k = 1;
+      }
+    } else {
+      c = cache.get(q); if(!c){ c = quadsColor(LV, q, mode, expo, s); cache.set(q, c); }
+      const edge = (p % W < W-1 && pixQ[p+1] >= 0 && pixQ[p+1] !== q) || (p + W < W*H && pixQ[p+W] >= 0 && pixQ[p+W] !== q);
+      k = edge ? 0.55 : 1;
+    }
+    if(pixDim[p]) k *= 0.3;
+    px[p*4] = Math.min(255, c[0]*k); px[p*4+1] = Math.min(255, c[1]*k); px[p*4+2] = Math.min(255, c[2]*k); px[p*4+3] = 255;
+  }
+  raster = document.createElement('canvas'); raster.width = W; raster.height = H;
+  raster.getContext('2d').putImageData(img, 0, 0);
+}
+let rasterQueued = false;
+function redraw(full){ if(full && !rasterQueued){ rasterQueued = true; requestAnimationFrame(() => { rasterQueued = false; rasterize(); draw(); }); } else draw(); }
+
+// ─── вид ────────────────────────────────────────────────────────────────────────────
+function resize(){ cv.width = cv.clientWidth * devicePixelRatio; cv.height = cv.clientHeight * devicePixelRatio; draw(); }
+function fit(x0, x1, z0, z1){ view = {cx:(x0+x1)/2, cz:(z0+z1)/2, sc:Math.min(cv.width/(x1-x0), cv.height/(z1-z0))*0.95}; draw(); }
+const w2s = (x, z) => ({x:(x-view.cx)*view.sc + cv.width/2, y:(view.cz-z)*view.sc + cv.height/2});
+const s2w = (sx, sy) => ({x:(sx-cv.width/2)/view.sc + view.cx, z:view.cz - (sy-cv.height/2)/view.sc});
+function pixAt(sx, sy){
+  const w = s2w(sx, sy), b = LV.meta.box, c = LV.meta.cell;
+  const i = Math.round((w.x - b[0]) / c), j = LV.H - 1 - Math.round((w.z - b[2]) / c);
+  return (i < 0 || j < 0 || i >= LV.W || j >= LV.H) ? -1 : j*LV.W + i;
+}
+function quadAt(sx, sy){ if(!pixQ) return -1; const p = pixAt(sx, sy); return p < 0 ? -1 : pixQ[p]; }
+function nodeAt(sx, sy){ if(!pixN) return -1; const p = pixAt(sx, sy); return p < 0 || pixDim[p] ? -1 : pixN[p]; }
+// ноды под кистью: видимые на этом этаже (не бледные), в круге радиуса AE.brush
+function brushNodes(sx, sy){
+  const w = s2w(sx, sy), b = LV.meta.box, c = LV.meta.cell, r = AE.brush, out = [];
+  const i0 = Math.round((w.x - b[0]) / c), j0 = LV.H - 1 - Math.round((w.z - b[2]) / c), R = Math.ceil(r / c);
+  for(let di = -R; di <= R; di++) for(let dj = -R; dj <= R; dj++){
+    if((di*di + dj*dj) * c * c > r * r) continue;
+    const i = i0 + di, j = j0 + dj; if(i < 0 || j < 0 || i >= LV.W || j >= LV.H) continue;
+    const p = j*LV.W + i; if(pixN[p] < 0 || pixDim[p]) continue;
+    out.push(pixN[p]);
+  }
+  return aeFilter(out, tool === 'wipe');
+}
+
+function draw(){
+  ctx.fillStyle = '#12110d'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if(!LV || !raster || !view) return;
+  const b = LV.meta.box, c = LV.meta.cell, dpr = devicePixelRatio;
+  const tl = w2s(b[0] - c/2, b[2] + (LV.H - 0.5) * c);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(raster, tl.x, tl.y, LV.W * c * view.sc, LV.H * c * view.sc);
+  const Q = LV.quads, P = q => w2s(Q[q].x, Q[q].z);
+  // разметка: линии и точки
+  const poly = (pts, col, wdt, dash) => { if(pts.length < 2) return; ctx.setLineDash(dash || []); ctx.strokeStyle = col; ctx.lineWidth = wdt*dpr; ctx.beginPath();
+    pts.forEach((p, i) => { const s = w2s(p[0], p[2]); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.stroke(); ctx.setLineDash([]); };
+  for(const l of AM.lines) poly(l.pts, `rgb(${catOf(LINE_CATS, l.cat)[2]})`, 3);
+  if(line) poly(cursor ? [...line.pts, [cursor.x, 0, cursor.z]] : line.pts, `rgb(${catOf(LINE_CATS, line.cat)[2]})`, 2, [6, 4]);
+  for(const pt of [...AM.points, ...(point ? [point] : [])]){
+    const s = w2s(pt.x, pt.z), col = `rgb(${catOf(POINT_CATS, pt.cat)[2]})`;
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(s.x, s.y, 5*dpr, 0, 7); ctx.fill();
+    const d = pt.dir || (pt === point && cursor ? [cursor.x - pt.x, cursor.z - pt.z] : null);
+    if(d){ const n = Math.hypot(d[0], d[1]) || 1, e = w2s(pt.x + d[0]/n*4, pt.z + d[1]/n*4);
+      ctx.strokeStyle = col; ctx.lineWidth = 2*dpr; ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(e.x, e.y); ctx.stroke(); }
+  }
+  // песочница
+  for(const [r, dash, col, wdt] of [[plain, [6,5], 'rgba(221,213,191,.55)', 1.5], [route, [], '#4fc3f7', 3]]){
+    if(!r) continue;
+    ctx.setLineDash(dash); ctx.strokeStyle = col; ctx.lineWidth = wdt * dpr; ctx.beginPath();
+    r.path.forEach((q, i) => { const p = P(q); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for(const t of threats){
+    const p = w2s(t.x, t.z), s = 7 * dpr;
+    ctx.strokeStyle = '#d25542'; ctx.lineWidth = 2.5 * dpr;
+    if(t.kind === 'prob'){ ctx.setLineDash([5,4]); ctx.beginPath(); ctx.arc(p.x, p.y, t.r*view.sc, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+    ctx.beginPath(); ctx.moveTo(p.x-s, p.y-s); ctx.lineTo(p.x+s, p.y+s); ctx.moveTo(p.x+s, p.y-s); ctx.lineTo(p.x-s, p.y+s); ctx.stroke();
+  }
+  const mark = (pt, col, glyph) => { if(!pt) return; const p = w2s(pt.x, pt.z);
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(p.x, p.y, 7*dpr, 0, 7); ctx.fill();
+    ctx.fillStyle = '#12110d'; ctx.font = `bold ${10*dpr}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(glyph, p.x, p.y); };
+  mark(me, '#4fc3f7', 'Б'); mark(goal, '#a9c77f', 'Ц');
+  if(sel != null && tool === 'look'){ const p = P(sel); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(p.x-6, p.y-6, 12, 12); }
+  // кисть
+  if(cursor && PAINT.has(tool)){ const s = w2s(cursor.x, cursor.z);
+    ctx.strokeStyle = tool === 'wipe' ? '#d25542' : '#ebe6d7'; ctx.lineWidth = 1.5*dpr; ctx.beginPath(); ctx.arc(s.x, s.y, AE.brush*view.sc, 0, 7); ctx.stroke(); }
+}
+
+// ─── песочница ─────────────────────────────────────────────────────────────────────
+function recompute(){
+  if(!LV) return;
+  expo = quadsExposure(LV, threats, +$('kh').value);
+  route = plain = null;
+  if(me && goal){ route = quadsRoute(LV, expo, me.q, goal.q, +$('k').value); plain = quadsRoute(LV, expo, me.q, goal.q, 0); }
+  const [kv, list] = quadsRouteHTML(route, plain, me, goal);
+  $('path-kv').innerHTML = kv; $('path-list').textContent = list;
+  save(); rasterize(); draw();
+}
+
+// ─── ввод ───────────────────────────────────────────────────────────────────────────
+let drag = null, painting = false;
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  const sx = e.offsetX * devicePixelRatio, sy = e.offsetY * devicePixelRatio;
+  if(e.button === 0 && PAINT.has(tool) && AM){
+    if(tool === 'paint' && !aeCanEdit()) return;
+    painting = true; areasBegin(AM); stroke(sx, sy); return;
+  }
+  // двигать — правой/средней всегда, левой — у инструментов без мазка
+  drag = {x:e.offsetX, y:e.offsetY, cx:view.cx, cz:view.cz, moved:false, button:e.button};
+});
+window.addEventListener('mouseup', e => {
+  if(painting){ painting = false; areasEnd(AM); aeRender(true); return; }
+  if(drag && !drag.moved && drag.button === 0 && e.target === cv) click(e.offsetX * devicePixelRatio, e.offsetY * devicePixelRatio, e.detail);
+  drag = null; cv.classList.remove('drag');
+});
+cv.addEventListener('mousemove', e => {
+  const sx = e.offsetX * devicePixelRatio, sy = e.offsetY * devicePixelRatio;
+  cursor = view && s2w(sx, sy);
+  if(painting){ stroke(sx, sy); return; }
+  if(drag){
+    const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+    if(Math.abs(dx) + Math.abs(dy) > 3){ drag.moved = true; cv.classList.add('drag'); }
+    if(drag.moved){ view.cx = drag.cx - dx*devicePixelRatio/view.sc; view.cz = drag.cz + dy*devicePixelRatio/view.sc; draw(); }
+    return;
+  }
+  hover(sx, sy);
+  if(PAINT.has(tool) || line || point) draw();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const sx = e.offsetX * devicePixelRatio, sy = e.offsetY * devicePixelRatio, w = s2w(sx, sy);
+  view.sc *= e.deltaY < 0 ? 1.2 : 1/1.2;
+  view.cx = w.x - (sx - cv.width/2)/view.sc; view.cz = w.z + (sy - cv.height/2)/view.sc; draw();
+}, {passive:false});
+function stroke(sx, sy){
+  if(areasPaint(AM, brushNodes(sx, sy), tool === 'wipe' ? -1 : AE.active)){ redraw(true); aeRender(); }
+}
+function click(sx, sy, clicks){
+  const w = s2w(sx, sy);
+  // разметка
+  if(tool === 'pick' || tool === 'merge'){
+    const k = nodeAt(sx, sy), a = k >= 0 ? AM.node[k] : -1; if(a < 0) return;
+    if(tool === 'pick') AE.active = a;
+    else if(a !== AE.active && aeCanEdit() && !AM.areas[a].locked){ const keep = AM.areas[AE.active].id; areasMerge(AM, a, AE.active); AE.active = AM.areas.findIndex(x => x.id === keep); }
+    aeRender(true); redraw(true); return;
+  }
+  if(tool === 'fill'){
+    const q = quadAt(sx, sy); if(q < 0) return;
+    if(!aeCanEdit()) return;
+    const ks = []; for(let k = 0; k < LV.nq.length; k++) if(LV.nq[k] === q) ks.push(k);
+    areasBegin(AM); areasPaint(AM, aeFilter(ks, false), AE.active); areasEnd(AM); aeRender(true); redraw(true); return;
+  }
+  if(tool === 'line'){
+    const k = nodeAt(sx, sy), y = k >= 0 ? LV.ny[k] : 0;
+    if(!line) line = { cat: AE.lineCat, pts: [] };
+    line.pts.push([+w.x.toFixed(2), +y.toFixed(2), +w.z.toFixed(2)]);
+    if(clicks >= 2) finishLine();
+    draw(); return;
+  }
+  if(tool === 'point'){
+    if(!point){ const k = nodeAt(sx, sy); point = { cat: AE.pointCat, x: +w.x.toFixed(2), y: k >= 0 ? +LV.ny[k].toFixed(2) : 0, z: +w.z.toFixed(2),
+      area: k >= 0 ? AM.node[k] : -1 }; }
+    else { point.dir = [+(w.x - point.x).toFixed(3), +(w.z - point.z).toFixed(3)]; AM.points.push(point); point = null; areasTouch(AM); aeRender(true); }
+    draw(); return;
+  }
+  if(tool === 'erase_lp'){
+    let best = null, bd = 3;
+    AM.lines.forEach((l, i) => l.pts.forEach(p => { const d = Math.hypot(p[0] - w.x, p[2] - w.z); if(d < bd){ bd = d; best = ['l', i]; } }));
+    AM.points.forEach((p, i) => { const d = Math.hypot(p.x - w.x, p.z - w.z); if(d < bd){ bd = d; best = ['p', i]; } });
+    if(best){ areasSnapshot(AM); (best[0] === 'l' ? AM.lines : AM.points).splice(best[1], 1); areasTouch(AM); aeRender(true); draw(); }
+    return;
+  }
+  // песочница
+  const q = quadAt(sx, sy); if(q < 0) return;
+  const d = LV.quads[q], pt = {q, x:d.x, z:d.z};
+  if(tool === 'look'){ sel = sel === q ? null : q; rasterize(); draw(); return; }
+  if(tool === 'threat') threats.push({kind:'threat', ...pt});
+  if(tool === 'prob') threats.push({kind:'prob', q, x:w.x, z:w.z, r:+$('prob-r').value});
+  if(tool === 'me') me = pt;
+  if(tool === 'goal') goal = pt;
+  if(tool === 'erase'){ let best = -1, bd = 1e9;
+    threats.forEach((t, i) => { const r = Math.hypot(t.x - w.x, t.z - w.z); if(r < bd){ bd = r; best = i; } });
+    if(best >= 0 && bd < 30) threats.splice(best, 1); }
+  recompute();
+}
+function finishLine(){
+  if(line){
+    // двойной клик ставит две одинаковые точки — убрать дубль
+    const p = line.pts; if(p.length > 1 && Math.hypot(p[p.length-1][0] - p[p.length-2][0], p[p.length-1][2] - p[p.length-2][2]) < 0.3) p.pop();
+    if(p.length >= 2){ AM.lines.push(line); areasTouch(AM); }
+  }
+  line = null; aeRender(true); draw();
+}
+function hover(sx, sy){
+  const q = quadAt(sx, sy), k = nodeAt(sx, sy);
+  let h = q < 0 ? '<span>—</span>' : quadsInfoHTML(LV, q, expo, tool === 'look' ? sel : null);
+  if(k >= 0 && AM && AM.node[k] >= 0){ const a = AM.areas[AM.node[k]];
+    h = `<span>территория</span><b>${areasLabel(AM, AM.node[k])} · ${catOf(AREA_CATS, a.cat)[1]}</b>` + (a.note ? `<span>заметка</span><b>${a.note}</b>` : '') + h; }
+  $('hover-kv').innerHTML = h;
+}
+function setTool(t){
+  if(line && t !== 'line') finishLine();
+  point = null; tool = t;
+  document.querySelectorAll('#toolbar button').forEach(b => b.className = b.dataset.t === t ? 'on' : '');
+  aeSetTool(t);
+  if(t !== 'look') sel = null;
+  if(AE_TOOLS.some(x => x[0] === t) && $('color').value !== 'areas'){ $('color').value = 'areas'; legend(); }
+  rasterize(); draw();
+}
+document.querySelectorAll('#toolbar button').forEach(b => b.onclick = () => setTool(b.dataset.t));
+addEventListener('keydown', e => {
+  if(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  if((e.ctrlKey || e.metaKey) && e.code === 'KeyZ'){ e.preventDefault(); aeUndo(); }
+  else if((e.ctrlKey || e.metaKey) && e.code === 'KeyS'){ e.preventDefault(); aeSave(); }
+  else if(e.code === 'BracketLeft'){ aeBrush(-0.4); draw(); }
+  else if(e.code === 'BracketRight'){ aeBrush(0.4); draw(); }
+  else if(e.key === 'Enter') finishLine();
+  else if(e.key === 'Escape'){ line = null; point = null; draw(); }
+});
+addEventListener('beforeunload', e => { if(AM && AM.dirty){ e.preventDefault(); e.returnValue = ''; } });
+function clearAll(){ threats = []; me = goal = null; sel = null; recompute(); }
+$('k').oninput = () => { $('kv').textContent = $('k').value; recompute(); };
+$('kh').oninput = () => { $('khv').textContent = $('kh').value; recompute(); };
+$('color').onchange = () => { legend(); rasterize(); draw(); };
+$('level').onchange = () => loadLevel($('level').value);
+function legend(){
+  const m = $('color').value;
+  $('legend').innerHTML = m === 'areas'
+    ? AREA_CATS.map(c => `<div class="leg" title="${c[3]}"><i style="background:rgb(${c[2]})"></i>${c[1]}</div>`).join('') +
+      '<p>Тусклое — ещё не размечено. Светлая кромка — граница территории.</p>'
+    : quadsLegendHTML(m) + '<p>◎ смотреть: клик по площадке — кого она видит (ярче — больше свободных лучей).</p>';
+}
+
+// ─── память песочницы (у этого зрителя; общая с 3D) ─────────────────────────────────
+function save(){ try{ localStorage.setItem('varka_quads_' + LV.name, JSON.stringify({threats, me, goal})); }catch(_){} }
+function restore(){
+  threats = []; me = goal = null; sel = null;
+  try{ const s = JSON.parse(localStorage.getItem('varka_quads_' + LV.name) || 'null');
+    if(s){ threats = s.threats || []; me = s.me; goal = s.goal; } }catch(_){}
+}
+
+window.addEventListener('resize', resize);
+aeMount($('editor'), () => { redraw(true); }, setTool);
+(async () => {
+  resize(); legend();
+  const ok = await quadsLevels();
+  $('level').innerHTML = ok.map(n => `<option value="${n}">${n}</option>`).join('');
+  if(!ok.length){ $('stats').textContent = 'нет запечки: python3 quads/bake_quads.py levels/src/<уровень> <уровень>'; return; }
+  const want = new URLSearchParams(location.search).get('level');
+  await loadLevel(ok.includes(want) ? want : ok.includes('l03_agroprom') ? 'l03_agroprom' : ok[0]);
+  $('level').value = LV.name;
+})();
+</script>
+</body>
+</html>

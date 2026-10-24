@@ -30,6 +30,7 @@ local SurrenderMaxTriggerTimer = ini:r_float_ex("settings","surrender_max_timer"
 -- много навешивают» — замер: от прихода к жертве до выстрела медиана 6 с). ×0.3: обычная 0.45–1.35 с,
 -- с анимацией пленного 2.4–3 с.
 local VARKA_TIMER_SCALE = 0.3
+local VAN_TIMER = { MinTriggerTimer, MaxTriggerTimer, SurrenderMinTriggerTimer, SurrenderMaxTriggerTimer }  -- 25.10: для «чистой ванили»
 MinTriggerTimer, MaxTriggerTimer = MinTriggerTimer * VARKA_TIMER_SCALE, MaxTriggerTimer * VARKA_TIMER_SCALE
 SurrenderMinTriggerTimer = SurrenderMinTriggerTimer * VARKA_TIMER_SCALE
 SurrenderMaxTriggerTimer = SurrenderMaxTriggerTimer * VARKA_TIMER_SCALE
@@ -49,6 +50,8 @@ local EYE_H      = 1.6  -- глаза стоящего над нодой, м
 local GUN_H      = 1.35 -- ствол стоящего над нодой (у плеча), м
 local MUZZLE     = 0.5  -- срез ствола впереди кисти, м
 local BLOCK_MS   = 700  -- мс: ствол упёрся дольше — точка негодная, ищем другую
+local FF_MS      = 2000 -- VARKA 24.10: «свой на линии» дольше — сменить точку (бой #28: палач Монолита 34 с стоял в
+                        -- rx_dont_shoot, напарник в 1.5 м стоял на линии и сам был заблокирован им же — взаимная блокировка)
 local rp_kw
 
 -- отрезок свободен по статике (упор не раньше 0.3 м до конца)
@@ -151,8 +154,23 @@ end
 --------------------------------
 -- Register Callbacks
 --------------------------------
+-- VARKA 24.10: начатую казнь доводят до конца, помощь раненому своему — после. Ваниль наоборот: у казни условие
+-- wounded_exist == false, и палач бросал жертву на полпути, как только рядом лёг свой (бой #18, ИИГ 33292:
+-- занял жертву, дошёл, ушёл в 147 «помочь раненому»). Пока боец в действии казни, «помочь» молчит.
+local function patch_help_wounded()
+	local cls = xr_help_wounded and xr_help_wounded.evaluator_wounded_exist
+	if not cls or cls.varka_kw then return end
+	local base = cls.evaluate
+	cls.evaluate = function(self)
+		if is_under_kill_wounded(self.object) and not varka_vanilla.is(self.object) then return false end
+		return base(self)
+	end
+	cls.varka_kw = true
+end
+
 function on_game_start()
 	if not (Enable) then return end
+	patch_help_wounded()
 	RegisterScriptCallback("npc_on_update",npc_on_update)
 end
 
@@ -222,7 +240,7 @@ function eva_kill_wounded:find_target()
 	local npc = self.object
 	local be = npc:best_enemy() or get_hostage(npc)
 
-	if (be and IsStalker(be) and be:alive() and is_wounded(be) and claim(npc, be:id())) then
+	if (be and IsStalker(be) and be:alive() and is_wounded(be) and (varka_vanilla.is(npc) or claim(npc, be:id()))) then
 		if (self.st.selected_id == nil or self.st.selected_id ~= be:id()) then
 			self.st.selected_id = be:id()
 			self.st.vertex_id = nil
@@ -300,7 +318,82 @@ function act_kill_wounded:reset()
 	self.st.vertex_position = nil
 end 
 
+-- ванильное execute без правок VARKA — для отрядов «чистая ваниль» (varka_vanilla, 25.10); копия из scripts.db0
+function act_kill_wounded:execute_vanilla()
+	--utils_data.debug_write("act_kill_wounded:execute start")
+	action_base.execute(self)
+	local npc = self.object 
+	local st = self.st
+	
+	local vo = st.selected_id and db.storage[st.selected_id] and db.storage[st.selected_id].object
+	if not (vo and IsStalker(vo) and vo:alive() and is_wounded(vo)) then
+		st.selected_id = nil
+		return
+	end
+	
+	-- ensure and enforce path type
+	if (npc:path_type() ~= game_object.level_path) then 
+		npc:set_path_type(game_object.level_path)
+	end
+
+	local dist = npc:position():distance_to(vo:position())
+	if (dist < MinDistance) then
+		self:reset()
+	end
+	
+	local dst = db.storage[npc:id()]
+	if (dst and dst.rx_dont_shoot) then
+		st.timer = nil
+		state_mgr.set_state(npc,"raid",nil,nil,{look_object = vo})
+		st.vertex_id = utils_obj.send_to_nearest_accessible_vertex(npc,npc:level_vertex_id(),"kill_wounded")
+		return
+	end
+	
+	if not (st.vertex_id) then
+		local vid = get_rand_vertex(npc,vo)
+		if (validate(npc,vid) and level.vertex_position(vid):distance_to_sqr(vo:position()) >= MinDistance) then
+			st.vertex_id = vid
+			st.vertex_position = level.vertex_position(st.vertex_id)
+		end
+	end
+	
+	local dir = vec_sub(utils_obj.safe_bone_pos(vo,"bip01_spine"),utils_obj.safe_bone_pos(npc,"bip01_r_finger02"))
+	
+	local tg = time_global()
+	if (st.timer and tg > st.timer) then
+		if not (axr_task_manager.hostages_by_id[vo:id()]) then
+			if (npc:see(vo)) then
+				state_mgr.set_state(npc,"threat_sniper_fire",nil,nil,{look_object = vo, look_dir = dir})
+			end
+		end
+		--utils_data.debug_write("act_kill_wounded:execute end 2")
+		return
+	end
+	
+	if (st.vertex_id) then
+		if (npc:level_vertex_id() == st.vertex_id or dist <= MinDistance+1) then
+			state_mgr.set_state(npc,"threat",nil,nil,{look_dir = dir})
+			if (db.used_level_vertex_ids[st.vertex_id]) then
+				db.used_level_vertex_ids[st.vertex_id] = nil
+			end
+			st.vertex_id = utils_obj.send_to_nearest_accessible_vertex(npc,npc:level_vertex_id(),"kill_wounded")
+			db.used_level_vertex_ids[st.vertex_id] = npc:id()
+			self:begin_kill_wounded(vo)
+		else
+			state_mgr.set_state(npc,"assault",nil,nil,{look_position = vo:position()},{fast_set = true})
+			if (db.used_level_vertex_ids[st.vertex_id]) then
+				db.used_level_vertex_ids[st.vertex_id] = nil
+			end
+			st.vertex_id = utils_obj.send_to_nearest_accessible_vertex(npc,st.vertex_id,"kill_wounded")
+			db.used_level_vertex_ids[st.vertex_id] = npc:id()
+		end
+	end
+	
+	--utils_data.debug_write("act_kill_wounded:execute end 3")
+end
+
 function act_kill_wounded:execute()
+	if varka_vanilla.is(self.object) then return self:execute_vanilla() end
 	--utils_data.debug_write("act_kill_wounded:execute start")
 	action_base.execute(self)
 	local npc = self.object 
@@ -332,10 +425,24 @@ function act_kill_wounded:execute()
 	local dst = db.storage[npc:id()]
 	if (dst and dst.rx_dont_shoot) then
 		st.timer = nil
-		state_mgr.set_state(npc,"raid",nil,nil,{look_object = vo})
-		st.vertex_id = utils_obj.send_to_nearest_accessible_vertex(npc,npc:level_vertex_id(),"kill_wounded")
-		return
+		local tg0 = time_global()
+		st.ff_since = st.ff_since or tg0
+		if (tg0 - st.ff_since > FF_MS) then
+			-- VARKA 24.10: свой стоит на линии долго — другая точка вокруг жертвы, а не ждать вечно
+			st.ff_since = nil
+			if (st.vertex_id and db.used_level_vertex_ids[st.vertex_id] == npc:id()) then
+				db.used_level_vertex_ids[st.vertex_id] = nil
+			end
+			st.vertex_id = nil
+			st.vertex_position = nil
+			if (varka_trace) then varka_trace.emit(0, npc:id(), "kw_ff_move", {victim=vo:id(), d=dist}) end
+		else
+			state_mgr.set_state(npc,"raid",nil,nil,{look_object = vo})
+			st.vertex_id = utils_obj.send_to_nearest_accessible_vertex(npc,npc:level_vertex_id(),"kill_wounded")
+			return
+		end
 	end
+	st.ff_since = nil
 	
 	if not (st.vertex_id) then
 		-- VARKA: было distance_to_sqr(...) >= MinDistance — квадрат против метров, пропускало ноды от 1.73 м.
@@ -370,7 +477,8 @@ function act_kill_wounded:execute()
 			if (clear) then
 				st.blocked = nil
 				state_mgr.set_state(npc,"threat_sniper_fire",nil,nil,{look_object = vo, look_dir = dir})
-				if (varka_trace) then -- VARKA: факт выстрела добивания для разбора на вьювере
+				if (varka_trace and st.kw_fired ~= vo:id()) then -- VARKA: факт добивания (24.10: раз на жертву, а не каждый кадр)
+					st.kw_fired = vo:id()
 					varka_trace.emit(0, npc:id(), "kw_fire", {victim=vo:id(), d=dist})
 				end
 			elseif (npc:see(vo) and not (st.blocked and tg - st.blocked > BLOCK_MS)) then
@@ -451,10 +559,12 @@ function act_kill_wounded:begin_kill_wounded(vo)
 		end
 
 		if (vst.victim_surrender) then
-			self.st.timer = tg + math.random(SurrenderMinTriggerTimer,SurrenderMaxTriggerTimer)
+			self.st.timer = tg + (varka_vanilla.is(self.object) and math.random(VAN_TIMER[3],VAN_TIMER[4])
+				or math.random(SurrenderMinTriggerTimer,SurrenderMaxTriggerTimer))
 			--printf("%s--%s",vo:name(),vo:get_visual_name())
 		else
-			self.st.timer = tg + math.random(MinTriggerTimer,MaxTriggerTimer)
+			self.st.timer = tg + (varka_vanilla.is(self.object) and math.random(VAN_TIMER[1],VAN_TIMER[2])
+				or math.random(MinTriggerTimer,MaxTriggerTimer))
 		end
 		
 		if not (self.st.news_triggered) then

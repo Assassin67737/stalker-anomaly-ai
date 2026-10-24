@@ -115,6 +115,7 @@ end
 -- ===== источники знания =====
 
 local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	local id, now = npc:id(), time_global()
 	if last_tick[id] and now - last_tick[id] < TICK_MS then return end
@@ -124,6 +125,7 @@ local function npc_update(npc)
 end
 
 local function on_hear(npc, who_id, s_type, dist, power, pos)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if s_type ~= "WPN_shoot" then return end
 	if not (npc and npc:alive() and IsStalker(npc) and pos) then return end
 	if npc:position():distance_to_sqr(pos) > HEAR_SQR then return end

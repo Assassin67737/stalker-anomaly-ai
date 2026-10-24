@@ -73,6 +73,7 @@ body.twin #gen-box{display:block}
       <label title="пути бойцов за 15 с"><input type="checkbox" id="ly-trail" checked> следы</label>
       <label title="линия от глаз к врагу, пока видит"><input type="checkbox" id="ly-sight" checked> взгляд</label>
       <label title="от стрелка к цели, 1.5 с"><input type="checkbox" id="ly-hit" checked> попадания</label>
+      <label title="дуга полёта (жёлтая — пролетела, тусклая — ещё нет), взрыв — кольцо волны"><input type="checkbox" id="ly-gren" checked> гранаты</label>
       <label title="точки пьес дирижёра"><input type="checkbox" id="ly-slot" checked> дирижёр</label>
       <label title="дирижёр квадрантов (match/conductor.py): трасса бойца по площадкам и куда он смотрит"><input type="checkbox" id="ly-q" checked> трассы</label>
       <label title="вера отряда: облако «где он может быть», щели, кто заглядывает и кто держит край"><input type="checkbox" id="ly-bel" checked> вера</label>
@@ -225,6 +226,7 @@ function groundAt(clientX, clientY){
 
 // ─── запись ──────────────────────────────────────────────────────────────────────────────────
 let events = [], tracks = {}, deaths = {}, hits = [], matches = [], keyEv = [], slotsEv = [], belEv = [], qEv = {};
+let gThrows = [], gBooms = [];
 // двойник (живой пульт): отряды, их приказы, пауза/скорость
 let twin = false, squads = {}, orders = {}, simState = { paused: true, speed: 1, over: '' };
 let t0 = 0, tMax = 0, T = 0, playing = false;
@@ -236,6 +238,7 @@ function ingest(text){
     try{ const e = JSON.parse(line); if(e.t != null) events.push(e); }catch(_){}
   }
   tracks = {}; deaths = {}; hits = []; matches = []; keyEv = []; slotsEv = []; belEv = []; qEv = {};
+  gThrows = []; gBooms = [];
   squads = {}; orders = {};
   for(const e of events){
     const ev = e.ev;
@@ -256,8 +259,11 @@ function ingest(text){
     else if(ev === 'play_slots' || ev === 'play_end' || ev === 'match_clear') slotsEv.push(e);
     else if(ev === 'bel') belEv.push(e);
     else if(ev === 'qmove') (qEv[e.npc] ||= []).push(e);
+    else if(ev === 'grenade_throw') gThrows.push(e);
+    else if(ev === 'grenade_boom') gBooms.push(e);
     if(['wpn_switch','wpn_sidearm','wpn_sidearm_end','play_start','play_end','regroup_start','holdout_start',
-        'kw_fire','bark','intel','freeze_enter','search_start','bel_seed','bel_end','clear_post','clear_step','clear_fire','order_post','focus','survive','survive_hold','survive_end'].includes(ev)) keyEv.push(e);
+        'kw_fire','bark','intel','freeze_enter','search_start','bel_seed','bel_end','clear_post','clear_step','clear_fire','order_post','focus','survive','survive_hold','survive_end','grenade_throw','grenade_boom','grenade_dodge','grenade_shout','grenade_est',
+        'grenade_safe','grenade_prone','grenade_up','grenade_land'].includes(ev)) keyEv.push(e);
   }
   t0 = events.length ? events[0].t : 0;
   tMax = events.length ? events[events.length - 1].t : 0;
@@ -326,7 +332,7 @@ function makeNpc(id, s){
   scene.add(g);
   return (npcObj[id] = { g, body, ghost, nose, ring, sel, lbl, col });
 }
-function eyeH(s){ return s.cr ? 1.05 : 1.6; }
+function eyeH(s){ return s.prone ? 0.35 : s.cr ? 1.05 : 1.6; }
 function placeNpc(o, s, side){
   o.g.visible = true;
   o.g.position.copy(W(s.x, s.y, s.z));
@@ -337,7 +343,9 @@ function placeNpc(o, s, side){
   } else {
     o.ghost.visible = $('ly-xray').checked;
     const h = s.cr ? 0.62 : 1;
-    o.body.rotation.set(0, 0, 0); o.body.scale.set(1, h, 1); o.body.position.set(0, 0.86 * h, 0);
+    if(s.prone){                                      // лёжа от гранаты: капсула вдоль взгляда, у земли
+      o.body.rotation.set(Math.PI / 2, Math.PI - yaw, 0, 'YXZ'); o.body.scale.set(1, 1, 1); o.body.position.set(0, 0.3, 0);
+    } else { o.body.rotation.set(0, 0, 0); o.body.scale.set(1, h, 1); o.body.position.set(0, 0.86 * h, 0); }
     o.body.material.color.copy(o.col).multiplyScalar(s.hp < 0.3 ? 0.55 : 1);
     o.nose.visible = true; o.nose.position.set(0, eyeH(s), 0);
     o.nose.rotation.set(0, Math.PI - yaw, 0);
@@ -360,6 +368,9 @@ function dynLines(color, opacity, maxSeg){
     done(){ g.setDrawRange(0, n * 2); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; } };
 }
 const trailL = dynLines(0, 0.55, 20000), sightL = dynLines(0, 0.35, 400), hitL = dynLines(0, 0.95, 400);
+// гранаты (23.10, двойник): дуга полёта по grenade_throw (рука → земля за fly с), взрыв — кольцо волны 6 м
+const gArcL = dynLines(0, 1, 3000), gArcRestL = dynLines(0, 0.3, 3000), gBoomL = dynLines(0, 1, 2000);
+const G_ARC = new THREE.Color('#ffd740'), G_BOOM = new THREE.Color('#ff6d00');
 // дирижёр квадрантов (23.10): трасса по площадкам (центры площадок из запечки) и взгляд — куда велено смотреть
 const qTrackL = dynLines(0, 0.8, 4000), qLookL = dynLines(0, 0.9, 200);
 let quadsXYZ = null, quadsFor = null;
@@ -493,6 +504,33 @@ function frame(){
     }
   }
   hitL.done();
+
+  // гранаты: дуга от руки до земли (по времени полёта), потом — лежит до взрыва; взрыв 1.2 с — кольцо и лучи
+  gArcL.reset(); gArcRestL.reset(); gBoomL.reset();
+  if($('ly-gren').checked){
+    for(const g of gThrows){
+      if(g.t > T || T > g.t + g.fly * 1000 + 4000) continue;
+      const fly = Math.max(0.05, g.fly), tg = (T - g.t) / 1000;
+      const vx = (g.lx - g.x) / fly, vz = (g.lz - g.z) / fly, vy = (g.ly - g.y + 4.905 * fly * fly) / fly;
+      const at = t => W(g.x + vx * t, g.y + vy * t - 4.905 * t * t, g.z + vz * t);
+      const N = 24;
+      for(let k = 0; k < N; k++){
+        const a = fly * k / N, b = fly * (k + 1) / N;
+        (b <= tg ? gArcL : gArcRestL).add(at(a), at(b), G_ARC);
+      }
+      if(tg >= fly){ const p = W(g.lx, g.ly + 0.15, g.lz); gArcL.add(p, W(g.lx, g.ly + 0.9, g.lz), G_ARC); }
+    }
+    for(const b of gBooms){
+      if(b.t > T || T > b.t + 1200) continue;
+      const R = 6, M = 32;
+      for(let k = 0; k < M; k++){
+        const a = 2 * Math.PI * k / M, c = 2 * Math.PI * (k + 1) / M;
+        gBoomL.add(W(b.x + R * Math.cos(a), b.y, b.z + R * Math.sin(a)), W(b.x + R * Math.cos(c), b.y, b.z + R * Math.sin(c)), G_BOOM);
+        if(k % 4 === 0) gBoomL.add(W(b.x, b.y, b.z), W(b.x + R * Math.cos(a), b.y + 1.5, b.z + R * Math.sin(a)), G_BOOM);
+      }
+    }
+  }
+  gArcL.done(); gArcRestL.done(); gBoomL.done();
 
   // дирижёр квадрантов: последняя трасса бойца (до T) — линией цвета стороны над площадками, взгляд — жёлтым
   qTrackL.reset(); qLookL.reset();
@@ -754,7 +792,20 @@ function fmtEv(e, side){
   const ts = `<span style="color:#4a4638">${((e.t - t0) / 1000).toFixed(1)}</span> `;
   const who = id => { const tr = tracks[id]; const s = tr && tr[0]; return s ? `<span class="${side[s.sq] || ''}">#${String(id).slice(-4)}</span>` : '#' + id; };
   switch(e.ev){
-    case 'death': return `<div>${ts}✝ ${who(e.npc)} ← ${who(e.killer)}</div>`;
+    case 'death': return `<div>${ts}✝ ${who(e.npc)} ← ${who(e.killer)}${e.gren ? ' 💥' : ''}</div>`;
+    case 'grenade_throw': return `<div>${ts}${e.actor ? 'игрок' : who(e.npc)} граната → ${Math.hypot(e.lx - e.x, e.lz - e.z).toFixed(0)} м` +
+      ` (цель ${Math.hypot(e.tx - e.x, e.tz - e.z).toFixed(0)} м, полёт ${(e.fly || 0).toFixed(1)} с, запал ${(e.fuse || 0).toFixed(1)} с` +
+      `${e.cook > 0.05 ? `, отсчитал ${e.cook.toFixed(1)} с` : ''}${e.wall ? ', отскок' : ''})</div>`;
+    case 'grenade_boom': return `<div style="color:#ff9e40">${ts}💥 взрыв гранаты ${who(e.npc)}` +
+      (e.hit != null ? `: задело ${e.hit}, убито ${e.kill}${e.ff ? `, своих ${e.ff}` : ''}` : '') + `</div>`;
+    case 'grenade_dodge': return `<div>${ts}${who(e.npc)} уходит от гранаты${e.to < 0 ? ' — некуда, ложится на месте' : ` (${e.d.toFixed(0)} м)`}` +
+      `${e.src === 'shout' ? ', по крику' : ''}${e.err > 1.5 ? `, ошибся на ${e.err.toFixed(0)} м` : ''}</div>`;
+    case 'grenade_shout': return `<div>${ts}${who(e.npc)}: «Граната!»</div>`;
+    case 'grenade_est': return `<div>${ts}${who(e.npc)} не увидел гранату — прикинул по крику (ошибка ${e.err.toFixed(0)} м)</div>`;
+    case 'grenade_safe': return `<div>${ts}${who(e.npc)} видит гранату в ${e.d.toFixed(0)} м — не опасно, не бежит</div>`;
+    case 'grenade_prone': return `<div>${ts}${who(e.npc)} лёг</div>`;
+    case 'grenade_up': return `<div>${ts}${who(e.npc)} встаёт</div>`;
+    case 'grenade_land': return `<div>${ts}граната ${who(e.npc)} упала (полёт ${e.t_fly.toFixed(1)} с)</div>`;
     case 'wpn_sidearm': return `<div>${ts}${who(e.npc)} на пистолет ${e.to}, ${e.d.toFixed(0)} м</div>`;
     case 'wpn_sidearm_end': return `<div>${ts}${who(e.npc)} пистолет убран (${e.why})</div>`;
     case 'wpn_switch': return `<div>${ts}${who(e.npc)} ствол → ${e.to} (${e.d} м)</div>`;

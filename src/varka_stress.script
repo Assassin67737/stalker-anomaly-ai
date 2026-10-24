@@ -75,6 +75,7 @@ end
 
 -- раздражитель g бьёт по бойцу с учётом стойкости; угроза сбрасывает передышку
 local function add(npc, g)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and IsStalker(npc) and npc:alive()) then return end
 	local s = state(npc:id())
 	s.w = clamp01(s.w + g * (1 - hardness(npc)))
@@ -128,6 +129,7 @@ end
 
 -- раз в секунду на бойца: контакт копит усталость, покой — снимает
 local function on_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and IsStalker(npc) and npc:alive()) then return end
 	local now = time_global()
 	local s = state(npc:id())

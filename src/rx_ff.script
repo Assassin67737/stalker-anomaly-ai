@@ -74,7 +74,33 @@ local function set_flag(npc,val)
 	return val or false
 end 
 
+-- ванильная проверка «свой на линии» (без правок VARKA) — для отрядов «чистая ваниль» (varka_vanilla, 25.10)
+function evaluator_dont_shoot:check_in_los_vanilla(friend,be,be_pos)
+	if (friend and friend:alive() and self.object:relation(friend) < 2 and self.object:see(friend)) then
+		local pos = utils_obj.safe_bone_pos(self.object,"bip01_r_finger02") --self.object:bone_position("bip01_spine")
+		local friend_pos = utils_obj.safe_bone_pos(friend,"bip01_spine")
+		
+		local be_dist = pos:distance_to(be_pos)
+		local friend_dist = pos:distance_to(friend_pos)
+		
+		if (friend_dist <= 2.1) then 
+			return true 
+		end
+			
+		local dir_aim = vec_sub(be_pos,pos):normalize()
+		local dir_friend = vec_sub(friend_pos,pos):normalize()
+		local vec_be,vec_who = vector():set(dir_aim):set_length(friend_dist),dir_friend:set_length(friend_dist)
+		if (vec_who:similar(vec_be,0) == 1) then 
+			return true 
+		end
+		if (vec_who:similar(vec_be,1) == 1) then 
+			return true 
+		end
+	end
+end 
+
 function evaluator_dont_shoot:check_in_los(friend,be,be_pos)
+	if varka_vanilla.is(self.object) then return self:check_in_los_vanilla(friend,be,be_pos) end
 	if (friend and friend:alive() and self.object:relation(friend) < 2 and self.object:see(friend)) then
 		local pos = utils_obj.safe_bone_pos(self.object,"bip01_r_finger02") --self.object:bone_position("bip01_spine")
 		local friend_pos = utils_obj.safe_bone_pos(friend,"bip01_spine")
@@ -162,7 +188,7 @@ function evaluator_dont_shoot:evaluate()
 				fd = self.ff_fd or -1, miss = self.ff_miss or -1, ed = npc:position():distance_to(be:position()),
 			})
 		end
-		self.st.__hold_until = time_global() + FF_HOLD
+		self.st.__hold_until = time_global() + (varka_vanilla.is(npc) and 2500 or FF_HOLD)  -- ваниль держит 2.5 с
 		return set_flag(npc,true)
 	end
 	

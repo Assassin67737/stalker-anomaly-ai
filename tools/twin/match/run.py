@@ -15,11 +15,15 @@
     "zone": {"x": 40, "z": 10, "r": 15}, точка-задача: держит тот, у кого в радиусе только свои
     "spectator": {"x": 30, "z": 40},     куда поставить игрока смотреть (рядом — иначе отряды уйдут в офлайн)
     "ghost": true,                       отряды нейтральны к игроку
+    "grenades": 1,                       РГД-5 каждому бойцу (24.10; можно и в отряде: "grenades" рядом с "n")
+    "approach": "sprint",                темп подхода к точке: walk (по умолчанию) | run | sprint (до 40 м от точки)
     "speed": 1,                          time_factor на время матча
     "hour": 10,                          перед серией перевести часы игры до этого часа (бои при свете)
     "cvars": {"ai_aim_fire_angle": 0.087}, консольные ai_* на серию (опыт над ванилью); после — вернуть как было
     "sides": {
-      "A": {"director": "shturm",        пресет | "off" (ваниль) | "default" | "random"
+      "A": {"director": "shturm",        пресет | "off" (глушит ТОЛЬКО дирижёра) | "default" | "random"
+            "stack": "vanilla",          25.10: сторона «чистая ваниль» — VARKA её бойцов не трогает вовсе
+                                         (varka_vanilla.script; общими остаются мир и тело). По умолчанию "varka"
             "start": "advance",          advance — мягко идти к точке (бой важнее), hold — стоять
             "squads": [{"faction": "freedom", "tier": "advanced", "n": 4, "at": {"x": -20, "z": 0}}]},
       "B": {...}
@@ -32,6 +36,7 @@
   Разброс (каждый матч заново, итог пишется в results.jsonl → setup):
     "faction": ["freedom","duty"]  "tier": "random" или список   "n": [3, 6]   "at": [{x,z}, {x,z}, ...]
     "swap": true — с вероятностью ½ стороны меняются местами спавна
+    "alternate": true — 25.10: в чётных матчах стороны меняются группировками (ваниль/VARKA играют обеими)
     "even": true — ранг и численность поровну обеим сторонам, все сочетания по кругу (ровная раздача за серию)
     "matchup": "random" — фракции и ранги сторон выбираются по правилам пар (pick_matchup): только
                           ВРАГИ по отношениям группировок (≤ -1000 в обе стороны; игра отвечает на
@@ -42,6 +47,8 @@
                           сильнее другой больше чем в balance раз, отбрасывается. Сила — power()
   Вся локация (смарт-террейны — места, куда ходит симуляция; список игра выгружает сама, кэш levels/<уровень>_smarts.json):
     "zone": {"smart": "random", "r": 15}       точка матча — случайный смарт (или имя, или список имён)
+    "zone": {"smart": "cycle", "r": 15}        24.10: полный круг — все смарты уровня по разу в перемешанном порядке,
+                                               потом новый круг (match/zone_cycle.json; случайный выбор давал 1…12 раз)
     "zone": {..., "defend": [смарты]}          выпал смарт из списка — сторона A рождается на точке (оборона), B атакует
     "at": {"smart_ring": [50, 120]}            спавн — смарт на таком расстоянии от точки; у B — с другой стороны
     "spectator": "zone"                         игрок встаёт на точку (с g_god on — безопасно)
@@ -118,14 +125,40 @@ def load_smarts(game, lvl, name):
     return out
 
 
-def place(spec, setup, smarts, rng, lvl=None):
+CYCLE_FILE = os.path.join(HERE, 'zone_cycle.json')
+
+
+def cycle_next(level, names, rng, save=True):
+    """Полный круг по смартам уровня: перемешанный порядок, по разу каждый, потом новый круг. Состояние — в файле,
+    чтобы круг продолжался между запусками раннера. save=False (--dry) — не двигать круг."""
+    try:
+        st = json.load(open(CYCLE_FILE))
+    except (OSError, ValueError):
+        st = {}
+    c = st.get(level)
+    if not c or sorted(c.get('order', [])) != sorted(names) or c.get('i', 0) >= len(c['order']):
+        order = list(names)
+        rng.shuffle(order)
+        c = {'order': order, 'i': 0, 'round': (c or {}).get('round', 0) + 1}
+    name = c['order'][c['i']]
+    c['i'] += 1
+    st[level] = c
+    if save:
+        json.dump(st, open(CYCLE_FILE, 'w'), ensure_ascii=False, indent=1)
+    return name
+
+
+def place(spec, setup, smarts, rng, lvl=None, dry=False):
     """Точка матча и места спавна, если они заданы через смарты. Меняет setup на месте."""
     zone = dict(spec['zone'])
     if 'smart' in zone:
         names = [s['name'] for s in smarts]
         want = zone['smart']
-        pick_from = names if want == 'random' else (want if isinstance(want, list) else [want])
-        pick_name = rng.choice(pick_from)
+        pick_from = names if want in ('random', 'cycle') else (want if isinstance(want, list) else [want])
+        if want == 'cycle' and lvl:
+            pick_name = cycle_next(lvl.name, names, rng, save=not dry)
+        else:
+            pick_name = rng.choice(pick_from)
         sm = next(s for s in smarts if s['name'] == pick_name)
         zone.update(x=sm['x'], z=sm['z'], name=sm['name'])
     # оборона (23.10): точка из списка zone.defend — сторона A рождается на ней (тоннель Агропрома 6_4: у костра),
@@ -371,6 +404,7 @@ def setup_of(spec, rng, idx=1):
         side = spec['sides'][s]
         out[s] = {
             'director': pick(side.get('director', 'default'), rng, RANDOM_DIRECTORS),
+            'stack': side.get('stack', 'varka'),
             'start': side.get('start', 'advance'),
             'squads': [{
                 'faction': pick(q['faction'], rng),
@@ -399,6 +433,9 @@ def setup_of(spec, rng, idx=1):
             q['tier'], q['n'] = TIERS[ta], n
         for q in out['B']['squads']:
             q['tier'], q['n'] = TIERS[tb], n
+    if spec.get('alternate') and idx % 2 == 0:  # 25.10: группировки сторон меняются местами каждый второй матч
+        for qa, qb in zip(out['A']['squads'], out['B']['squads']):
+            qa['faction'], qb['faction'] = qb['faction'], qa['faction']
     if spec.get('swap') and rng.random() < 0.5:  # стороны меняются местами спавна
         a, b = out['A']['squads'], out['B']['squads']
         for qa, qb in zip(a, b):
@@ -536,7 +573,7 @@ def run_one(spec, lvl, game, rng, tag):
     smarts = load_smarts(game, lvl, lvl.name) if ('smart' in spec['zone'] or any(
         isinstance(q.get('at'), dict) and 'smart_ring' in q['at']
         for s in ('A', 'B') for q in spec['sides'][s]['squads'])) else []
-    zone = place(spec, setup, smarts, rng, lvl)
+    zone = place(spec, setup, smarts, rng, lvl, dry=game.dry)
     zone_vid = lvl.node(zone['x'], zone['z'])
     sides, directors = {}, {}
 
@@ -568,12 +605,18 @@ def run_one(spec, lvl, game, rng, tag):
 
     born = None if game.dry else game.mark()  # отсюда ждём выхода отрядов в онлайн
     for s in ('A', 'B'):
-        directors[s] = setup[s]['director']
+        vanilla = setup[s].get('stack') == 'vanilla'
+        directors[s] = 'vanilla' if vanilla else setup[s]['director']
         sides[s] = []
         for q in setup[s]['squads']:
             section = f"{SQUAD_PREFIX.get(q['faction'], q['faction'])}_sim_squad_{q.get('tier', 'advanced')}"
             vid = lvl.node(q['at']['x'], q['at']['z'])
             rank = (q['member'], RANK_VALUE[RANKS.index(q['rank'])]) if q.get('rank') else ()  # бой по рангам
+            gren = q.get('grenades', spec.get('grenades', 0))  # 24.10: РГД-5 каждому бойцу (гранаты v2)
+            if gren or vanilla:
+                rank = (rank or ('-', '-')) + (gren,)
+            if vanilla:  # 25.10: 8-й аргумент spawn — отряд «чистая ваниль» (метка до выхода в онлайн)
+                rank = rank + (1,)
             info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0, *rank)
             sides[s].append(int(info.split(':')[1]))
     every = sides['A'] + sides['B']
@@ -594,6 +637,8 @@ def run_one(spec, lvl, game, rng, tag):
         game.wait(online, 20, 'отряды не вышли в онлайн — поставь spectator ближе', born)
 
     for s in ('A', 'B'):
+        if directors[s] == 'vanilla':
+            continue  # дирижёра у ванили нет
         for sq in sides[s]:
             game.call('preset', f'sq:{sq}', directors[s])
     for a in sides['A']:
@@ -602,7 +647,8 @@ def run_one(spec, lvl, game, rng, tag):
     for s in ('A', 'B'):
         if setup[s]['start'] == 'advance':
             for sq in sides[s]:
-                game.call('order', f'sq:{sq}', 'move', zone_vid, 0)
+                # 24.10: темп подхода — walk (как было) | run | sprint (спринт до 40 м от точки, дальше бег; экономия времени)
+                game.call('order', f'sq:{sq}', 'move', zone_vid, 0, spec.get('approach', 'walk'))
         else:
             for sq in sides[s]:
                 game.call('free', f'sq:{sq}')

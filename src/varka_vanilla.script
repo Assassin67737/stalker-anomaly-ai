@@ -1,0 +1,35 @@
+-- varka_vanilla.script — отряды «чистая ваниль» (25.10.2026): бой «ваниль против VARKA» в одной игре
+--
+-- Зачем: «director off» глушил только дирижёра — вера, поиск, «жить хочу», гранаты v2, ворота огня, rx_ff,
+-- выбор ствола, перегруппировка и наше добивание у такого отряда работали дальше. Здесь — реестр бойцов,
+-- которых VARKA не трогает вовсе. Каждый наш крючок первым делом спрашивает varka_vanilla.is(npc).
+--
+-- Что ОСТАЁТСЯ общим (мир и тело, а не мозг): m_stalker.ltx, запал гранат (DLTX + наш подрыв по запалу),
+-- ранговое зрение (visual_memory_manager), консольные ai_*, приказы матча varka_cmd (дойти шагом до точки —
+-- это обвязка боя, как сценарий уровня; без нашего выбора поста), телеметрия varka_match / varka_trace / npc_pos.
+-- В подменённых ванильных файлах (xr_danger, rx_ff, axr_fight_from_cover, xrs_kill_wounded) боец-ваниль идёт
+-- в нетронутую копию изменённой функции (суффикс _vanilla), взятую из db/configs/scripts.db0.
+--
+-- Метка ставится в varka_cmd spawn (8-й аргумент) сразу после рождения бойцов на сервере — раньше, чем они
+-- выйдут в онлайн и наши npc_update успеют встроиться в планировщик.
+
+local squads = {}   -- id отряда → true
+local ids    = {}   -- id бойца → true
+
+function mark_squad(squad)
+	squads[squad.id] = true
+	for k in squad:squad_members() do ids[k.id] = true end
+end
+
+-- npc — game_object, серверный объект или id
+function is(npc)
+	if not npc then return false end
+	local id = type(npc) == "number" and npc or npc:id()
+	return ids[id] == true
+end
+
+function is_squad(squad_id) return squads[squad_id] == true end
+
+function clear()
+	squads, ids = {}, {}
+end

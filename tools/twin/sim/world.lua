@@ -11,6 +11,9 @@ ffi.cdef [[
 int   rays_load(const char *path);
 float rays_cast(float ox, float oy, float oz, float dx, float dy, float dz, float range);
 int   rays_clear(float ax, float ay, float az, float bx, float by, float bz);
+void  rays_mtl(int id, float vis, float shoot);
+float rays_vis(float ax, float ay, float az, float bx, float by, float bz, float thr);
+float rays_bullet(float ax, float ay, float az, float bx, float by, float bz, float ap);
 ]]
 
 local HERE = debug.getinfo(1, 'S').source:sub(2):match('(.*/)') or './'
@@ -60,6 +63,13 @@ function M.load(name)
 	if not rays then
 		rays = ffi.load(TWIN .. 'vision/librays.so')
 		assert(rays.rays_load(TWIN .. 'levels/src/' .. name .. '/level.cform') == 0)
+		-- материалы по ID (levels/materials.tsv — vision/bake_mtl.py из gamemtl.xr): глазам — проницаемость, пуле — броня
+		local mf = assert(io.open(TWIN .. 'levels/materials.tsv'), 'нет levels/materials.tsv — vision/bake_mtl.py')
+		for line in mf:lines() do
+			local _, id, _, _, shoot, vis = line:match('^(%d+)\t(%d+)\t([^\t]+)\t(%d)\t([%d.]+)\t([%d.]+)')
+			if id then rays.rays_mtl(tonumber(id), tonumber(vis), tonumber(shoot)) end
+		end
+		mf:close()
 	end
 	return self
 end
@@ -191,8 +201,12 @@ function M:around(start, r)
 	return out
 end
 
--- линия видимости между двумя точками (в обе стороны — см. rays.c)
+-- линия видимости между двумя точками (в обе стороны — см. rays.c): ничего, кроме воздуха (любой материал — стена)
 function M.clear(ax, ay, az, bx, by, bz) return rays.rays_clear(ax, ay, az, bx, by, bz) == 1 end
+-- глаза a → b по материалам (как движок): произведение проницаемости, > thr — видно, иначе 0
+function M.vis(ax, ay, az, bx, by, bz, thr) return rays.rays_vis(ax, ay, az, bx, by, bz, thr) end
+-- пуля a → b с бронебойностью ap: доля скорости у цели (урон ∝ ей), 0 — застряла
+function M.bullet(ax, ay, az, bx, by, bz, ap) return rays.rays_bullet(ax, ay, az, bx, by, bz, ap) end
 
 M.DIR = DIR
 return M

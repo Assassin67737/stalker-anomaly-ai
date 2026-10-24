@@ -109,7 +109,28 @@ end
 
 local surv = {}  -- id бойца → { shooter, vid, phase = "run"|"hold", t0, until }
 
+-- 24.10 (бой 225832-3, 8884 с обрезом): ближний враг в 5 м лупил по нему очередями мимо, а цель так и осталась
+-- дальней (62 м) — движок даёт очки за «вижу», «меня видит», «ранил меня», но не за «стреляет в меня».
+-- Очередь в упор слышно и чувствуется кожей: стреляет В МЕНЯ ближе NEAR_SHOT_M, а моя цель заметно дальше —
+-- фокус на него, как от попадания. Только если стрелок уже в памяти (иначе фокус обнулит все цели).
+local NEAR_SHOT_M, NEAR_SHOT_GAP, NEAR_SHOT_MEM = 15, 10, 3000
+function shot_at(npc, who)
+	if not (npc and npc:alive() and who and IsStalker(npc)) then return end
+	local be = npc:best_enemy()
+	if not be or be:id() == who:id() then return end
+	local f = focus[npc:id()]
+	if f and f.id == who:id() and time_global() < f.t then return end
+	local p = npc:position()
+	local dw, db_ = who:position():distance_to(p), be:position():distance_to(p)
+	if dw > NEAR_SHOT_M or db_ < dw + NEAR_SHOT_GAP then return end
+	local seen = npc:memory_time(who)
+	if not (seen and seen > 0 and time_global() - seen < NEAR_SHOT_MEM) then return end
+	focus[npc:id()] = { id = who:id(), t = time_global() + FOCUS_MS }
+	emit(npc, "focus", { who = who:id(), was = be:id(), why = "shot" })
+end
+
 local function on_hit(npc, amount, dir, who, bone)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and who and amount and amount > 0) then return end
 	if not (IsStalker(who) and who:alive() and who:id() ~= npc:id()) then return end
 	if npc:relation(who) ~= game_object.enemy then return end
@@ -183,17 +204,21 @@ function act_varka_survive:execute()
 		s.phase, s.hold_until = "hold", time_global() + s.hold
 		emit(npc, "survive_hold", { ms = math.floor(s.hold) })
 	end
-	-- пересидеть: сидя; виден враг — бить сидя, нет — ствол туда, где был стрелок
+	-- пересидеть: сидя; виден враг — бить через ворота огня (довернулся, ствол свободен сидя/стоя — varka_aim),
+	-- нет — ствол туда, где был стрелок
 	local be = npc:best_enemy()
 	if be and npc:see(be) then
-		state_mgr.set_state(npc, "hide_fire", nil, nil, { look_object = be })
+		local wpn = npc:active_item()
+		local sniper = wpn and IsWeapon(wpn) and ini_sys:r_string_ex(wpn:section(), "kind") == "w_sniper"
+		state_mgr.set_state(npc, (varka_aim.hold_state(npc, be, sniper, true)), nil, nil, { look_object = be })
 	else
-		state_mgr.set_state(npc, "hide", nil, nil, shooter and { look_position = shooter:position() } or nil)
+		state_mgr.set_state(npc, varka_aim.wait_state(npc), nil, nil, shooter and { look_position = shooter:position() } or nil)
 	end
 	utils_obj.send_to_nearest_accessible_vertex(npc, s.vid, "varka_survive")
 end
 function act_varka_survive:finalize()
 	finish(self.object, "yield")
+	varka_aim.release(self.object)
 	action_base.finalize(self)
 end
 
@@ -227,6 +252,7 @@ local function hook_npc(npc)
 end
 
 local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if character_community(npc) == "zombied" then return end
 	local st = db.storage[npc:id()]

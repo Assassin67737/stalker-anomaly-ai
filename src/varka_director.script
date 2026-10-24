@@ -108,6 +108,7 @@ end
 
 local M = {
 	W_INF = 0.40, W_CAP = 0.35, W_FOG = 0.25, -- веса осей духа (сумма 1)
+	WOUNDED_W = 0.5,   -- 24.10: раненый в сплочённости — полбойца (тоже потеря)
 	COH_FLOOR = 0.15,                         -- пол сплочённости. Полигон 20.10: при 0.3 последний живой
 	                                          -- держался на 0.32 — никто ни разу не стал «сломлен»
 	DOWN = 0.06, UP = 0.006,                  -- 1/с: скорость дрейфа к цели вниз / вверх
@@ -210,14 +211,18 @@ local function moral_axes(squad, S, now)
 	local live_w, n, can, near, wall, wear = 0, 0, 0, false, 0, 0
 	local eyes = varka_vision and varka_vision.available()
 	each_member(squad, function(id, obj)
-		live_w, n = live_w + rank_w(rank_of(obj)), n + 1
+		-- 24.10 (юзер): раненый свой — тоже потеря: в сплочённости весит WOUNDED_W, воевать не может
+		local hurt = IsWounded(obj)
+		live_w, n = live_w + rank_w(rank_of(obj)) * (hurt and M.WOUNDED_W or 1), n + 1
 		if varka_stress then wear = wear + varka_stress.get(id) end
 		if eyes then wall = wall + (varka_vision.enclosure(obj:level_vertex_id()) or 0) end
 		local be = obj:best_enemy()
 		local sees = be and obj:see(be)
 		if sees and obj:position():distance_to(be:position()) < M.BEND_DIST then near = true end
 		local h = hit_info[id]
-		if not (h and now - h.t < M.SUPPRESS_TTL) then
+		if hurt then
+			-- лежит — не боец
+		elseif not (h and now - h.t < M.SUPPRESS_TTL) then
 			can = can + 1
 		elseif sees then
 			can = can + 0.5
@@ -395,13 +400,14 @@ PRESETS.cover = { name = "cover", combat = "cover", assign = PRESETS.greh.assign
 -- ============================================================================
 
 local REGROUP_MIN    = 8000   -- мс: минимум сидеть в укрытии
+local LULL_MS        = 10000  -- мс: 24.10 — «бой кончился» только после затишья (ни цели, ни веры, ни опасности)
 local REGROUP_SPAN   = 30000  -- мс: + столько × (1 − мораль)
 local REGROUP_BROKEN = 15000  -- мс: сломленным ещё столько сверху
 local SCOUT_MAX      = 45000  -- мс: разведка дольше — пьеса кончается сама
 local SCOUT_ARRIVE   = 4      -- м до точки угрозы = «дошёл»
 local SCOUT_LOOK     = 5000   -- мс: осмотреться на месте
 
-local fight = {}  -- [squad_id] = { threat = vector|nil } пока идёт бой
+local fight = {}  -- [squad_id] = { threat = vector|nil, last = мс последнего признака боя } пока идёт бой
 local post  = {}  -- [squad_id] = { phase, t0, till, cap_id, threat, scouts = {[id]=true}, arrived }
 
 -- Строка для ленты внизу экрана (varka_hud, только латиница)
@@ -780,10 +786,20 @@ local function update_squad(squad)
 	}
 
 	-- v0.5: фаза «после боя» поверх пресета. Бой идёт — копим, где угроза; кончился — перегруппировка.
+	-- 24.10: убили «своего» врага — это ещё не конец боя. Было: в тот же кадр, когда у отряда не осталось ни цели,
+	-- ни веры, — перегруппировка (бой #9: ИИГ убили одного из трёх и 4.5 с сидели «после боя» на корточках, пока двое
+	-- живых были рядом). Теперь — только после затишья LULL_MS; опасность (выстрелы, попадания) затишье сбрасывает.
 	local in_fight, threat = fight_now(squad, ctx.belief)
+	local now_ms = time_global()
+	local danger = false
+	if not in_fight and fight[key] then
+		each_member(squad, function(_, obj) if xr_danger.has_danger(obj) then danger = true end end)
+	end
 	if in_fight then
-		fight[key] = { threat = threat or (fight[key] and fight[key].threat) }
+		fight[key] = { threat = threat or (fight[key] and fight[key].threat), last = now_ms }
 		end_post(key, "fight")
+	elseif fight[key] and (danger or now_ms - (fight[key].last or 0) < LULL_MS) then
+		if danger then fight[key].last = now_ms end   -- затишья ещё нет: настороже, без перегруппировки
 	elseif fight[key] then
 		end_holdout(key, "fight_over")  -- убежище держали до конца боя → дальше перегруппировка
 		if varka_plays then varka_plays.stop(key, "fight_over") end
@@ -852,6 +868,7 @@ end
 -- ===== РЕГИСТРАЦИЯ =====
 
 local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	local squad = get_object_squad(npc)
 	if not squad then return end
@@ -864,6 +881,7 @@ end
 -- Попадание: боец подавлен на SUPPRESS_TTL; стрелка не видит — отряду туман.
 -- Аномалии и падения (нет стрелка или сам себя) мораль не трогают.
 local function npc_on_hit(npc, amount, direction, who, bone)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if not (who and who:id() ~= npc:id() and amount > 0) then return end
 	local id = npc:id()

@@ -1,17 +1,25 @@
 -- run.lua — прогон сценария в двойнике.
 --   luajit sim/run.lua sim/scen/m26.lua            один бой → sim/out/<id>_s<seed>.jsonl (смотреть во viewer3d)
 --   luajit sim/run.lua sim/scen/m26.lua --n 100    серия на разных seed, итог в консоль
+--   … --set h_on=false --set h_err=0.3              рычаг мира поверх сценария (scen.world)
 local HERE = debug.getinfo(1, 'S').source:sub(2):match('(.*/)') or './'
 package.path = HERE .. '?.lua;' .. package.path
 local World = require 'world'
 local Sim = require 'sim'
 
 local path, n, seed0 = arg[1], 1, nil
+local set = {}
 for i = 2, #arg do
 	if arg[i] == '--n' then n = tonumber(arg[i + 1]) end
 	if arg[i] == '--seed' then seed0 = tonumber(arg[i + 1]) end
+	if arg[i] == '--set' then
+		local k, v = arg[i + 1]:match('^([%w_]+)=(.+)$')
+		set[k] = v == 'true' or (v ~= 'false' and (tonumber(v) or v))
+	end
 end
 local scen = dofile(path)
+scen.world = scen.world or {}
+for k, v in pairs(set) do scen.world[k] = v end
 local w = World.load(scen.level)
 local res = { A = 0, B = 0, draw = 0 }
 local durs, hits, firsts, hd = {}, {}, {}, {}

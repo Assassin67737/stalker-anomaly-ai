@@ -335,6 +335,7 @@ local function on_fired(npc, wpn, ammo)
 		f.ah = angle_to(npc:head_orientation(), aim, true)  -- голова: по ней движок решает «довернулся ли»
 		if wpn then f.aw = angle_to(wpn:direction(), vector():set(chest):sub(muzzle)) end
 		if varka_stress then varka_stress.under_fire(enemy, f.d) end  -- по нему стреляют — износ
+		if varka_survive then varka_survive.shot_at(enemy, npc) end    -- стреляют в упор — фокус на стрелка
 	end
 	local p = npc:position()
 	f.px, f.py, f.pz = p.x, p.y, p.z

@@ -38,6 +38,8 @@ local dir_order   = {}  -- [npc_id]   = order от дирижёра (пьесы 
 -- order = { kind = "move"|"hold", vid, pos, hard, stamp }
 
 -- varka_trace пишет строки как есть: кавычка или обратный слэш в тексте ошибки сломали бы JSON
+local SPRINT_NEAR = 40   -- м: ближе к точке приказа спринт сменяется бегом со стволом наготове
+
 local function emit(ev, f)
 	if not varka_trace then return end
 	for k, v in pairs(f) do
@@ -252,6 +254,10 @@ function act_varka_order:execute()
 		-- жёсткий — бегом без стрельбы; мягкий — шагом, ствол наготове. Шаг трассы (qmove) — свой темп и взгляд:
 		-- не на конечную точку сквозь стены, а на место, которое стоит проверить
 		local state = self.hard and "assault" or "raid"
+		if not self.hard and o.approach == "run" then state = "assault" end
+		if not self.hard and o.approach == "sprint" then
+			state = npc:position():distance_to(o.pos) > SPRINT_NEAR and "sprint" or "assault"
+		end
 		if o.q then state = o.pace == "run" and "assault" or o.pace == "sneak" and "sneak" or "raid" end
 		state_mgr.set_state(npc, state, nil, nil, { look_position = o.look_move or pos })
 		utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_order")
@@ -264,7 +270,8 @@ function act_varka_order:execute()
 	end
 
 	-- дошёл до точки по приказу «идти» (не стоянка у спавна, не точка дирижёра) — один раз ищем пост
-	if st and o.went and not o.exact and st.varka_post_tried ~= o.stamp then
+	-- ваниль (varka_vanilla) поста не ищет: дошла — стоит наготове
+	if st and o.went and not o.exact and st.varka_post_tried ~= o.stamp and not varka_vanilla.is(npc) then
 		st.varka_post_tried, st.varka_post_stamp = o.stamp, o.stamp
 		local post, d = pick_post(npc, o)
 		if post then
@@ -281,10 +288,10 @@ function act_varka_order:execute()
 	-- стоим: жёсткий держит пост и стреляет по видимому врагу; мягкий просто стоит наготове
 	local be = npc:best_enemy()
 	if self.hard and be and npc:see(be) then
-		state_mgr.set_state(npc, "hide_fire", nil, nil, { look_object = be })
+		state_mgr.set_state(npc, (varka_aim.hold_state(npc, be)), nil, nil, { look_object = be })
 	elseif self.hard then
 		local look = (be and be:position()) or o.look
-		state_mgr.set_state(npc, "hide", nil, nil, look and { look_position = look } or nil)
+		state_mgr.set_state(npc, varka_aim.wait_state(npc), nil, nil, look and { look_position = look } or nil)
 	elseif st and st.varka_post == vid then
 		-- на посту — лицом наружу от точки приказа (простое «сторожим подходы», до квадрантов)
 		local c = level.vertex_position(o.vid)
@@ -302,6 +309,7 @@ end
 
 function act_varka_order:finalize()
 	local npc = self.object
+	varka_aim.release(npc)
 	if db.storage[npc:id()] then db.storage[npc:id()].varka_order_active = nil end
 	if varka_trace then
 		varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_end", { hard = self.hard })
@@ -370,7 +378,8 @@ function register(name, fn)
 	CMD[name] = fn
 end
 
--- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг]
+-- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг|-] [гранат на бойца] [vanilla 1/0]
+-- 25.10: vanilla = 1 — отряд «чистая ваниль» (varka_vanilla): VARKA его бойцов не трогает.
 -- Бои «по рангам» (21.10): профиль = секция бойца sim_default_<группировка>_<0..4> (костюм),
 -- ранг = число (новичок 1750, … легенда 30000). Снаряжение Anomaly выдаёт по рангу в момент
 -- рождения (xrs_rnd_npc_loadout, колбэк se_stalker_on_spawn) — а ранг там ещё из профиля, случайный.
@@ -378,6 +387,7 @@ end
 CMD.spawn = function(a)
 	local section, vid, n, ghost = a[1], a[2], tonumber(a[3]) or 3, a[4] ~= "0"
 	local member, rank = a[5] ~= "-" and a[5] or nil, tonumber(a[6])
+	local gren = tonumber(a[7]) or 0   -- 24.10: РГД-5 каждому (у ванили граната у ~каждого пятого — гранаты v2 не увидеть)
 	local pos
 	vid, pos = vid_pos(vid)
 	if not vid then return false, "плохой vid" end
@@ -402,6 +412,7 @@ CMD.spawn = function(a)
 			if se then
 				if rank then se:set_rank(rank) end
 				if loadout then loadout(se) end  -- снаряжение по нашему рангу
+				for _ = 1, gren do alife_create_item("grenade_rgd5", se) end
 				ranks[#ranks + 1] = se:rank()
 				SIMBOARD:setup_squad_and_group(se)
 				SendScriptCallback("squad_on_npc_creation", squad, se)
@@ -410,10 +421,13 @@ CMD.spawn = function(a)
 	end)
 	if loadout then RegisterScriptCallback("se_stalker_on_spawn", loadout) end  -- вернуть, даже если упали
 	if not ok then return false, "спавн: " .. tostring(err) end
+	local vanilla = a[8] == "1"
+	if vanilla then varka_vanilla.mark_squad(squad) end  -- до выхода в онлайн: крючки встраиваются в первом npc_update
 	if ghost then ghost_squad[squad.id] = true end
 	-- по умолчанию отряд стоит, где родился (мягко: на бой реагирует)
 	squad_order[squad.id] = { kind = "hold", vid = vid, pos = pos, hard = false, stamp = time_global() }
-	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid, member = member, ranks = table.concat(ranks, ",") })
+	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid, member = member, ranks = table.concat(ranks, ","),
+		vanilla = vanilla and 1 or 0 })
 	return true, "sq:" .. squad.id
 end
 
@@ -423,7 +437,10 @@ CMD.order = function(a)
 	if not kind then return false, "плохая цель" end
 	local vid, pos = vid_pos(a[3])
 	if not vid then return false, "плохой vid" end
-	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global() }
+	-- 24.10: 5-й аргумент — темп подхода мягкого приказа: walk (raid, 2.5 м/с, как было) | run (assault, 4.5) |
+	-- sprint (6.0, ствол за спиной; ближе SPRINT_NEAR к точке — уже assault, чтобы встреча не застала со стволом за спиной)
+	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global(),
+		approach = a[5] }
 	if kind == "sq" then squad_order[id] = o else npc_order[id] = o end
 	return true, kind .. ":" .. id
 end

@@ -189,6 +189,7 @@ local function hook_npc(npc)
 end
 
 local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if character_community(npc) == "zombied" then return end
 	local id = npc:id()

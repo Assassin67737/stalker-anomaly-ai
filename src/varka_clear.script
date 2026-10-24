@@ -68,6 +68,10 @@ function eva_varka_clear:evaluate()
 	if not npc:alive() or IsWounded(npc) then return false end
 	local bd = npc:best_danger()
 	if bd and bd:type() == danger_object.grenade then return false end
+	-- 24.10: раненый лежит — это дело казни (xrs_kill_wounded), а не веры. Бои #17, #24: последнего раненого
+	-- врага застрелили из роли «заглянуть/держать край» в окне первого выстрела вместо казни.
+	local be0 = npc:best_enemy()
+	if be0 and IsWounded(be0) then return false end
 	local st = db.storage[npc:id()]
 	if st and first_shot(npc, st) then return true end
 	-- 23.10: видит врага, окно первого выстрела позади — отдать бой ванили. Раньше роль держала его у нас:
@@ -105,7 +109,7 @@ function act_varka_clear:execute()
 		end
 		local wpn = npc:active_item()
 		local sniper = wpn and IsWeapon(wpn) and ini_sys:r_string_ex(wpn:section(), "kind") == "w_sniper"
-		local state = sniper and "hide_sniper_fire" or "hide_fire"
+		local state = varka_aim.hold_state(npc, be, sniper)   -- ворота огня: довернулся, ствол свободен
 		state_mgr.set_state(npc, state, nil, nil, { look_object = be }, { fast_set = true })
 		utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_clear")
 		return
@@ -115,7 +119,7 @@ function act_varka_clear:execute()
 	-- стрелял «по памяти», пуля в препятствие в 4.9 м, пока ему под ноги летела РГД-5).
 	if self.firing then
 		self.firing = nil
-		state_mgr.set_state(npc, "hide", nil, nil, nil)
+		state_mgr.set_state(npc, varka_aim.wait_state(npc), nil, nil, nil)
 	end
 	local r = varka_belief.role(npc)
 	if not r then return end
@@ -155,7 +159,7 @@ function act_varka_clear:execute()
 			self.no_wait_until = now + WAIT_COOLDOWN
 			emit(npc, "clear_step", {})
 		else
-			state_mgr.set_state(npc, "hide", nil, nil, { look_position = r.look })
+			state_mgr.set_state(npc, varka_aim.wait_state(npc), nil, nil, { look_position = r.look })
 			utils_obj.send_to_nearest_accessible_vertex(npc, self.amb.vid, "varka_clear")
 			return
 		end
@@ -167,18 +171,19 @@ function act_varka_clear:execute()
 			self.post = npc:level_vertex_id()
 			emit(npc, "clear_post", { role = "hold", wait = -1 })
 		end
-		state_mgr.set_state(npc, self.post and "hide" or "sneak", nil, nil, { look_position = r.look })
+		state_mgr.set_state(npc, self.post and varka_aim.wait_state(npc) or "sneak", nil, nil, { look_position = r.look })
 		utils_obj.send_to_nearest_accessible_vertex(npc, self.post or r.vid, "varka_clear")
 	else
 		-- ШАГ ЗА УГОЛ: гусиным шагом в щель, взгляд в гущу тени; дошли — сидим, целимся туда
 		local far = npc:position():distance_to_sqr(vector():set(r.x, r.y, r.z)) > ARRIVE_SQR
-		state_mgr.set_state(npc, far and "sneak" or "hide", nil, nil, { look_position = r.deep })
+		state_mgr.set_state(npc, far and "sneak" or varka_aim.wait_state(npc), nil, nil, { look_position = r.deep })
 		utils_obj.send_to_nearest_accessible_vertex(npc, far and r.vid or npc:level_vertex_id(), "varka_clear")
 	end
 end
 
 function act_varka_clear:finalize()
 	local npc = self.object
+	varka_aim.release(npc)
 	local st = db.storage[npc:id()]
 	if st then st.varka_clear_active, st.varka_clear_fire = nil, nil end
 	emit(npc, "clear_end", {})
@@ -207,6 +212,7 @@ local function hook_npc(npc)
 end
 
 local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if character_community(npc) == "zombied" then return end
 	local st = db.storage[npc:id()]

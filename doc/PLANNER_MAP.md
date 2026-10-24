@@ -39,7 +39,7 @@ modules, state_mgr, axr_*, xr_*), наши `gamedata/scripts/varka_*.script`.
 | 188113 | `xr_danger` (опасность) | Anomaly (у нас override) | |
 | 188115 | `axr_stalker_panic` (паника) | Alundaio | |
 | **188118** | **`axr_fight_from_cover` — бой из укрытия** | Alundaio | **полная замена тактики боя скриптом** |
-| 18803 | `rx_ff` (не стрелять по своим) | Anomaly | свой/нейтрал ближе 2.1 м или на линии огня → шаг вбок → обход → **иначе `try_go_position(be_pos)`: идёт НА врага без огня** (ночь 21.10: игрок-зритель тоже «свой») |
+| 18803 | `rx_ff` (не стрелять по своим) | | |
 | 18815/16 | `xrs_facer` (рукопашная) | | |
 | — | state_mgr +1/+2, схемы logic: walker, remark, sleeper, animpoint, camper, patrol, cover, smartcover, meet, companion, wounded, help_wounded, corpse_detection, gather_items, abuse, combat_camper/zombied/monolith, reach_task (alife) | GSC/Anomaly | |
 

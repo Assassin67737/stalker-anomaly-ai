@@ -493,6 +493,7 @@ local function npc_update(npc)
 			hp=npc.health, wpn=wsec, wk=wkind,
 			mag=(wi and IsWeapon(wi) and wi:get_ammo_in_magazine()) or -1,  -- видно перезарядку
 			cr=npc:body_state() == move.crouch and 1 or 0,                   -- сидит ли (позиционка)
+			prone=varka_grenade and varka_grenade.is_prone and varka_grenade.is_prone(id) and 1 or 0, -- лёжа от гранаты
 			wear=varka_stress and varka_stress.get(id) or -1,               -- износ от угрозы (varka_stress)
 			hx=hd and hd.x or 0, hz=hd and hd.z or 0,                       -- куда смотрит голова
 			cke=cke, ckm=ckm,                                               -- луч ствола: враг / свой (-1 — не меряли)
@@ -501,6 +502,7 @@ local function npc_update(npc)
 	end
 
 	reap(now)
+	if varka_vanilla.is(npc) then return end  -- 25.10: «чистая ваниль» — позиция в trace есть, веры нет
 
 	local enemy = npc:best_enemy()
 	if enemy then

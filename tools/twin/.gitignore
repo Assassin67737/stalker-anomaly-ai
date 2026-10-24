@@ -12,3 +12,8 @@ levels/*_mesh.bin
 levels/src/
 vision/librays.so
 sim/out/
+match/zone_cycle.json
+# квадранты: пересобирается quads/bake_quads.py (десятки МБ)
+levels/*_quads_nodes.bin
+levels/*_quads_vis.bin
+levels/areas_backup/

@@ -7,6 +7,7 @@
 -- Возвращает true если NPC — новичок или необстрелянный (trainee)
 local function is_rookie(npc)
 	if not (npc and npc.character_rank) then return false end
+	if varka_vanilla.is(npc) then return false end  -- 25.10: «чистая ваниль»
 	return npc:character_rank() < 6500
 end
 
@@ -209,7 +210,7 @@ local function is_danger(npc,best_danger,script)
 			end
 
 			local in_radius = danger_in_radius(npc,best_danger,bd_type)
-			if (in_radius) then
+			if (in_radius and not varka_vanilla.is(npc)) then
 				xr_sound.set_sound_play(npc:id(), "tolls")
 			end
 			return in_radius

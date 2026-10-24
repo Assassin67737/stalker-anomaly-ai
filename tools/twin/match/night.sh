@@ -16,7 +16,10 @@
 # Пока идёт серия, systemd-inhibit держит блокировку «простой/сон»: hypridle не гасит экран и не
 # блокирует сессию (с погашенным экраном игра может встать). Предполётная проверка: если сервер или
 # игра не отвечают — скрипт выходит сразу и компьютер НЕ выключает (заметишь, пока не лёг).
+# Ctrl+C в любой момент (серия, 60 с до выключения): архив пишется, игра остаётся, компьютер НЕ выключается.
 set -u
+STOP=0
+trap 'STOP=1' INT TERM
 N=${1:-200}
 SPEC=${2:-matches/night_ranks.json}
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -61,12 +64,16 @@ systemd-inhibit --what=idle:sleep:handle-lid-switch --who=varka --why="ночн�
     python3 -u run.py "$SPEC" --n "$N" 2>&1 | tee "$ARCH/runner.log"
 
 [ -n "$COND_PID" ] && kill "$COND_PID" 2>/dev/null
-echo "== закрываю игру"
-curl -s -X POST -H 'Content-Type: application/json' -d '{"cmd":"quit","args":[]}' "$SERVER/cmd" >/dev/null
-for _ in $(seq 60); do
-    pgrep -f AnomalyDX11.exe >/dev/null || break
-    sleep 2
-done
+if [ "$STOP" = 1 ]; then
+    echo "== прервано (Ctrl+C) — игру не закрываю"
+else
+    echo "== закрываю игру"
+    curl -s -X POST -H 'Content-Type: application/json' -d '{"cmd":"quit","args":[]}' "$SERVER/cmd" >/dev/null
+    for _ in $(seq 60); do
+        pgrep -f AnomalyDX11.exe >/dev/null || break
+        sleep 2
+    done
+fi
 
 echo "== архив: $ARCH"
 cp "$LOGS/varka_trace.jsonl" "$ARCH/" && gzip -f "$ARCH/varka_trace.jsonl"
@@ -75,10 +82,12 @@ find "$LOGS" -maxdepth 1 -name '*.mdmp' -newer "$ARCH/runner.log.start" -exec cp
 cp results.jsonl "$ARCH/results_snapshot.jsonl"
 sync
 
-if [ "${NO_POWEROFF:-0}" = 1 ]; then
+if [ "$STOP" = 1 ]; then
+    echo "== прервано — компьютер не выключаю"
+elif [ "${NO_POWEROFF:-0}" = 1 ]; then
     echo "== NO_POWEROFF=1 — компьютер не выключаю"
 else
     echo "== выключаю компьютер через 60 с (Ctrl+C — отменить)"
     sleep 60
-    systemctl poweroff
+    if [ "$STOP" = 1 ]; then echo "== отменено"; else systemctl poweroff; fi
 fi

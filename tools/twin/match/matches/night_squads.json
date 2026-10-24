@@ -4,9 +4,11 @@
   "hour": 10,
   "limit_s": 300,
   "zone": {
-    "smart": "random",
+    "smart": "cycle",
     "r": 15,
-    "defend": ["agr_smart_terrain_6_4"]
+    "defend": [
+      "agr_smart_terrain_6_4"
+    ]
   },
   "spectator": {
     "aside": 30
@@ -21,7 +23,13 @@
   "matchup": "random",
   "sides": {
     "A": {
-      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "director": [
+        "shturm",
+        "greh",
+        "front",
+        "bound",
+        "cover"
+      ],
       "start": "advance",
       "squads": [
         {
@@ -41,7 +49,13 @@
       ]
     },
     "B": {
-      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "director": [
+        "shturm",
+        "greh",
+        "front",
+        "bound",
+        "cover"
+      ],
       "start": "advance",
       "squads": [
         {
@@ -60,5 +74,6 @@
         }
       ]
     }
-  }
+  },
+  "approach": "sprint"
 }

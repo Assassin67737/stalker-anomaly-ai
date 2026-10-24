@@ -24,7 +24,13 @@
   "balance": 3,
   "sides": {
     "A": {
-      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "director": [
+        "shturm",
+        "greh",
+        "front",
+        "bound",
+        "cover"
+      ],
       "start": "advance",
       "squads": [
         {
@@ -43,7 +49,13 @@
       ]
     },
     "B": {
-      "director": ["shturm", "greh", "front", "bound", "cover"],
+      "director": [
+        "shturm",
+        "greh",
+        "front",
+        "bound",
+        "cover"
+      ],
       "start": "advance",
       "squads": [
         {
@@ -61,5 +73,6 @@
         }
       ]
     }
-  }
+  },
+  "approach": "sprint"
 }

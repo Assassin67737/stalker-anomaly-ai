@@ -1,0 +1,204 @@
+-- varka_aim.script — ВОРОТА ОГНЯ для наших скриптовых поз (24.10.2026)
+--
+-- Ванильный C++-бой (stalker_combat_action_base.cpp, fire()) не жмёт спуск, пока голова не довернулась к врагу
+-- на ai_aim_fire_angle (22.5°), — до того только «изготовиться». Позы state_mgr с weapon = "fire" (hide_fire,
+-- threat_fire, sneak_fire…) жмут сразу, на любом угле: бой 225832-24 — 31755 из «жить хочу» выстрелил,
+-- развернувшись к врагу спиной (173°). И никто — ни ваниль, ни state_mgr — не смотрит, свободен ли ствол:
+-- бой 225832-3 — снайпер 8822 сидя бил в трубу в 6 м; по серии каждый пятый выстрел упирается в препятствие
+-- ближе 10 м от стрелка.
+--
+-- Ворота (порядок важен):
+--   1. довернулся ли (голова к груди врага ≤ AIM_DEG по горизонтали) — нет: та же поза без огня, смотреть на врага;
+--   2. ствол сидя (CROUCH_H) до груди врага свободен → бить сидя;
+--   3. нет — стоя (STAND_H) свободен → встать над укрытием и бить стоя (правило двух лучей, «присед по пояс»);
+--   4. нет — не стрелять, сидеть и смотреть (пуля всё равно в укрытие).
+-- Решение по лучам держим HOLD_MS, чтобы не дёргаться встал-сел каждый кадр.
+--
+-- v2 (серия 000103, Армейские склады): «свободен» значило «до груди врага ничего» — на 40 м луч задевал бугры
+-- рельефа и укрытие самого врага, и 188118 из 48% огня при контакте упал до 7% (бой 6: двое военных 30 с видят
+-- и молчат). Ворота про СВОЁ укрытие у ствола (труба в 6 м), а не про всю линию: смотрим только первые NEAR_M.
+
+local AIM_DEG  = 22.5
+local CROUCH_H, STAND_H = 1.0, 1.5   -- высота ствола сидя / стоя
+local NEAR_M   = 8                   -- препятствие у ствола: ближе этого (дальше — укрытие врага, рельеф: пусть бьёт)
+local HOLD_MS  = 700
+local TURN_STUCK_MS = 2000
+local RQT_STATIC = 2
+
+local rp
+-- свободен ли ствол у стрелка: первые NEAR_M (но не дальше половины пути) от a к b
+local function clear(a, b)
+	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.3 then return true end
+	dir:normalize()
+	local near = math.min(NEAR_M, d * 0.5)
+	rp:set_position(a); rp:set_direction(dir); rp:set_range(near)
+	if rp:query() and rp:get_distance() < near then return false end
+	-- обратно из точки near к стволу: задние грани луч не ловит (как varka_survive)
+	local m = vector():set(a):add(vector():set(dir):mul(near))
+	rp:set_position(m); rp:set_direction(vector():set(dir):invert()); rp:set_range(near)
+	return not (rp:query() and rp:get_distance() < near)
+end
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), ev, f) end
+end
+
+local function chest(enemy)
+	return utils_obj.safe_bone_pos(enemy, "bip01_spine1")
+end
+
+-- довернулся ли: голова (по ней движок решает огонь) к груди врага
+function facing(npc, enemy)
+	local p, c = npc:position(), chest(enemy)
+	local h = npc:head_orientation()
+	local a = math.atan2(h.x, h.z) - math.atan2(c.x - p.x, c.z - p.z)
+	a = (a + math.pi) % (2 * math.pi) - math.pi
+	return math.abs(math.deg(a)) <= AIM_DEG
+end
+
+local memo = {}  -- id → { t, enemy, stance }
+
+-- "crouch" | "stand" | nil: откуда ствол достаёт грудь врага
+function stance(npc, enemy)
+	local id, now = npc:id(), time_global()
+	local m = memo[id]
+	if m and m.enemy == enemy:id() and now < m.t then return m.stance end
+	local p, c = npc:position(), chest(enemy)
+	local s
+	if clear(vector():set(p.x, p.y + CROUCH_H, p.z), c) then s = "crouch"
+	elseif clear(vector():set(p.x, p.y + STAND_H, p.z), c) then s = "stand" end
+	-- в trace — только смена решения (для разбора: где ворота держат огонь)
+	if not m or m.stance ~= s then emit(npc, "aim_gate", { s = s or "none", enemy = enemy:id() }) end
+	memo[id] = { t = now + HOLD_MS, enemy = enemy:id(), stance = s,
+		turn0 = m and m.enemy == enemy:id() and m.turn0 or nil, turn_told = m and m.enemy == enemy:id() and m.turn_told or nil }
+	return s
+end
+
+-- ─── СТВОЛ КАК У ВАНИЛИ (v3, 24.10) ──────────────────────────────────────────────────────────────────────────
+-- Замер «увидел → первый выстрел» (3 серии): ваниль C++ 0.3–0.4 с, наши действия 0.9–2.7 с. Причины (state_mgr):
+--   1. огонь жмётся только в act_state_mgr_end — после ВСЕЙ смены позы (присед, анимация входа, взгляд);
+--   2. «не стреляю» = state "hide" с анимацией приседа-озирания (cr_idle_*_in/out) — каждый переход hide ↔ hide_fire
+--      играет вход/выход (то самое «на колене озираюсь» юзера);
+--   3. очередь всегда 5 / 300 мс; снайпер — прицел 0.5–1.5 с на КАЖДЫЙ выстрел.
+-- Ваниль (stalker_combat_action_base.cpp fire): голова в 22.5° → set_goal(fire1) с очередью из fire_queue_section
+-- бойца по дистанции (< 15 / < 30 / дальше); не довернулся → aim_ready (ствол поднят, жмёт, как довернётся).
+-- Здесь — то же: позы без оружия (state_mgr стволом не командует) + set_item(fire1 | aim1) напрямую.
+
+-- класс очереди по ef_weapon_type (switch в select_queue_params)
+local QCLS = { [5] = "pstl", [9] = "shtg", [11] = "snp", [12] = "snp", [6] = "mchg", [7] = "mchg", [8] = "mchg", [10] = "mchg" }
+local QDEF = {  -- значения движка, если в секции нет (ai_stalker.cpp)
+	pstl = { far = { 1, 1, 1000, 1500 }, medium = { 2, 4, 750, 1000 }, close = { 3, 5, 500, 750 } },
+	shtg = { far = { 1, 1, 1250, 1500 }, medium = { 1, 1, 750, 1250 }, close = { 1, 1, 500, 1000 } },
+	snp  = { far = { 1, 1, 3000, 4000 }, medium = { 1, 1, 3000, 4000 }, close = { 1, 1, 3000, 4000 } },
+	mchg = { far = { 1, 6, 500, 1000 }, medium = { 4, 6, 500, 750 }, close = { 4, 10, 300, 500 } },
+	auto = { far = { 1, 6, 500, 1000 }, medium = { 4, 6, 500, 750 }, close = { 4, 10, 300, 500 } },
+}
+local qcache = {}   -- секция бойца → таблица очередей
+local function queue_table(npc)
+	local sec = npc:section()
+	if qcache[sec] then return qcache[sec] end
+	local qs = ini_sys:r_string_ex(sec, "fire_queue_section")
+	local t = {}
+	for cls, def in pairs(QDEF) do
+		local c = { dmed = 15, dfar = 30 }   -- дальше dmed — средняя очередь, дальше dfar — дальняя
+		if qs and ini_sys:section_exist(qs) then
+			c.dmed = ini_sys:r_float_ex(qs, cls .. "_queue_fire_dist_med") or 15
+			c.dfar = ini_sys:r_float_ex(qs, cls .. "_queue_fire_dist_far") or 30
+		end
+		for _, band in ipairs({ "far", "medium", "close" }) do
+			local d = def[band]
+			local r = function(k, i) return qs and ini_sys:section_exist(qs) and ini_sys:r_float_ex(qs, cls .. "_" .. k .. "_" .. band) or d[i] end
+			c[band] = { r("min_queue_size", 1), r("max_queue_size", 2), r("min_queue_interval", 3), r("max_queue_interval", 4) }
+		end
+		t[cls] = c
+	end
+	qcache[sec] = t
+	return t
+end
+
+local burst = {}   -- id → { t, size, interval } — очередь бросаем раз на ~2 с (set_item каждый кадр её не перебивает)
+local function queue(npc, wpn, d)
+	local id, now = npc:id(), time_global()
+	local b = burst[id]
+	if b and now < b.t then return b.size, b.interval end
+	local ef = ini_sys:r_float_ex(wpn:section(), "ef_weapon_type") or 6
+	local c = queue_table(npc)[QCLS[ef] or "auto"]
+	local q = d > c.dfar and c.far or d > c.dmed and c.medium or c.close
+	b = { t = now + 2000, size = math.random(q[1], math.max(q[1], q[2])), interval = math.random(q[3], math.max(q[3], q[4])) }
+	burst[id] = b
+	return b.size, b.interval
+end
+
+-- ствол: можно — огонь ванильной очередью, нельзя — изготовиться (ствол поднят, без анимаций приседа-озирания)
+local function trigger(npc, enemy, fire)
+	local wpn = npc:best_weapon()
+	if not (npc:alive() and enemy:alive() and wpn and IsWeapon(wpn)) then return end
+	if fire then
+		local size, interval = queue(npc, wpn, npc:position():distance_to(enemy:position()))
+		npc:set_item(object.fire1, wpn, size, interval)
+	else
+		npc:set_item(object.aim1, wpn)
+	end
+end
+
+-- поза на месте с воротами: враг виден → varka_aim_crouch | varka_aim_stand (позы без оружия), ствол — здесь же.
+-- Второе — стреляем ли. crouch_only: вставать нельзя («жить хочу» прячется именно от глаз сидящего — встать =
+-- подставиться; серия 000103: после ворот доля погибших в 8.5 с после попадания 23–28% → 37%).
+function hold_state(npc, enemy, sniper, crouch_only)
+	local s = stance(npc, enemy)
+	if crouch_only and s == "stand" then s = nil end
+	local fire = s and facing(npc, enemy)
+	-- ствол свободен, а довернуться не выходит дольше TURN_STUCK_MS — в trace (раз на эпизод)
+	local m = memo[npc:id()]
+	if s and not fire then
+		m.turn0 = m.turn0 or time_global()
+		if not m.turn_told and time_global() - m.turn0 > TURN_STUCK_MS then
+			m.turn_told = true
+			emit(npc, "aim_turn_stuck", { enemy = enemy:id(), ms = time_global() - m.turn0 })
+		end
+	elseif m then m.turn0, m.turn_told = nil, nil end
+	trigger(npc, enemy, fire)
+	return s == "stand" and "varka_aim_stand" or "varka_aim_crouch", fire
+end
+
+-- ждать врага на месте (не видит): сидя, ствол поднят — без «приседа-озирания» ванильного hide
+-- (врага не знает — ствол в покой, а не «целиться»: обработчик оружия без цели не гоняем)
+function wait_state(npc)
+	local wpn = npc:best_weapon()
+	if npc:alive() and wpn and IsWeapon(wpn) then npc:set_item(npc:best_enemy() and object.aim1 or object.idle, wpn) end
+	return "varka_aim_crouch"
+end
+
+-- на ходу (гусиным шагом): стрелять, только если довернулся и ствол с текущей высоты свободен; поза — здесь же
+function move_state(npc, enemy)
+	local fire = facing(npc, enemy)
+	if fire then
+		local p, c = npc:position(), chest(enemy)
+		local h = npc:body_state() == move.crouch and CROUCH_H or STAND_H
+		fire = clear(vector():set(p.x, p.y + h, p.z), c)
+	end
+	trigger(npc, enemy, fire)
+	return "varka_aim_sneak", fire
+end
+
+function forget(id) memo[id] = nil; burst[id] = nil end
+
+-- выход из нашего действия: ствол в покой (мы командовали fire1 сами — в чужом действии без state_mgr-ствола
+-- огонь иначе продолжился бы)
+function release(npc)
+	forget(npc:id())
+	if not npc:alive() then return end   -- кадр смерти: трупом не командуем (краши 20.10)
+	local wpn = npc:best_weapon()
+	if wpn and IsWeapon(wpn) then npc:set_item(object.idle, wpn) end
+end
+
+function on_game_start()
+	-- позы без оружия: state_mgr не трогает ствол (act_state_mgr_end молчит при weapon = nil), стволом правим сами
+	local S = state_lib.states
+	S.varka_aim_crouch = { weapon = nil, movement = move.stand, mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = nil }
+	S.varka_aim_stand  = { weapon = nil, movement = move.stand, mental = anim.danger, bodystate = move.standing, animstate = nil, animation = nil }
+	S.varka_aim_sneak  = { weapon = nil, movement = move.walk,  mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = nil }
+end

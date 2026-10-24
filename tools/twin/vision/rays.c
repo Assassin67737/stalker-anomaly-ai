@@ -1,8 +1,8 @@
 // rays.c — лучемёт по level.cform без движка (20.10.2026).
 //
 // Тот же статический луч, что у игры: ray_pick с rqtStatic → CObjectSpace::_RayPick →
-// CDB OPT_ONLYNEAREST | OPT_CULL. Тест треугольника скопирован из xrCDB/xrCDB_ray.cpp
-// (_tri, ветка bCull): задние грани не ловятся, EPS = 1e-5, r <= 0 и r > range отброшены.
+// CDB OPT_ONLYNEAREST | OPT_CULL. Тест треугольника — алгоритм Мёллера–Трумбора (1997), вариант с
+// отсечением задних граней, с теми же допусками, что у движка: EPS = 1e-5, r <= 0 и r > range отброшены.
 // Поэтому попадание сверяется с игрой до номера треугольника (ray_pick:get_element()).
 //
 // Формат level.cform (xrEngine/xrLevel.h, xrCDB/xrCDB.h):
@@ -26,6 +26,9 @@
 //   int   rays_load(const char *cform)                       0 = ок; строит дерево
 //   float rays_cast(ox,oy,oz, dx,dy,dz, range)                дистанция до стены или -1 (dir — единичный)
 //   int   rays_clear(ax,ay,az, bx,by,bz)                      1 — отрезок a→b свободен (линия видимости)
+//   void  rays_mtl(id, vis, shoot)                            материал по ID (24.10)
+//   float rays_vis(ax,ay,az, bx,by,bz, thr)                   глаза: произведение проницаемости (> thr — видно) или 0
+//   float rays_bullet(ax,ay,az, bx,by,bz, ap)                  пуля: доля скорости у цели, 0 — застряла
 
 #include <math.h>
 #include <stdint.h>
@@ -131,7 +134,7 @@ static void build_bvh(void) {
 
 // ---------- луч ----------
 
-// Тест треугольника — дословно движковый _tri с bCull (xrCDB_ray.cpp:275)
+// Тест треугольника: Мёллер–Трумбор с отсечением задних граней (те же правила, что у движка)
 static int tri_hit(const TRI *t, const float *pos, const float *dir, float *range) {
 	const V3 *p0 = &verts[t->v[0]], *p1 = &verts[t->v[1]], *p2 = &verts[t->v[2]];
 	float e1[3] = {p1->x - p0->x, p1->y - p0->y, p1->z - p0->z};
@@ -209,7 +212,104 @@ static void *slurp(const char *path, size_t *n) {
 	return b;
 }
 
+// ---------- материалы (24.10.2026) ----------
+// В треугольнике cform — ID материала (dummy & 0x3FFF); движок при загрузке переводит его в индекс
+// (Level_load.cpp Load_GameSpecific_CFORM). Таблица по ID — rays_mtl из двойника (levels/materials.tsv, bake_mtl.py).
+// Неизвестный ID — глухой: глазам 0, пуле 1.
+#define MTL_N 16384
+static float mtl_vis[MTL_N], mtl_shoot[MTL_N];
+static int mtl_init = 0;
+static void mtl_defaults(void) {
+	if (mtl_init) return;
+	for (int i = 0; i < MTL_N; i++) { mtl_vis[i] = 0.f; mtl_shoot[i] = 1.f; }
+	mtl_init = 1;
+}
+
+typedef struct { float r; int32_t t; } HIT;
+#define MAXHITS 256
+// Все попадания луча до range (cull — только передние грани, как OPT_CULL), по возрастанию дистанции
+static int cast_all(const float *pos, const float *dir, float range, int cull, HIT *out) {
+	float inv[3];
+	for (int k = 0; k < 3; k++) inv[k] = dir[k] != 0.f ? 1.f / dir[k] : 1e30f;
+	int n = 0, stack[128], sp = 0;
+	stack[sp++] = 0;
+	while (sp) {
+		const NODE *nd = &bvh[stack[--sp]];
+		float tn;
+		if (!box_hit(nd, pos, inv, range, &tn)) continue;
+		if (nd->count > 0) {
+			for (int i = nd->first; i < nd->first + nd->count && n < MAXHITS; i++) {
+				const TRI *t = &tris[order[i]];
+				float r;
+				int hit = tri_hit(t, pos, dir, &r);
+				if (!hit && !cull) {                      // задняя грань: тот же тест с обратным обходом
+					TRI tb = *t; tb.v[1] = t->v[2]; tb.v[2] = t->v[1];
+					hit = tri_hit(&tb, pos, dir, &r);
+				}
+				if (hit && r > 0 && r <= range) { out[n].r = r; out[n].t = (int32_t)order[i]; n++; }
+			}
+		} else {
+			if (sp < 126) { stack[sp++] = nd->first; stack[sp++] = -nd->count; }
+		}
+	}
+	for (int i = 1; i < n; i++) {                       // вставками: попаданий единицы
+		HIT h = out[i]; int j = i - 1;
+		while (j >= 0 && out[j].r > h.r) { out[j + 1] = out[j]; j--; }
+		out[j + 1] = h;
+	}
+	return n;
+}
+
 #ifdef RAYS_LIB
+void rays_mtl(int id, float vis, float shoot) {
+	mtl_defaults();
+	if (id >= 0 && id < MTL_N) { mtl_vis[id] = vis; mtl_shoot[id] = shoot; }
+}
+
+// Глаза (Feel_Vision.cpp feel_vision_callback): вперёд, OPT_CULL; проницаемость материалов перемножается, запрос
+// обрывается, как только произведение ≤ thr. Ответ — произведение (> thr — видно) или 0.
+float rays_vis(float ax, float ay, float az, float bx, float by, float bz, float thr) {
+	mtl_defaults();
+	float d[3] = {bx - ax, by - ay, bz - az};
+	float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	if (len < 1e-4f) return 1.f;
+	for (int k = 0; k < 3; k++) d[k] /= len;
+	float a[3] = {ax, ay, az};
+	HIT h[MAXHITS];
+	int n = cast_all(a, d, len, 1, h);
+	float v = 1.f;
+	for (int i = 0; i < n; i++) {
+		v *= mtl_vis[tris[h[i].t].dummy & 0x3FFF];
+		if (v <= thr) return 0.f;
+	}
+	return v;
+}
+
+// Пуля (Level_bullet_manager_firetrace.cpp, OPT_FULL_TEST — обе грани): shoot 0 — насквозь даром (кусты);
+// бронебойность ap ≥ shoot — пробила, скорость × (ap − shoot)/ap; иначе застряла (рикошет для нас — тоже стоп).
+// Ответ — доля скорости у цели (урон ∝ ей), 0 — не долетела.
+float rays_bullet(float ax, float ay, float az, float bx, float by, float bz, float ap) {
+	mtl_defaults();
+	float d[3] = {bx - ax, by - ay, bz - az};
+	float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	if (len < 1e-4f) return 1.f;
+	for (int k = 0; k < 3; k++) d[k] /= len;
+	float a[3] = {ax, ay, az};
+	HIT h[MAXHITS];
+	int n = cast_all(a, d, len, 0, h);
+	float sp = 1.f;
+	for (int i = 0; i < n; i++) {
+		float m = mtl_shoot[tris[h[i].t].dummy & 0x3FFF];
+		if (m <= 1e-6f) continue;
+		if (ap > 1e-6f && ap >= m) {
+			float f = (ap - m) / ap;
+			if (f < 1e-6f) return 0.f;
+			sp *= f;
+		} else return 0.f;
+	}
+	return sp;
+}
+
 int rays_load(const char *path) {
 	load_cform(path);
 	build_bvh();

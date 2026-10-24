@@ -49,6 +49,8 @@ label{cursor:pointer;user-select:none}
 
 /* погоны, звезда командира, полоска здоровья */
 .strap{flex:none;display:inline-block;vertical-align:middle}
+.strap.r7{margin:0 3px 3px}  /* колосья легенды выходят за клетку погона */
+.strap.r5{margin:3px 3px 2px} .strap.r6{margin:4px 1px 0}  /* катаны эксперта, рожки мастера */
 .star{color:var(--gold);font-size:12px}
 .hp{display:inline-block;height:4px;background:#26231b;flex:none;vertical-align:middle}
 .hp i{display:block;height:100%}

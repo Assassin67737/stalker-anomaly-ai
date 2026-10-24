@@ -1,33 +1,658 @@
--- varka_grenade.script — одна граната на отряд за раз (23.10.2026)
+-- varka_grenade.script — гранаты v2 (24.10.2026): эталон из двойника (tools/twin/sim/grenade.lua), исполненный в игре
 --
--- Бой night_squads#011929-3: экологи кинули три гранаты за 0.3 с (65.5–65.8 с) и четвёртую через 3 с. Юзер:
--- «прикольно, но бред». Ванильный запрет (stalker_property_evaluators.cpp, ShouldThrowGrenade): личный интервал
--- бойца и can_throw_grenade у агент-менеджера — тот сравнивает ТОЧКИ падения, а у троих они разные
--- (каждый кидает в свою память о враге).
--- Движок перед броском спрашивает Lua: _G.CAI_Stalker__ShouldThrow(npc) → false отменяет (крючок Modded Exes,
--- в exe есть, никем не занят). Отвечаем: в отряде уже кто-то кинул за последние SQUAD_MS — нельзя.
--- «Кто-то кинул» = первый, кому мы сказали «можно»; ему самому можно до конца его броска (крючок зовётся
--- каждый кадр, пока он решается).
+-- Решения юзера 24.10 (разговор «кубики гранаты»):
+--   · нарочный промах движка 2–5 м и кубик силы ×U(0.75, 1.25) — НЕТ. Вместо них честная ошибка умения: разброс
+--     дальности и вбок растёт с дистанцией и падает с рангом. Целятся туда, где ДУМАЮТ, что враг (память) — это честно.
+--   · запал — как в жизни (УЗРГМ 3.2–4.2 с, у каждой гранаты свой). Опытный «отсчитывает сам»: держит гранату с
+--     выдернутой чекой, чтобы она рвалась почти при касании; новичок кидает сразу и даёт время убежать.
+--   · ВИДЕЛ гранату — у него есть информация: орёт и бежит от точки падения, какого бы ранга ни был (рефлекс,
+--     REACT ~0.3 с почти без ранга; ранг — лишь ошибка точки EYE_ERR). Кто после крика обернулся и УВИДЕЛ — та же
+--     цепочка «видел», только позже на время оборота (успех чуть меньше, но немаленький). Цепочка «крик → оборот →
+--     осознал → решил → побежал» с прикидкой EST_ERR — только для тех, кто так и НЕ увидел (уточнение юзера 24.10).
+--   · «угроза гранаты → спринт от неё → присесть». ЛЁЖА УБРАНО (24.10, юзер): позы лёжа в ванили не нашли (loophole_9
+--     на стенде — застывший нырок), а точку «безопасно» считали для лежащего (силуэт 0.4 м) — бойцы добегали на
+--     3–5 м и гибли сидя/стоя. Теперь точка — для сидящего (1.0 м), поза — ванильная hide_na (как xr_danger).
+--     Стенд prone/pose (varka_cmd) оставлен для поиска позы.
+--
+-- Как это сделано (рычаги движка — память twin-grenades-sweep):
+--   когда кидать   колбэк Modded Exes npc_on_should_throw (callbacks_gameobject.script; v1 затирал сам крючок
+--                  _G.CAI_Stalker__ShouldThrow): отрядный интервал (v1) + свежесть памяти о враге по рангу;
+--   как летит      летящая граната — отдельный объект, рождается внутри гранаты в руке (game_object_on_net_spawn);
+--                  в кадр, когда она ушла из руки, задаём ей свою скорость (physics_shell:set_linear_vel) —
+--                  траектория минимальной скорости до точки «цель + ошибка умения». Гравитация движка — 2 × 9.81!
+--   запал          destroy_time в ltx поднят до 4.5 с (configs/mod_system_varka_grenades.ltx — запасной, если скрипт
+--                  промолчит); рвём сами obj:explode(0) в момент «отпустил + запал − отсчёт». explode пишет автором
+--                  удара саму гранату → возвращаем автора бросившему в крючках движка _G.CAI_Stalker__/CActor__/
+--                  CBaseMonster__BeforeHitCallback (движок после крючка применяет draftsman к удару — Hit.cpp
+--                  ApplyScriptHit). Колбэки npc/actor_on_before_hit в этой сборке НИКТО не раздаёт (моста в Lua нет),
+--                  поэтому крючки занимаем сами, с цепочкой на прежний, и меняем только автора от наших гранат.
+--                  «Отсчёт» — укороченный остаток запала: держать гранату дольше в руке движок NPC не даёт.
+--   реакция        ванильную (xr_danger: убежать на 20–35 м «assault») глушим через npc_on_eval_danger, вместо неё —
+--                  наше действие в ГЛАВНОМ планировщике (188213 оценщик / 188214 действие), главнее боя и приказов.
+-- Запал по-настоящему и у гранат игрока (честно: одна физика на всех). Крик в звуке — ванильный, движок кричит сам.
+--
+-- Цель — Modded Exes (на нём и GAMMA). Фоллбэки — не вторая версия, а честное отключение того, чего нет (CAP):
+--   нет колбэков Modded Exes (callbacks_gameobject)  → v2 выключен целиком, гранаты ванильные;
+--   DLTX не применился (destroy_time в ltx < 4.2 с)  → запал и отсчёт движка (2.5 с), остальное работает;
+--   set_linear_vel упал на первой гранате            → траектория движка (с его кубиками), остальное работает.
+-- Что выключено — одна строка в логе игры при старте и событие grenade_caps в trace.
 
 local SQUAD_MS = 7000
-local last = {}  -- id отряда → { id = кто кидает, t = когда ему разрешили }
+local GREN = { grenade_rgd5 = { r = 6 }, grenade_f1 = { r = 8 }, ["grenade_gd-05"] = { r = 9 } }
+local FUSE_MIN, FUSE_MAX = 3200, 4200          -- мс, УЗРГМ
+local GRAV = 19.62                             -- default_world_gravity (xrPhysics/Physics.cpp)
 
+-- прямая рангов: { новичок, эксперт+ } (плато с эксперта, 14500 — как у износа)
+local MEM_AGE   = { 15, 6 }       -- кидать только по памяти не старше, с
+local ERR_RANGE = { 0.18, 0.05 }  -- σ дальности, доля дистанции
+local ERR_LAT   = { 0.10, 0.03 }  -- σ вбок, доля дистанции
+local COOK_MAX  = { 0, 1.5 }      -- сколько готов «отсчитать» с выдернутой чекой, с
+local COOK_LAND = 0.4             -- опытный целит взрыв на столько после касания, с
+local REACT     = { 0.3, 0.25 }   -- увидел → побежал, с (рефлекс: ранг почти не влияет)
+local EYE_ERR   = { 1.0, 0.5 }    -- увидел — ошибка точки падения по дуге, м
+local LOOK      = { 1.0, 0.5 }    -- услышал крик → уходит и ищет глазами столько, с
+local EST_ERR   = { 4, 2 }        -- по крику (ещё не увидел) — ошибка прикидки, м
+local GET_UP    = { 1.2, 0.6 }    -- после взрыва лежит ещё, с
+local SHOUT_R   = 30              -- крик слышат свои ближе, м
+local SEE_R     = 30              -- дальше гранату не ищем вовсе, м
+local DANGER_PAD = 2              -- опасно ближе r + это — меняй позицию (рефлекс, без лучей)
+local RUN_MS    = 3500            -- не добежал — ложится там, где стоит
+local EVA_GRN, ACT_GRN = 188213, 188214
+local CAP = { me = false, fuse = false, vel = true }
+local LTX_FUSE = 2500             -- запал движка из ltx (читается при старте)
+local RQT_STATIC = 2
+
+local function emit(npc_id, ev, f, sq)
+	if varka_trace then varka_trace.emit(sq or 0, npc_id, ev, f) end
+end
 local function squad_key(npc)
 	local sq = get_object_squad(npc)
 	return sq and sq.id or npc:id()
 end
+local function rs(obj)
+	local r = obj.character_rank and obj:character_rank() or 0
+	return math.max(0, math.min(1, r / 14500))
+end
+local function line(t, s) return t[1] + (t[2] - t[1]) * s end
+local function gauss()
+	local u = math.max(1e-6, math.random())
+	return math.sqrt(-2 * math.log(u)) * math.cos(2 * math.pi * math.random())
+end
+
+-- ─── 1. когда кидать ────────────────────────────────────────────────────────────────────────
+local last = {}  -- id отряда → { id = кто кидает, t = когда ему разрешили }
 
 function should_throw(npc)
 	local key, now = squad_key(npc), time_global()
 	local l = last[key]
 	if l and l.id ~= npc:id() and now - l.t < SQUAD_MS then return false end
-	if not l or l.id ~= npc:id() or now - l.t >= SQUAD_MS then
-		last[key] = { id = npc:id(), t = now }
-		if varka_trace then varka_trace.emit(key, npc:id(), "grenade_ok", {}) end
+	-- уже разрешили ему (крючок зовётся каждый кадр, пока он решается) — не передумываем
+	if l and l.id == npc:id() and now - l.t < SQUAD_MS then return true end
+	-- свежесть памяти: кидать туда, где враг был минуту назад, — мимо
+	local be = npc:best_enemy()
+	if not be then return false end
+	local age = (now - npc:memory_time(be)) / 1000
+	if age > line(MEM_AGE, rs(npc)) then return false end
+	last[key] = { id = npc:id(), t = now }
+	emit(npc:id(), "grenade_ok", { age = age }, key)
+	return true
+end
+local function on_should_throw(npc, flags)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
+	if flags.ret_value and not should_throw(npc) then flags.ret_value = false end
+end
+
+-- ─── 2. полёт и запал ───────────────────────────────────────────────────────────────────────
+local pend = {}    -- id летящей гранаты → { t = родилась, owner = id бросающего }
+local live = {}    -- id → { owner, r, rel, boom, ax, ay, az, fly, cook, landed, shout }
+local boomed = {}  -- id взорванной → { owner, t } — вернуть автора урона бросившему
+
+-- скорость физоболочки: get_linear_vel(vector&) ЗАПОЛНЯЕТ переданный вектор, а не возвращает (24.10: Busy Hands)
+local function vel(sh)
+	local v = vector():set(0, 0, 0)
+	sh:get_linear_vel(v)
+	return v
+end
+
+local function on_net_spawn(obj)
+	if obj and GREN[obj:section()] then pend[obj:id()] = { t = time_global() } end
+end
+
+local rp
+local function clear(a, b)
+	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.3 then return true end
+	dir:normalize()
+	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
+	if rp:query() and rp:get_distance() < d - 0.3 then return false end
+	local back = vector():set(dir):invert()
+	rp:set_position(b); rp:set_direction(back); rp:set_range(d)
+	return not (rp:query() and rp:get_distance() < d - 0.3)
+end
+
+-- свободна ли дуга из p0 со скоростью v до 85% полёта T (хвост у самой земли не проверяем — там цель)
+local function arc_clear(p0, vx, vy, vz, T)
+	local prev = p0
+	for i = 1, 10 do
+		local t = T * 0.85 * i / 10
+		local p = vector():set(p0.x + vx * t, p0.y + vy * t - 0.5 * GRAV * t * t, p0.z + vz * t)
+		if not clear(prev, p) then return false end
+		prev = p
 	end
 	return true
 end
 
+-- своя скорость: траектория до «цель + ошибка умения». Самая пологая (минимальная скорость) задевает укрытие
+-- перед бросающим (бой #24 24.10: обе гранаты отскочили под ноги, грешник подорвался сам) — тогда дуга круче;
+-- ни одна не проходит — оставляем бросок движка. Опытный отсчитывает запал.
+local LOBS = { 1, 1.15, 1.3, 1.5, 1.75 }
+local function aim(o, own, g)
+	local be = own:best_enemy()
+	if not be then return end
+	local tp = own:memory_position(be)
+	local gp = o:position()
+	local dx, dz = tp.x - gp.x, tp.z - gp.z
+	local d = math.sqrt(dx * dx + dz * dz)
+	if d < 2 then return end
+	local s = rs(own)
+	local k = math.max(0.3, 1 + gauss() * line(ERR_RANGE, s))
+	local lat = gauss() * line(ERR_LAT, s) * d
+	local ux, uz = dx / d, dz / d
+	local ax, az = gp.x + ux * d * k - uz * lat, gp.z + uz * d * k + ux * lat
+	local ay = tp.y
+	local rx, ry, rz = ax - gp.x, ay + 0.1 - gp.y, az - gp.z
+	local T0 = math.sqrt(2 * math.sqrt(rx * rx + ry * ry + rz * rz) / GRAV)
+	local T, v
+	for _, m in ipairs(LOBS) do
+		local t = T0 * m
+		local vx, vy, vz = rx / t, ry / t + 0.5 * GRAV * t, rz / t
+		if arc_clear(gp, vx, vy, vz, t) then T, v = t, vector():set(vx, vy, vz); break end
+	end
+	g.tx, g.tz, g.k, g.lat = tp.x, tp.z, k, lat
+	if not v then g.lob = -1; return end
+	local sh = o:get_physics_shell()
+	if not sh or not CAP.vel then return end
+	if not pcall(sh.set_linear_vel, sh, v) then
+		CAP.vel = false
+		printf("[VARKA] varka_grenade: set_linear_vel недоступен — траектория движка")
+		return
+	end
+	local fuse = (g.boom - g.rel) / 1000
+	local cook = CAP.fuse and math.max(0, math.min(line(COOK_MAX, s), fuse - T - COOK_LAND)) or 0
+	g.boom = g.boom - cook * 1000
+	g.ax, g.ay, g.az, g.fly, g.cook, g.lob = ax, ay, az, T, cook, T / T0
+end
+
+local function release(o, owner_id)
+	local now = time_global()
+	local fuse = CAP.fuse and math.random(FUSE_MIN, FUSE_MAX) or LTX_FUSE
+	local g = { owner = owner_id, r = GREN[o:section()].r, rel = now, boom = now + fuse }
+	local own = level.object_by_id(owner_id)
+	g.sq = own and owner_id ~= AC_ID and squad_key(own) or nil
+	-- игроку и ванили (varka_vanilla) — только запал: траектория и решение кидать — движка
+	if owner_id ~= AC_ID and own and IsStalker(own) and own:alive() and not varka_vanilla.is(own) then aim(o, own, g) end
+	live[o:id()] = g
+	local p = o:position()
+	emit(owner_id, "grenade_throw", { g = o:id(), x = p.x, y = p.y, z = p.z,
+		lx = g.ax or p.x, ly = g.ay or p.y, lz = g.az or p.z, tx = g.tx or p.x, tz = g.tz or p.z,
+		fly = g.fly or 0, fuse = (g.boom - now) / 1000, cook = g.cook or 0, k = g.k or 1, lat = g.lat or 0, lob = g.lob or 0,
+		actor = owner_id == AC_ID and 1 or 0 }, own and own:id() ~= AC_ID and squad_key(own) or 0)
+end
+
+local function boom(id, g)
+	local o = level.object_by_id(id)
+	live[id] = nil
+	if not o or o:parent() then return end
+	local p = o:position()
+	emit(g.owner, "grenade_boom", { g = id, x = p.x, y = p.y, z = p.z, late = time_global() - g.boom, own = CAP.fuse and 1 or 0 })
+	if not CAP.fuse then return end   -- рвёт движок сам, по своему запалу (автор удара у него верный)
+	boomed[id] = { owner = g.owner, t = time_global() }
+	o:explode(0)
+end
+
+local function track_tick(now)
+	for id, p in pairs(pend) do
+		local o = level.object_by_id(id)
+		if not o then pend[id] = nil
+		else
+			local par = o:parent()
+			if par then
+				if GREN[par:section()] then
+					local own = par:parent()
+					if own then p.owner = own:id() end
+				else pend[id] = nil end                     -- обычная граната в рюкзаке/ящике
+			elseif p.owner then pend[id] = nil; release(o, p.owner)
+			elseif now - p.t > 3000 then pend[id] = nil end -- родилась без руки — лежит, не летит
+		end
+	end
+	for id, g in pairs(live) do
+		if now >= g.boom then boom(id, g)
+		elseif not g.landed and now - g.rel > 300 then
+			local o = level.object_by_id(id)
+			local sh = o and o:get_physics_shell()
+			if not o then live[id] = nil
+			elseif sh and vel(sh):magnitude() < 1 then
+				g.landed = true
+				local p = o:position()
+				emit(g.owner, "grenade_land", { g = id, x = p.x, y = p.y, z = p.z, t_fly = (now - g.rel) / 1000 })
+			end
+		end
+	end
+	for id, b in pairs(boomed) do if now - b.t > 3000 then boomed[id] = nil end end
+end
+
+-- автор урона: explode() пишет автором гранату — возвращаем бросившему (иначе убийство «ничьё»)
+local function hook_before_hit(name)
+	local prev = _G[name]
+	_G[name] = function(obj, shit, bone_id)
+		local d = shit and shit.draftsman
+		local b = d and boomed[d:id()]
+		if b then
+			local own = level.object_by_id(b.owner)
+			if own then shit.draftsman = own end
+		end
+		if prev then return prev(obj, shit, bone_id) end
+		return true
+	end
+end
+
+-- ─── 3. заметить, крикнуть, понять, где ─────────────────────────────────────────────────────
+-- Правило юзера 24.10: «слышишь "граната" — меняй позицию». Опасно = ближе r + DANGER_PAD к тому месту, где, по
+-- твоему знанию, граната (без хитростей «за мной укрытие» — одним лучом из прикидки это врёт, бой #23: трое видели
+-- гранату в 1.5–10 м и решили «не опасно»). Укрытие учитываем только при выборе, КУДА бежать.
+local know = {}  -- id бойца → { [id гранаты] = { phase = "react"|"look"|"known", t, x, y, z, src, from } }
+local eva = {}   -- id бойца → { g, vid, phase = "run"|"down"|"up", t0, up_at }
+
+-- точка на земле у (x, z): высота ближайшей ноды (бой #23: высота бралась с ноды под ЛЕТЯЩЕЙ гранатой — точка
+-- уходила под землю, и любой луч из неё был «закрыт»)
+local function ground(x, y, z)
+	local v = level.vertex_id(vector():set(x, y, z))
+	if v and v < 4294967295 then
+		local p = level.vertex_position(v)
+		if math.abs(p.y - y) < 6 then return vector():set(x, p.y, z) end
+	end
+	return vector():set(x, y, z)
+end
+
+local function in_danger(gp, r, p) return gp:distance_to(p) <= r + DANGER_PAD end
+
+-- безопасно ли лечь в p: от каждой из точек «прикидка ± 1.5 м» дальше радиуса или за преградой
+local OFFS = { { 0, 0 }, { 1.5, 0 }, { -1.5, 0 }, { 0, 1.5 }, { 0, -1.5 } }
+local function lie_safe(gp, r, p)
+	local b = vector():set(p); b.y = b.y + 1.0     -- сидящий (лёжа убрано 24.10; было 0.4)
+	for _, o in ipairs(OFFS) do
+		local q = ground(gp.x + o[1], gp.y, gp.z + o[2])
+		if in_danger(q, r, p) then
+			q.y = q.y + 0.3
+			if clear(q, b) then return false end
+		end
+	end
+	return true
+end
+
+-- куда упадёт: увидевший читает дугу (баллистика без отскоков) — любой ранг; ранг — только ошибка точки
+local function where(o, err)
+	local p = vector():set(o:position())
+	local sh = o:get_physics_shell()
+	local v = sh and vel(sh)
+	if v and v:magnitude() >= 1 then
+		local fl = level.vertex_position(o:level_vertex_id()).y
+		for _ = 1, 2 do   -- пол под точкой падения, а не под гранатой: второй проход уточняет
+			local a, b, c = -0.5 * GRAV, v.y, p.y - fl
+			local t = (-b - math.sqrt(math.max(0, b * b - 4 * a * c))) / (2 * a)
+			if t ~= t or t < 0 then break end
+			local q = ground(p.x + v.x * t, fl, p.z + v.z * t)
+			if math.abs(q.y - fl) < 0.3 then fl = q.y; break end
+			fl = q.y
+		end
+		local a, b, c = -0.5 * GRAV, v.y, p.y - fl
+		local t = (-b - math.sqrt(math.max(0, b * b - 4 * a * c))) / (2 * a)
+		if t == t and t >= 0 then p = vector():set(p.x + v.x * t, fl, p.z + v.z * t) end
+	end
+	return ground(p.x + gauss() * err, p.y, p.z + gauss() * err)
+end
+
+-- куда бежать: ближе — лучше; к гранате — хуже; к врагу и на его линию огня — хуже (бой: отличный спринт прямо
+-- на противника, задело и добили)
+local RINGS, DIRS = { 3, 5, 7, 9, 12 }, 12
+local function spot(npc, gp, r)
+	local base = npc:level_vertex_id()
+	local me = npc:position()
+	local away = vector():set(me):sub(gp); away.y = 0
+	if away:magnitude() < 0.1 then away = vector():set(1, 0, 0) end
+	away:normalize()
+	local be = npc:best_enemy()
+	local ep = be and npc:memory_position(be)
+	local eye = ep and vector():set(ep.x, ep.y + 1.6, ep.z)
+	local best, bs
+	local far, fd   -- безопасного нет — хоть подальше (бой 225832-16: F1 в 0.3 м, ни одна точка «лечь» не прошла,
+	                -- боец лёг в 1.2 м от гранаты; за 2 с спринтом — это 9 м, лёжа там живут)
+	for _, ring in ipairs(RINGS) do
+		for i = 0, DIRS - 1 do
+			local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
+			local v = level.vertex_in_direction(base, dir, ring)
+			if v and v < 4294967295 and v ~= base and npc:accessible(v) then
+				local p = level.vertex_position(v)
+				local dg = p:distance_to(gp)
+				if not fd or dg > fd then far, fd = v, dg end
+				local s = ring + 3 * math.max(0, -dir:dotproduct(away))
+				if ep then
+					s = s + 1.5 * math.max(0, ep:distance_to(me) - ep:distance_to(p))
+					if not bs or s + 4 < bs then
+						local body = vector():set(p); body.y = body.y + 0.5
+						if clear(eye, body) then s = s + 4 end
+					end
+				end
+				if (not bs or s < bs) and lie_safe(gp, r, p) then best, bs = v, s end
+			end
+		end
+	end
+	if best then return best, true end
+	if far and fd > me:distance_to(gp) + 1 then return far, false end
+end
+
+local function start_evade(npc, gid, g, k)
+	local gp = vector():set(k.x, k.y, k.z)
+	local o = level.object_by_id(gid)
+	local err = o and gp:distance_to(o:position()) or 0
+	if not in_danger(gp, g.r, npc:position()) then
+		emit(npc:id(), "grenade_safe", { g = gid, d = gp:distance_to(npc:position()), err = err, src = k.src }, squad_key(npc))
+		return
+	end
+	local v, safe = spot(npc, gp, g.r)
+	eva[npc:id()] = { g = gid, vid = v, phase = v and "run" or "down", t0 = time_global(), src = k.src }
+	emit(npc:id(), "grenade_dodge", { g = gid, to = v or -1, d = v and level.vertex_position(v):distance_to(npc:position()) or 0,
+		err = err, src = k.src, safe = safe and 1 or 0 }, squad_key(npc))
+end
+
+-- знание уточнилось (увидел сам после крика / своя отскочила): бежит не туда — новое место
+local function replan(npc, gid, g, k)
+	local e = eva[npc:id()]
+	if not e then return start_evade(npc, gid, g, k) end
+	if e.g ~= gid or e.phase ~= "run" then return end
+	local gp = vector():set(k.x, k.y, k.z)
+	if e.vid and lie_safe(gp, g.r, level.vertex_position(e.vid)) then return end
+	local v = spot(npc, gp, g.r)
+	e.vid, e.phase = v, v and "run" or "down"
+	emit(npc:id(), "grenade_replan", { g = gid, to = v or -1, src = k.src }, squad_key(npc))
+end
+
+-- «Граната!»: свои рядом сразу уходят от прикидки (с ошибкой по рангу) и ищут её глазами LOOK секунд
+local function shout(npc, gid, g, o, now)
+	g.shout = g.shout or {}
+	local sk = squad_key(npc)
+	if g.shout[sk] then return end
+	g.shout[sk] = npc:id()
+	emit(npc:id(), "grenade_shout", { g = gid }, sk)
+	local sq = get_object_squad(npc)
+	if not sq then return end
+	for m in sq:squad_members() do
+		local mo = db.storage[m.id] and db.storage[m.id].object
+		if mo and mo:id() ~= npc:id() and mo:alive() and mo:position():distance_to(npc:position()) < SHOUT_R then
+			know[m.id] = know[m.id] or {}
+			if not know[m.id][gid] then
+				local s = rs(mo)
+				local p = where(o, line(EST_ERR, s))
+				local k = { phase = "look", t = now + line(LOOK, s) * 1000, from = npc:id(), x = p.x, y = p.y, z = p.z, src = "shout" }
+				know[m.id][gid] = k
+				emit(m.id, "grenade_est", { g = gid, x = k.x, z = k.z, err = p:distance_to(o:position()), from = npc:id() }, sk)
+				if not eva[m.id] then start_evade(mo, gid, g, k) end
+			end
+		end
+	end
+end
+
+local function perceive(npc, now)
+	local id = npc:id()
+	local s = rs(npc)
+	local kn = know[id] or {}
+	know[id] = kn
+	for gid, g in pairs(live) do
+		local o = level.object_by_id(gid)
+		local own = g.sq and g.sq == squad_key(npc)
+		if o and not o:parent() and o:position():distance_to(npc:position()) < SEE_R then
+			local k = kn[gid]
+			if own and not k then
+				-- своя граната (бросивший и его отряд видели замах): знают точку
+				k = { phase = "known", src = "own", x = g.ax or o:position().x, y = g.ay or o:position().y, z = g.az or o:position().z }
+				kn[gid] = k
+				start_evade(npc, gid, g, k)
+			end
+			local seen = npc:see(o)
+			if not seen then
+				local bd = npc:best_danger()
+				local dep = bd and bd:type() == danger_object.grenade and bd:dependent_object()
+				seen = dep and dep:id() == gid
+			end
+			-- своя, но легла не туда (отскок): глаза важнее замаха
+			local strayed = own and k and k.src == "own" and o:position():distance_to(vector():set(k.x, k.y, k.z)) > 3
+			if seen and (not k or k.phase == "look" or strayed) then
+				k = { phase = "react", t = now + line(REACT, s) * 1000 }
+				kn[gid] = k
+				emit(id, "grenade_seen", { g = gid, d = o:position():distance_to(npc:position()), own = own and 1 or 0 }, squad_key(npc))
+				if not own then shout(npc, gid, g, o, now) end
+			end
+			if k and k.phase == "react" and now >= k.t then
+				local p = where(o, line(EYE_ERR, s))
+				k.phase, k.x, k.y, k.z, k.src = "known", p.x, p.y, p.z, "eye"
+				replan(npc, gid, g, k)
+			elseif k and k.phase == "look" and now >= k.t then
+				k.phase = "known"     -- так и не увидел: остаётся прикидка по крику
+			end
+		end
+	end
+	for gid in pairs(kn) do if not live[gid] then kn[gid] = nil end end
+end
+
+-- для trace (varka_lkp npc_pos.prone): лежит ли боец от гранаты
+function is_prone(id)
+	local e = eva[id]
+	return e ~= nil and (e.phase == "down" or e.phase == "up")
+end
+
+-- стенд позы (24.10, юзер не увидел лёжа за 30 боёв): varka_cmd «prone <id|sq:id|near> [с]» — уложить без гранаты;
+-- «pose <состояние state_lib> <id|sq:id|near> [с]» — то же любой позой (выбрать глазами «пугливую» и т.п.)
+local function stand_list(who)
+	local list = {}
+	if who == "near" then
+		local ap = db.actor:position()
+		for id, st in pairs(db.storage) do
+			local o = st.object
+			if o and id ~= AC_ID and IsStalker(o) and o:alive() and o:position():distance_to(ap) < 30 then list[#list + 1] = o end
+		end
+	elseif who:sub(1, 3) == "sq:" then
+		local sq = alife_object(tonumber(who:sub(4)))
+		if sq and sq.squad_members then
+			for m in sq:squad_members() do
+				local o = db.storage[m.id] and db.storage[m.id].object
+				if o and o:alive() then list[#list + 1] = o end
+			end
+		end
+	else
+		local o = level.object_by_id(tonumber(who) or -1)
+		if o and IsStalker(o) and o:alive() then list[1] = o end
+	end
+	return list
+end
+
+local function stand(pose, who, sec)
+	local list, ms = stand_list(who or "near"), (tonumber(sec) or 8) * 1000
+	if #list == 0 then return false, "некого" end
+	local now = time_global()
+	for _, o in ipairs(list) do
+		eva[o:id()] = { g = -1, phase = "down", t0 = now, test_until = now + ms, pose = pose }
+		emit(o:id(), "grenade_prone", { g = -1, test = 1, pose = pose }, squad_key(o))
+	end
+	return true, #list .. " в «" .. pose .. "» на " .. ms / 1000 .. " с"
+end
+
+local function cmd_prone(a) return stand("varka_prone", a[1], a[2]) end
+
+local function cmd_pose(a)
+	local pose = a[1]
+	if not (pose and state_lib.states[pose]) then return false, "нет такого состояния: " .. tostring(pose) end
+	return stand(pose, a[2], a[3])
+end
+
+-- ─── 4. действие: спринт / лёжа / встать ────────────────────────────────────────────────────
+class "eva_varka_grenade" (property_evaluator)
+function eva_varka_grenade:__init(name) super(nil, name) end
+function eva_varka_grenade:evaluate()
+	local npc = self.object
+	if not npc:alive() or IsWounded(npc) then eva[npc:id()] = nil; return false end
+	local e = eva[npc:id()]
+	if not e then return false end
+	if e.test_until and time_global() >= e.test_until then
+		eva[npc:id()] = nil
+		emit(npc:id(), "grenade_up", { g = -1, test = 1 }, squad_key(npc))
+		return false
+	end
+	if e.phase == "up" and time_global() >= e.up_at then
+		eva[npc:id()] = nil
+		emit(npc:id(), "grenade_up", { g = e.g }, squad_key(npc))
+		return false
+	end
+	return true
+end
+
+class "act_varka_grenade" (action_base)
+function act_varka_grenade:__init(name) super(nil, name) end
+function act_varka_grenade:initialize()
+	action_base.initialize(self)
+	self.object:set_path_type(game_object.level_path)
+end
+function act_varka_grenade:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	local now = time_global()
+	local e = eva[npc:id()]
+	if not e then return end
+	if not e.test_until and not live[e.g] and e.phase ~= "up" then
+		e.phase, e.up_at = "up", now + line(GET_UP, rs(npc)) * 1000
+	end
+	if e.phase == "run" then
+		local p = e.vid and level.vertex_position(e.vid)
+		if p and npc:position():distance_to_sqr(p) > 1.0 and now - e.t0 < RUN_MS then
+			-- бегом со стволом (ваниль Anomaly бежит от гранат так же); "panic" — пригнувшись, «ползком» (24.10)
+			state_mgr.set_state(npc, "assault", nil, nil, nil, { fast_set = true })
+			utils_obj.send_to_nearest_accessible_vertex(npc, e.vid, "varka_grenade")
+			return
+		end
+		e.phase = "down"
+		emit(npc:id(), "grenade_prone", { g = e.g, ran = now - e.t0 }, squad_key(npc))
+	end
+	state_mgr.set_state(npc, e.pose or "hide_na", nil, nil, nil, { fast_set = true })
+	utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_grenade")
+end
+function act_varka_grenade:finalize()
+	action_base.finalize(self)
+end
+
+-- Встраивание — после varka_survive. Условие вешаем ТОЛЬКО на действия, которые у бойца точно есть (lower_bound:
+-- нет id — вернётся следующее по номеру, см. varka_survive).
+local function yield_ids(npc)
+	local st = db.storage[npc:id()]
+	local ids = { xr_actions_id.alife, xr_actions_id.state_mgr + 2, stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	if st.varka_cmd_hooked then ids[#ids + 1] = 188202; ids[#ids + 1] = 188204 end     -- приказы мягкий / жёсткий
+	if st.varka_clear_hooked then ids[#ids + 1] = 188210 end                             -- вера
+	if st.varka_survive_hooked then ids[#ids + 1] = 188212 end                           -- «жить хочу»
+	if st.rx_ff then ids[#ids + 1] = 18803 end                                            -- свой на линии
+	if st.kill_wounded and xrs_kill_wounded and xrs_kill_wounded.is_enabled() then ids[#ids + 1] = 188112 end
+	if st.fight_from_cover or st.axr_fight_from_cover then ids[#ids + 1] = 188118 end     -- бой из укрытия
+	return ids
+end
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local wp = world_property
+	manager:add_evaluator(EVA_GRN, eva_varka_grenade("eva_varka_grenade"))
+	local act = act_varka_grenade("act_varka_grenade")
+	act:add_precondition(wp(stalker_ids.property_alive, true))
+	act:add_precondition(wp(EVA_GRN, true))
+	act:add_effect(wp(EVA_GRN, false))
+	manager:add_action(ACT_GRN, act)
+	for _, id in ipairs(yield_ids(npc)) do
+		local a = manager:action(id)
+		if a then a:add_precondition(wp(EVA_GRN, false)) end
+	end
+end
+
+local said = {}
+local function safe(tag, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok and not said[tag] then
+		said[tag] = true
+		printf("[VARKA] varka_grenade %s: %s", tag, tostring(err))
+		emit(0, "grenade_error", { where = tag, err = tostring(err) })
+	end
+	return ok
+end
+local next_look = {}
+local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local st = db.storage[npc:id()]
+	if not st then return end
+	if not st.varka_grenade_hooked then
+		if varka_survive and not st.varka_survive_hooked then return end
+		st.varka_grenade_hooked = true
+		hook_npc(npc)
+	end
+	if next(live) then
+		local now = time_global()
+		if now >= (next_look[npc:id()] or 0) then
+			next_look[npc:id()] = now + 100
+			safe("perceive", perceive, npc, now)
+		end
+	end
+end
+
+-- ванильная реакция на гранату (xr_danger: убежать на 20–35 м) — выключена, реагируем сами
+local function on_eval_danger(npc, flags)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
+	local bd = npc:best_danger()
+	if bd and bd:type() == danger_object.grenade then flags.ret_value = false end
+end
+
+local function actor_update() safe("track", track_tick, time_global()) end
+
+local function on_death(npc)
+	if npc then eva[npc:id()] = nil; know[npc:id()] = nil; next_look[npc:id()] = nil end
+end
+
 function on_game_start()
-	_G.CAI_Stalker__ShouldThrow = should_throw
+	-- что есть в сборке (axr_main сначала грузит все модули, потом зовёт on_game_start — крючки Modded Exes уже на месте)
+	CAP.me = _G.CAI_Stalker__ShouldThrow ~= nil and _G.CGameObject_NetSpawn ~= nil
+	LTX_FUSE = ini_sys:r_float_ex("grenade_rgd5", "destroy_time") or 2500
+	CAP.fuse = CAP.me and LTX_FUSE >= FUSE_MAX
+	if not CAP.me then
+		printf("[VARKA] varka_grenade: нет колбэков Modded Exes — гранаты v2 выключены, ваниль")
+		return
+	end
+	if not CAP.fuse then printf("[VARKA] varka_grenade: destroy_time %s (DLTX не применился?) — запал движка", LTX_FUSE) end
+	hook_before_hit("CAI_Stalker__BeforeHitCallback")
+	hook_before_hit("CActor__BeforeHitCallback")
+	hook_before_hit("CBaseMonster__BeforeHitCallback")
+	-- лёжа: ванильная анимация "prone" (state_mgr_animation_list: loophole_9_in_front_0 → loophole_9_idle_0).
+	-- Выхода у неё нет (out = nil) — вставание может дёрнуться; смотреть глазами. Тело — присед, как у ванильного
+	-- state_lib.prone (24.10: со «стоя» на стенде бойцы застывали в нырке).
+	state_lib.states.varka_prone = { weapon = "unstrapped", movement = move.stand, mental = anim.danger,
+		bodystate = move.crouch, animstate = nil, animation = "prone" }
+	RegisterScriptCallback("actor_on_update", actor_update)
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_eval_danger", on_eval_danger)
+	RegisterScriptCallback("npc_on_should_throw", on_should_throw)
+	RegisterScriptCallback("game_object_on_net_spawn", on_net_spawn)
+	RegisterScriptCallback("npc_on_death_callback", on_death)
+	if varka_cmd and varka_cmd.register then
+		varka_cmd.register("prone", cmd_prone)
+		varka_cmd.register("pose", cmd_pose)
+	end
+	RegisterScriptCallback("actor_on_first_update", function()
+		emit(0, "grenade_caps", { me = CAP.me and 1 or 0, fuse = CAP.fuse and 1 or 0, ltx = LTX_FUSE })
+	end)
 end

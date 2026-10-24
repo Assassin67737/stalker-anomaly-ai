@@ -125,6 +125,7 @@ end
 local function held(o, id) return o and o:parent() and o:parent():id() == id end
 
 local function choose(npc, cur_wpn, flags)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive()) then return end
 	local id, now = npc:id(), time_global()
 	local st = state[id]

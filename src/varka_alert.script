@@ -42,9 +42,28 @@ local function re_engage(npc, killer)
 end
 
 -- ===== КАНАЛ 1: СЛУХ (выстрел) =====
+-- 24.10: сверка слуха двойника (tools/twin/sim/hear.lua) — каждый услышанный выстрел/попадание с силой, раз в
+-- секунду на пару «слушатель — источник — вид»: по (d, p, ствол) видно дальность для ИИ и громкость, которые
+-- реально берёт NPC (в .ogg есть и тихий *_shot, и громкий *_shoot — какой играет, из конфигов не видно).
+local snd_log = {}
+local function log_sound(npc, who_id, s_type, power, pos)
+	if not (varka_trace and pos and who_id) then return end
+	if s_type ~= "WPN_shoot" and s_type ~= "WPN_hit" then return end
+	local key, now = npc:id() .. ":" .. who_id .. s_type, time_global()
+	if now - (snd_log[key] or -1e9) < 1000 then return end
+	snd_log[key] = now
+	local who = db.storage[who_id] and db.storage[who_id].object
+	local wpn = who and who.active_item and who:active_item()
+	varka_trace.emit(0, npc:id(), "snd", { who = who_id, stype = tostring(s_type), p = power or -1,
+		d = npc:position():distance_to(pos), wpn = wpn and wpn:section() or "",
+		enemy = (who and npc:relation(who) >= game_object.enemy) and 1 or 0 })
+end
+
 local function on_hear(npc, who_id, s_type, dist, power, pos)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if not pos then return end
+	log_sound(npc, who_id, s_type, power, pos)
 	if s_type ~= "WPN_shoot" and s_type ~= "WPN_hit" then return end
 	if npc:best_enemy() then return end -- уже воюет: облако ведёт визуал, не мешаем
 	if character_community(npc) == "zombied" then return end
@@ -70,6 +89,7 @@ end
 
 -- ===== КАНАЛ 2: ТРУП союзника =====
 local function on_update(npc)
+	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	local now = time_global()
 	local id  = npc:id()

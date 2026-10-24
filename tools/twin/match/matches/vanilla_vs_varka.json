@@ -1,0 +1,22 @@
+{
+  "id": "vanilla_vs_varka",
+  "level": "here",
+  "limit_s": 240,
+  "zone": {"smart": "cycle", "r": 15},
+  "spectator": {"aside": 30},
+  "camera": {"up": 8},
+  "clear_r": 150,
+  "ghost": true,
+  "speed": 1,
+  "hour": 11,
+  "grenades": 1,
+  "even": true,
+  "alternate": true,
+  "swap": true,
+  "sides": {
+    "A": {"stack": "vanilla", "start": "advance",
+          "squads": [{"faction": "freedom", "n": [4, 4], "at": {"smart_ring": [40, 80]}}]},
+    "B": {"director": "default", "start": "advance",
+          "squads": [{"faction": "duty", "n": [4, 4], "at": {"smart_ring": [40, 80]}}]}
+  }
+}

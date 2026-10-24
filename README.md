@@ -128,7 +128,7 @@ This is active development, not a finished mod.
 
 VARKA is a community mod: take it, change it, share it — and keep what you build from it just as open.
 
-- The VARKA scripts (`varka_*.script`) are original work under **GPL-3.0-or-later** (`COPYING`).
+- The VARKA scripts (`varka_*.script`) are original work under **GPL-3.0-or-later** (`LICENSE`; summary of all terms — `LICENSING.md`).
 - The design documents are **CC BY-SA 4.0** (`LICENSE-DOCS`): take the ideas, credit the source, share alike.
 - Modified vanilla scripts retain the licensing of the Anomaly project.
 

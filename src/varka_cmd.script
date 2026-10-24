@@ -676,7 +676,7 @@ end
 -- Ответ «имя старое → новое», чтобы значение осталось в trace рядом с матчами.
 CMD.cvar = function(a)
 	local name, v = a[1], tonumber(a[2])
-	if not (name and name:find("^ai_")) then return false, "только ai_*" end
+	if not (name and name:find("^ai_[%w_]+$")) then return false, "только ai_*" end  -- одно имя, без пробелов и хвостов
 	local old = get_console():get_float(name)
 	if v then exec_console_cmd(name .. " " .. string.format("%.4f", v)) end
 	local new = get_console():get_float(name)

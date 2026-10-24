@@ -36,6 +36,10 @@ else:
     LOG = args[0] if args else os.path.join(LOGS, "varka_trace.jsonl")
     CMD = os.path.join(LOGS, "varka_cmd.txt")
 PORT = int(os.environ.get("PORT", 8766))
+# 25.10: только этот компьютер. Раньше слушал все интерфейсы ("") — команды игре мог слать любой в сети,
+# а любая открытая в браузере страница — через POST на localhost (CSRF). HOST=0.0.0.0 — осознанно открыть в сеть.
+HOST = os.environ.get("HOST", "127.0.0.1")
+LOCAL = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 
 # Файл команд: первая строка — id сессии (игра по нему понимает, что счёт начался заново)
 seq = 0
@@ -55,7 +59,21 @@ def add_command(cmd, args):
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def foreign(self):
+        """Чужой запрос: не наш Host (DNS rebinding) или страница с другого сайта (Origin) — 403."""
+        if HOST in ("127.0.0.1", "localhost") and self.headers.get("Host", "") not in LOCAL:
+            bad = True
+        else:
+            origin = self.headers.get("Origin")
+            bad = origin is not None and origin not in {"http://" + h for h in LOCAL}
+        if bad:
+            self.send_response(403)
+            self.end_headers()
+        return bad
+
     def do_GET(self):
+        if self.foreign():
+            return
         if not self.path.startswith("/log"):
             return super().do_GET()  # статика: viewer.html, levels/
         try:
@@ -73,6 +91,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
+        if self.foreign():
+            return
         if self.path.startswith("/areas/"):
             return self.save_areas()
         if self.path != "/cmd":
@@ -133,6 +153,6 @@ print(f"наша игра → http://localhost:{PORT}/viewer.html")
 print(f"trace:   {LOG}")
 print(f"команды: {CMD}")
 try:
-    http.server.ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+    http.server.ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 except KeyboardInterrupt:
     print("\nстоп")

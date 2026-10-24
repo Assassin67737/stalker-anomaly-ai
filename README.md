@@ -2,6 +2,12 @@
 
 > *"Complex not smart."*
 
+> **Status: alpha, work in progress (v0.26, October 2026).** This is a living workbench, not a release.
+> Parts are verified in game (belief + search, crash-free over 128 night matches as of v0.23), parts are
+> fresh and untested — every commit message says which. Targets Anomaly 1.5.3 with Modded Exes.
+> Some sections below describe the original v0.11 design and are being rewritten.
+> Ideas, bug reports and fights you recorded are welcome in Issues.
+
 ---
 
 ## The Problem

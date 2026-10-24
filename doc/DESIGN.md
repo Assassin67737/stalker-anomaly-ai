@@ -2,6 +2,8 @@
 
 > The *why* behind every architectural choice.
 > For *what* was built, see [ARCHITECTURE.md](ARCHITECTURE.md).
+> Written for v0.11 (July 2026). Decisions that were later revised carry a **Revised** note in place;
+> decisions added since are at the end. The story of the changes: [EVOLUTION.md](EVOLUTION.md).
 
 ---
 
@@ -48,6 +50,10 @@ Cost: K navmesh lookups (cheap) × one object per squad (not per NPC)
 The approximation has two known error terms (see ARCHITECTURE.md §Fan Technique).
 Both are documented, bounded, and acceptable for the goal.
 
+> **Revised (October 2026).** School B stayed — no particles. But belief v2 (`varka_belief`) moved from the
+> cone to a wave on the navmesh with erasure by sight, which is the cheap form of the theory's geodesic front
+> and negative update (THEORY.md §2–3) rather than a cone around it. Cost stays per squad, not per NPC.
+
 ---
 
 ## Why Navmesh Instead of Raycasts for Occlusion
@@ -65,6 +71,12 @@ This is both cheaper and, for human movement prediction, more correct:
 The result: doorways, corridors, and cover positions emerge naturally from the data
 structure. Attention flows through gaps because gaps have nodes. No scripted "check
 doorways" logic anywhere.
+
+> **Revised (October 2026).** True for where an enemy can *be*; not enough for where someone can *see* or
+> *shoot*. Windows, fences and low walls are sight lines without navmesh; the barrel can hit cover the eyes
+> see over. So rays came back, but only at decision points (where to hold a corner, can the muzzle reach
+> the chest — about 0.3 ms per decision), plus a sight map baked offline from the level's collision mesh
+> and verified against the engine's own `ray_pick`. Belief itself still lives on the navmesh.
 
 ---
 
@@ -85,6 +97,11 @@ shared), and rank shifts the *threshold* at which each soldier acts on it.
 Rookie clinical threshold:  0.08  →  chases belief until it's almost gone
 Master clinical threshold:  0.40  →  discards thin belief, moves on
 ```
+
+> **Note (October 2026).** The principle holds and spread to new systems (grenade skill, wear, weapon
+> knowledge). The engine audit added a caveat: X-Ray clamps rank before weapon accuracy and rank immunity,
+> so in vanilla every NPC shoots with the same base spread whatever the rank. Rank matters only where a mod
+> makes it matter. The next step on this line is a statistical portrait of a fighter instead of one number.
 
 "Rank-based cognition" without per-NPC state. The core stays at constant cost regardless
 of squad size.
@@ -124,6 +141,11 @@ squad level) is fully designed and documented in the internal logs. It is not pa
 because it is unimportant — it is parked because building layer 2 on unvalidated layer 1
 is building on sand.
 
+> **Revised (20 October 2026).** The gate was lifted: the director is the main idea of the mod, and
+> perception could not be judged without fights. The protection the gate gave is now given by measurement —
+> telemetry of every event and series of matches — and by one structural rule: belief (knowledge) never
+> calls hands (decisions); hands read belief.
+
 ---
 
 ## The Known Open Risks
@@ -148,3 +170,39 @@ Until a "movement consumer" reads belief and drives NPC navigation, the belief m
 is only as powerful as the engine's own threat response. NPCs may correctly *know*
 where the enemy probably is and still walk away because their engine-level alert timer
 has expired. This is the next architectural boundary to cross.
+
+> **Status (October 2026).** Approach paths: still open; peek and hold-the-edge with a corner ambush
+> (`varka_clear`) are the first answer. Engine timer: still unverified. Belief without feet: crossed —
+> search, peek, hold, regroup and orders are hands in the main planner.
+
+---
+
+## Decisions added since v0.11
+
+**Own actions only in the main planner.** The engine's C++ combat sub-planner assumes it only ever holds its
+own action ids; a custom id there crashed the game when a killer shouted "enemy down". VARKA's actions live in
+the main planner and preempt combat through preconditions; the single exception reuses vanilla id 34.
+
+**Yield to vanilla combat when the enemy is in sight.** Vanilla fighting at contact is decent; what it lacks is
+everything around contact — losing the enemy, searching, regrouping, surviving a flank. VARKA takes those
+moments and hands contact back, adding only gates that make vanilla fire honest (no shot while turned away,
+none into cover at the muzzle, friendly-fire check by real geometry).
+
+**Measure outcomes, not spectacle.** A fight that looks smart once proves nothing. Matches are run in series
+by a runner, every shot / hit / death is logged, and a change is kept when the numbers move.
+
+**A twin as the game's body, with an empty mind.** The simulation reproduces the game's mechanics from the
+engine source (bullet spread, anatomy, speeds, wounds, materials, sight) and is checked against the game's
+own numbers. Decisions are pluggable brains, so the same body can run vanilla behaviour, VARKA's, or a learner.
+
+**Fight pure vanilla in the same game.** To compare honestly, a squad can be marked "pure vanilla": every VARKA
+hook skips it, and overridden vanilla files route it to an untouched copy of the original function. The world
+(fuse times, sight parameters) stays shared — only the mind differs.
+
+**Honest physics over dice.** Where vanilla rolls a die to make NPCs worse (deliberate grenade misses, random
+throw power), VARKA replaces it with a skill error that grows with distance and shrinks with rank, and with the
+real-world fuse of the grenade.
+
+**Copyleft.** VARKA is a community mod: GPL-3.0-or-later for code, CC BY-SA 4.0 for documents, so whatever is
+built from it stays as open as it is.
+

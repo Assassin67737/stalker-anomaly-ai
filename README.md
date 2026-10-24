@@ -47,31 +47,60 @@ Fresh contact   →  tight cone, high mass  →  "they went right, I'm sure"
 This alone closes most of the trivial exploits: kill → hide → wait → repeat no longer
 works because the act of killing is itself an information event that refreshes belief.
 
+### How it grew (July → October 2026)
+
+The paragraphs above are the original v0.11 pitch, and the belief cone still runs (`varka_lkp`).
+Since then VARKA became a squad combat brain built around it:
+
+- **Belief v2** — a wave on the navmesh: mass moves at a runner's speed, what any squad member sees is
+  erased, the shadow flows back where nobody looks (`varka_belief`). **Hands** act on it: peek, hold the
+  edge, ambush at the corner (`varka_clear`), search and watch (`varka_search_action`).
+- **Fire and survival** — a fire gate (no trigger pull while turned away or with the barrel against cover),
+  turning to the shooter who hit you, dashing out of his sight, friendly-fire check by geometry,
+  grenades with a real fuse and cooking by rank.
+- **The director** — per-squad presets and contact plays (front line, bounding), morale, wear from the
+  threat of death, after-fight regroup, knowledge of the enemy's weapons.
+- **A workbench** — a match runner that sets squads on each other in the live game and scores the outcome,
+  telemetry of every shot, hit and death, and a twin (a fast simulation of the same fights, audited against
+  the game's engine source) for experiments the game is too slow for.
+
+What changed in the ideas themselves, and why, is in [doc/EVOLUTION.md](doc/EVOLUTION.md).
+
 ---
 
 ## What This Repository Contains
 
-This is primarily a **design document repository**. The architecture is the contribution;
-the Lua implementation is a reference that proves the design is viable on a real 2007 engine.
+*(v0.11 described this as "primarily a design document repository". It is now the mod, its tools and the
+design trail.)*
 
-| Document | Contents |
-|----------|----------|
-| [doc/GLOSSARY.md](doc/GLOSSARY.md) | All terms defined precisely — start here |
-| [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) | How the belief system is built |
-| [doc/DESIGN.md](doc/DESIGN.md) | Why each architectural choice was made |
+| Path | Contents |
+|------|----------|
+| [doc/EVOLUTION.md](doc/EVOLUTION.md) | How VARKA changed from v0.11 to now — **start here** |
+| [doc/GLOSSARY.md](doc/GLOSSARY.md) | Terms |
+| [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) | How it is built (current map on top, v0.11 design below) |
+| [doc/DESIGN.md](doc/DESIGN.md) | Why each choice was made, and which ones were revised |
 | [doc/THEORY.md](doc/THEORY.md) | Mathematical basis: recursive Bayes, geodesic front, infotaxis *(Russian)* |
-| [doc/ROADMAP.md](doc/ROADMAP.md) | What is done, what is next |
-| `src/varka_lkp.script` | Belief core: storage, update, diffusion, mass, fan |
-| `src/varka_search.script` | Consumer 1: gaze sweep across fan nodes on contact loss |
-| `src/varka_alert.script` | Consumer 2: audio + corpse channels → notice() + set_enemy() |
-| `src/varka_director.script` | Director: assigns combat presets (ASSAULT, flanker) to squads |
-| `src/varka_lots.script` | Lots: GOAP action definitions for each combat role |
-| `src/varka_search_action.script` | Flanker action: picks a lateral node and runs to it |
-| `src/varka_windows.script` | On-demand firing-line primitives (ray_pick over navmesh) |
-| `src/varka_watchdog.script` | Error monitor: catches Lua errors mid-session |
-| `src/varka_baker.script` | Research tool: navmesh bake probe (not required for the mod) |
-| `src/visual_memory_manager.script` | Patched vanilla: detection speed × rank |
-| `src/xr_danger.script` | Patched vanilla: danger reactions, corpse channel support |
+| [doc/ROADMAP.md](doc/ROADMAP.md) | Where we are and what is next |
+| [doc/PLANNER_MAP.md](doc/PLANNER_MAP.md) | Vanilla NPC planner vs VARKA: what is ours, the crash rule *(Russian)* |
+| [doc/VESSEL_AUDIT.md](doc/VESSEL_AUDIT.md) | The twin checked against the game, mechanic by mechanic *(Russian)* |
+| [doc/LEARNING.md](doc/LEARNING.md) | Plan for training the director *(Russian)* |
+| [doc/vanilla_ai_map/](doc/vanilla_ai_map/) | How vanilla Anomaly AI works, one NPC to scenarios *(Russian)* |
+| `src/` | The mod: `gamedata/scripts` + `gamedata/configs` |
+| `tools/twin/` | Map/vision bakers, viewers, creative mode server, match runner, the twin simulation |
+| `tools/constructor/` | Director "constructor": grammar of squad orders |
+| `parked/` | Scripts that once ran and are no longer installed |
+
+**The mod, by role** (`src/`):
+
+| Role | Scripts |
+|------|---------|
+| Perception | `visual_memory_manager` (detection × rank), `configs/creatures/m_stalker.ltx`, `xr_danger` (corpse channel) |
+| Belief | `varka_lkp` (v1 cone, echoes, telemetry of positions), `varka_belief` (v2 wave), `varka_alert` (sound and corpse → belief), `varka_intel` (enemy weapons) |
+| Hands | `varka_search_action` (search + watch under vanilla id 34), `varka_clear` (peek / hold the edge), `varka_regroup`, `varka_survive`, `varka_finish`, `varka_grenade`, `varka_lots` |
+| Fire | `varka_aim` (fire gate) + `axr_fight_from_cover`, `rx_ff` (friendly in line), `varka_weapons` (weapon by range), `xrs_kill_wounded`, `varka_stress` (wear → aim time) |
+| Director | `varka_director` (presets, morale), `varka_plays` (front, bounding, withdraw) |
+| Eyes | `varka_eyes` (rays on demand), `varka_vision` (baked spatial vision) |
+| Workbench | `varka_cmd` (orders, creative mode), `varka_match`, `varka_trace`, `varka_vanilla` (pure-vanilla squads), `varka_hud`, `varka_probe`, `varka_watchdog` |
 
 ---
 
@@ -98,21 +127,37 @@ No `if rank == "master" then`. Rank is a scalar that bends detection curves, bel
 thresholds, and reaction multipliers. One code path, every NPC on a different part
 of the curve.
 
+**Revised since v0.11** (details in [doc/EVOLUTION.md](doc/EVOLUTION.md)):
+- *Zero raycasts* → rays where a decision needs them (holding a corner, can the barrel reach), and
+  whole-level sight baked offline. The navmesh is still where belief lives.
+- *The cone* → a wave (belief v2), closer to the theory; the cone still drives search and telemetry.
+- *Rank* still bends curves — but the engine turned out to clamp rank before weapon accuracy, so every
+  vanilla NPC shoots with the same base spread. Rank works through what VARKA adds.
+- *Perception first, policy later* → hands and a director, judged by measured fights instead of a layer gate.
+
 ---
 
 ## Platform
 
 - **Game:** S.T.A.L.K.E.R. Anomaly 1.5.3 (standalone, free)
-- **Engine:** X-Ray (2007), Lua / LuaJIT scripting layer
-- **Language:** Lua — no C++, no engine recompile required
+- **Engine:** X-Ray (2007) with [Modded Exes](https://github.com/themrdemonized/xray-monolith) —
+  the community engine build (needed since v0.24 for grenade and aim hooks the stock exe lacks;
+  v0.23 and earlier ran on the stock exe)
+- **Language:** Lua — no C++ of our own, no engine recompile required
 - **OS tested:** Arch Linux + Proton (game), native Lua tooling
 
 ## Installation
 
 1. Install a clean copy of [S.T.A.L.K.E.R. Anomaly 1.5.3](https://www.moddb.com/mods/stalker-anomaly)
-2. Copy all `src/*.script` files into `<Anomaly root>/gamedata/scripts/`
-3. Copy `src/configs/` into `<Anomaly root>/gamedata/configs/` (merge, do not replace)
+   and [Modded Exes](https://github.com/themrdemonized/xray-monolith).
+2. Copy all `src/*.script` files into `<Anomaly root>/gamedata/scripts/`. Some of them replace vanilla
+   files (`xr_danger`, `visual_memory_manager`, `rx_ff`, `axr_fight_from_cover`, `xrs_kill_wounded`) —
+   other mods that replace the same files will conflict (GAMMA does, for `xr_danger` and
+   `visual_memory_manager`).
+3. Copy `src/configs/` into `<Anomaly root>/gamedata/configs/` (merge, do not replace).
 4. Launch the game. No save required — works on any new game or existing save.
+5. Optional, for watching and measuring: `tools/twin/server.py` (viewer and creative mode) and
+   `tools/twin/match/run.py` (matches) — see the docstrings at the top of each.
 
 Test cycle: edit script → Alt+Tab → `F9` (quick load, for `.ltx` changes) or full restart
 (for `.script` changes) → check `appdata/logs/xray_<user>.log` for Lua errors first.
@@ -121,10 +166,16 @@ Test cycle: edit script → Alt+Tab → `F9` (quick load, for `.ltx` changes) or
 
 ## Status
 
-Layer 1 (Perception) is ~90% validated. The belief core, gaze sweep, and non-visual
-channels are implemented and tested in-engine. The director and flanker role are written
-and under active validation. See [doc/ROADMAP.md](doc/ROADMAP.md) for the current
-validation state and what comes next.
+**October 2026 (v0.26).** Verified in game: belief v1 and search, crash-free over a night of 128 matches
+(v0.23). Measured: the friendly-fire fix (fire blocked 23% → 9% of the time an enemy is in sight).
+In the twin, VARKA's fire changes beat vanilla squads clearly; the director's presets have not yet shown a
+measured gain in the game. Fresh and not yet watched in game: belief v2 hands, fire gate, grenades v2,
+pure-vanilla squads. Next: matches VARKA vs pure vanilla in the same game, then a learner in the twin.
+See [doc/ROADMAP.md](doc/ROADMAP.md).
+
+*At v0.11 (July 2026) this section read:* "Layer 1 (Perception) is ~90% validated. The belief core,
+gaze sweep, and non-visual channels are implemented and tested in-engine. The director and flanker role
+are written and under active validation."
 
 This is active development, not a finished mod.
 

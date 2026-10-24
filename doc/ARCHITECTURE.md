@@ -3,8 +3,58 @@
 > How the belief system is built, and why.
 > For the design *decisions* behind each choice, see [DESIGN.md](DESIGN.md).
 > For term definitions, see [GLOSSARY.md](GLOSSARY.md).
+> For how this changed over time, see [EVOLUTION.md](EVOLUTION.md).
 
 ---
+
+## Architecture today (v0.26, October 2026)
+
+*The rest of this document, from "The Problem in One Sentence" down, is the v0.11 design of July 2026.
+It is kept as written: the belief cone it describes still runs (`varka_lkp`). This section is the map of
+what grew around it.*
+
+```
+                    ┌──────────────── DIRECTOR (per squad) ───────────────┐
+                    │ varka_director: preset, morale, phase (contact /     │
+                    │ search / after fight)   varka_plays: front, bounding │
+                    └──────────┬──────────────────────────────┬───────────┘
+                               │ roles / hard orders          │ morale ← wear (varka_stress)
+   PERCEPTION            BELIEF (per squad)             HANDS (per fighter, main GOAP planner)
+   vision × rank  ──►  v1 cone  varka_lkp      ──►  search + watch   varka_search_action (vanilla id 34)
+   m_stalker.ltx       v2 wave  varka_belief   ──►  peek / hold edge varka_clear
+   sound, corpses ──►  varka_alert, intel                 regroup, survive, finish, grenade, orders
+                               │                                   │
+                        EYES: varka_eyes (rays on demand),     FIRE: varka_aim gate + axr_fight_from_cover,
+                        varka_vision (baked sight map)         rx_ff, varka_weapons, xrs_kill_wounded
+                                                                   │
+                                                         vanilla C++ combat when the enemy is in sight
+   WORKBENCH: varka_trace (JSON-lines of every event) · varka_match (match end, shots, hits, deaths)
+              varka_cmd (orders, creative mode) · varka_vanilla (squads VARKA leaves alone)
+```
+
+**Rules that hold the structure together** (learned the hard way, see [PLANNER_MAP.md](PLANNER_MAP.md)):
+
+- **Own actions only in the main planner.** A script action with a custom id inside the engine's C++ combat
+  sub-planner crashes the game when a killer shouts "enemy down" (a `switch` without a default). The one
+  action we keep inside combat lives under the vanilla id 34, the way vanilla's own `post_combat_idle` does.
+- **Yield to vanilla in sight.** Belief hands (search, peek, hold) act while the enemy is lost; once a fighter
+  sees his target, vanilla combat shoots — through VARKA's fire gate and friendly-fire check. The exceptions
+  are short and named: a dash out of the sight of a shooter who hit you, renegades finishing the downed,
+  running from a grenade, a director's hard order.
+- **Honest inputs.** Belief is fed only by what the squad saw, heard or found. Eyes look at the hypothesis,
+  never at the player's true position.
+- **One trace for everything.** Every decision emits an event; the viewers, the match scorer and the twin's
+  calibration all read the same file.
+- **Measure, don't admire.** A change counts when a series of matches says so, not when one fight looks good.
+
+**Outside the game** (`tools/twin/`): parsers for the level navmesh and collision mesh, a raycaster that
+matches the engine's hits to the triangle, map and sight bakes, 2D/3D viewers, the match runner, and the
+twin — a LuaJIT simulation of the same fights whose body (bullets, anatomy, speeds, sight, wounds) is audited
+against the game ([VESSEL_AUDIT.md](VESSEL_AUDIT.md)) and whose decisions are pluggable brains.
+
+---
+
+# v0.11 design (July 2026)
 
 ## The Problem in One Sentence
 
@@ -161,7 +211,9 @@ No special cases. No hidden branches for "legendary" NPCs.
 
 ---
 
-## Current File Map
+## File Map at v0.11
+
+*(The current map by role is in the [README](../README.md#what-this-repository-contains).)*
 
 ```
 gamedata/scripts/
@@ -178,3 +230,4 @@ gamedata/scripts/ (modified vanilla)
 ```
 
 Everything runs in Lua (LuaJIT). Zero C++. Zero raycasts for belief geometry.
+*(Still true for belief v1. Rays were added later for decisions — eyes and the fire gate; see EVOLUTION.md.)*

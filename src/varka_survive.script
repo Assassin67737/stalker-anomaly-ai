@@ -14,8 +14,8 @@
 --    ближе CQB_M, стрелок дальше) не дёргаемся. npc:set_enemy для сталкера не работает (в движке только
 --    кровосос) — поэтому колбэк.
 --
--- 2. РЫВОК ИЗ-ПОД ВЗГЛЯДА. Попали, и стрелок меня видит → ближайшая нода в 2–8 м, которую с его глаз не видно
---    (лучи по статике в обе стороны, как движок), — бегом туда, присесть и пересидеть HOLD_MS (дольше, если
+-- 2. РЫВОК ИЗ-ПОД ВЗГЛЯДА. Попали, и стрелок меня видит → ближайшая нода в 2–8 м, где присевшего не видно ни
+--    стрелку, ни другим врагам в памяти (v0.4, «укрытие глазами движка» ниже), — бегом туда, присесть и пересидеть HOLD_MS (дольше, если
 --    мало здоровья). Видно врага с места — бить сидя. Действие — в ГЛАВНОМ планировщике (своё только туда,
 --    см. PLANNER_MAP), главнее боя, веры, приказов и добивания. Граната рядом / ранен лежит — уступаем.
 --    Места нет (голое поле) — ничего не делаем, пусть ваниль. После — RETRY_MS без нового рывка, чтобы не
@@ -44,8 +44,15 @@ local RUN_MS   = 4000       -- не добежал за это время — б
 local RETRY_MS = 3000
 local DIRS     = 12
 local RINGS    = { 2, 4, 6, 8 }
-local EYE, CHEST_CR = 1.6, 0.9   -- глаза стрелка; голова присевшего
+local EYE = 1.6              -- глаза врага над ногами
 local RQT_STATIC = 2
+local VIS_THR = 0.6          -- [stalker_vision_danger] transparency_threshold, перечитывается из ltx в on_game_start
+-- присевший: голова, грудь по ширине плеч; ±0.55 — запас: боец встаёт не точно в центр ноды (клетка 0.7 м)
+local BODY = { { 1.1, 0 }, { 0.75, 0 }, { 0.75, 0.25 }, { 0.75, -0.25 }, { 0.75, 0.55 }, { 0.75, -0.55 } }
+local THREAT_MEM = 10000     -- враг в памяти глазами не старше этого — тоже угроза
+local THREAT_R   = 100
+local THREAT_MAX = 4         -- стрелок + до трёх ближайших
+local RAY_CAP    = 1500      -- предохранитель на один поиск: больше лучей — берём, что нашли
 local RELOAD_FRAC   = 0.34                     -- магазин меньше этой доли (или пуст) и враг на виду — за укрытие
 local RELOAD_RINGS  = { 2, 4, 6, 8, 11, 14 }   -- дальше, чем от пули: 14 м спринтом ≈ 2.5 с
 local RELOAD_RUN_MS = 6000
@@ -86,47 +93,112 @@ local function patch_enemy_callback()
 end
 
 -- ─── 2. рывок ────────────────────────────────────────────────────────────────────────
-local rp
-local function clear(a, b)
-	local dir = vector():set(b):sub(a)
-	local d = dir:magnitude()
-	if d < 0.3 then return true end
+-- Укрытие глазами движка (v0.4, 25.10). Аудит на Армейках (1.17 млн пар «точка — враг»): старый поиск — один луч
+-- в голову, любой треугольник — давал место, где присевшего реально не видно, в 36% случаев, при трёх врагах в 2%.
+-- Чинили по одной причине: тело вместо точки +25 п.п., материалы +12, все угрозы +10 (при трёх), запас +4.
+-- Здесь всё сразу; на стенде 78% / 30%. Как глаза движка (Feel_Vision): луч ОТ врага, ray_pick видит только
+-- лицевые грани (OPT_CULL, xr_area_raypick.cpp) — изнанку стены и не надо ловить; проницаемость материалов
+-- перемножается, пока не упадёт до порога боевого зрения (куст 0.7 взгляд пропускает, два куста — нет).
+-- Только статика уровня: ящики и машины, которые двигает физика, не закрывают.
+local rp, nray
+
+-- видно ли точку p с глаз eye
+local function seen(eye, p)
+	local dir = vector():set(p):sub(eye)
+	local left = dir:magnitude()
+	if left < 0.3 then return true end
 	dir:normalize()
-	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
-	if rp:query() and rp:get_distance() < d - 0.3 then return false end
-	-- задние грани луч не ловит — второй луч навстречу
-	local back = vector():set(dir):invert()
-	rp:set_position(b); rp:set_direction(back); rp:set_range(d)
-	return not (rp:query() and rp:get_distance() < d - 0.3)
+	local from, pass = vector():set(eye), 1
+	for _ = 1, 6 do   -- больше шести слоёв подряд — считаем стеной
+		rp:set_position(from); rp:set_direction(dir); rp:set_range(left)
+		nray = nray + 1
+		if not rp:query() then return true end
+		local hit = rp:get_distance()
+		if hit >= left - 0.05 then return true end
+		pass = pass * rp:get_result().material_vis_transparency_factor
+		if pass <= VIS_THR then return false end
+		from:mad(dir, hit + 0.02); left = left - hit - 0.02   -- сквозь прозрачное — дальше
+	end
+	return false
 end
 
--- ближайшая нода, где присевшего не видно с глаз стрелка
+-- присевший на p закрыт от глаз eye целиком: ни голова, ни грудь, ни плечи с запасом
+local function body_hidden(p, eye)
+	local side = vector():set(p):sub(eye)
+	side = vector():set(-side.z, 0, side.x)   -- поперёк линии взгляда, по земле
+	if side:magnitude() < 0.01 then return false end
+	side:normalize()
+	for _, b in ipairs(BODY) do
+		local q = vector():set(p):mad(side, b[2]); q.y = q.y + b[1]
+		if seen(eye, q) then return false end
+	end
+	return true
+end
+
+-- глаза угроз: стрелок (он только что стрелял — где он, известно) + враги, которых боец недавно видел,
+-- там, где он их помнит (memory_position — его вера, не правда)
+local function threat_eyes(npc, shooter)
+	local now, pos, more = time_global(), npc:position(), {}
+	for o in npc:memory_visible_objects() do
+		local e = o and o:object()
+		if e and e:id() ~= shooter:id() and IsStalker(e) and e:alive() and npc:relation(e) == game_object.enemy then
+			local mt = npc:memory_time(e)
+			if mt and mt > 0 and now - mt < THREAT_MEM then
+				local mp = npc:memory_position(e)
+				local d = mp:distance_to(pos)
+				if d < THREAT_R then more[#more + 1] = { p = vector():set(mp), d = d } end
+			end
+		end
+	end
+	table.sort(more, function(a, b) return a.d < b.d end)
+	local eyes = { vector():set(shooter:position()) }
+	for i = 1, math.min(#more, THREAT_MAX - 1) do eyes[#eyes + 1] = more[i].p end
+	for _, e in ipairs(eyes) do e.y = e.y + EYE end
+	return eyes
+end
+
+-- ближайшая нода, где присевшего не видно ни одной угрозе. Такой нет — где не видно хотя бы стрелку и меньше
+-- всего остальным (part = 1 в trace): спрятаться от всех часто негде, а от того, кто попал, — лучше, чем стоять.
 local function hide_spot(npc, shooter, rings)
 	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
-	local eye = vector():set(shooter:position()); eye.y = eye.y + EYE
+	nray = 0
+	local pt = profile_timer(); pt:start()
+	local eyes = threat_eyes(npc, shooter)
 	local base = npc:level_vertex_id()
 	local away = vector():set(npc:position()):sub(shooter:position()); away.y = 0
 	if away:magnitude() < 0.1 then away = vector():set(1, 0, 0) end
 	away:normalize()
-	local best, best_s
+	local best, best_s, part, part_s
 	for _, r in ipairs(rings or RINGS) do
 		for i = 0, DIRS - 1 do
+			if nray > RAY_CAP then break end
 			local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
 			local v = level.vertex_in_direction(base, dir, r)
 			if v and v < 4294967295 and v ~= base and npc:accessible(v)
 				and (not db.used_level_vertex_ids or not db.used_level_vertex_ids[v]) then
 				local p = level.vertex_position(v)
-				local head = vector():set(p); head.y = head.y + CHEST_CR
-				if not clear(eye, head) then
+				if body_hidden(p, eyes[1]) then
 					-- короче лучше; к стрелку — хуже (выбегать на него не надо)
 					local s = r + 2 * math.max(0, dir:dotproduct(vector():set(0, 0, 0):sub(away)))
-					if not best_s or s < best_s then best, best_s = v, s end
+					local open = 0   -- скольким остальным виден
+					for k = 2, #eyes do
+						if not body_hidden(p, eyes[k]) then open = open + 1 end
+					end
+					if open == 0 then
+						if not best_s or s < best_s then best, best_s = v, s end
+					elseif not best then
+						s = s + 100 * open
+						if not part_s or s < part_s then part, part_s = v, s end
+					end
 				end
 			end
 		end
 		if best then break end   -- нашлось на этом кольце — дальше не бежим
 	end
-	return best
+	pt:stop()
+	local info = { rays = nray, us = math.floor(pt:time()), n = #eyes,
+		part = (not best and part) and 1 or nil, cap = nray > RAY_CAP and 1 or nil }
+	return best or part, info
 end
 
 local surv = {}  -- id бойца → { shooter, vid, phase = "run"|"hold", t0, until }
@@ -172,12 +244,13 @@ local function on_hit(npc, amount, dir, who, bone)
 	local s = surv[id]
 	if s and (s.phase or now < (s.retry or 0)) then return end
 	if not who:see(npc) or IsWounded(npc) then return end
-	local v = hide_spot(npc, who)
-	if not v then emit(npc, "survive_none", { who = who:id() }); return end
+	local v, info = hide_spot(npc, who)
+	if not v then emit(npc, "survive_none", { who = who:id(), n = info.n, rays = info.rays, us = info.us, cap = info.cap }); return end
 	local hp = npc.health or 1
 	surv[id] = { shooter = who:id(), vid = v, phase = "run", t0 = now,
 		hold = HOLD_MS + HOLD_HURT * (1 - math.max(0, math.min(1, hp))) }
-	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp })
+	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp,
+		n = info.n, part = info.part, rays = info.rays, us = info.us, cap = info.cap })
 end
 
 -- магазин в руках: патронов, ёмкость, ствол (нет огнестрела — nil)
@@ -204,12 +277,17 @@ local function reload_check(npc)
 	if shells and m > 0 then return end   -- набивку по патрону движок начинает только с пустого
 	local bd = npc:best_danger()
 	if bd and bd:type() == danger_object.grenade then return end
-	local v = hide_spot(npc, be, RELOAD_RINGS)
-	if not v then emit(npc, "reload_none", { mag = m }); next_check[id] = now + 2000; return end
+	local v, info = hide_spot(npc, be, RELOAD_RINGS)
+	if not v then
+		emit(npc, "reload_none", { mag = m, n = info.n, rays = info.rays, us = info.us, cap = info.cap })
+		next_check[id] = now + 2000
+		return
+	end
 	surv[id] = { shooter = be:id(), vid = v, phase = "run", t0 = now, reload = true, shells = shells,
 		hold = shells and math.max(RELOAD_MAX, 1500 + size * SHELL_MS) or RELOAD_MAX }
 	emit(npc, "reload_run", { who = be:id(), vid = v, mag = m, size = size, wst = w:get_state(),
-		d = npc:position():distance_to(level.vertex_position(v)) })
+		d = npc:position():distance_to(level.vertex_position(v)),
+		n = info.n, part = info.part, rays = info.rays, us = info.us, cap = info.cap })
 end
 
 local function finish(npc, why, f)
@@ -347,6 +425,7 @@ local function on_death(npc)
 end
 
 function on_game_start()
+	VIS_THR = ini_sys:r_float_ex("stalker_vision_danger", "transparency_threshold") or VIS_THR
 	patch_enemy_callback()
 	RegisterScriptCallback("npc_on_update", npc_update)
 	RegisterScriptCallback("npc_on_hit_callback", on_hit)

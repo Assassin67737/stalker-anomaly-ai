@@ -124,6 +124,45 @@ end
 
 local function held(o, id) return o and o:parent() and o:parent():id() == id end
 
+-- ===== ДОЗАРЯДКА В ПАУЗЕ (25.10, «перезарядка в укрытии» — юзер: «это уже даже и не смешно») =====
+-- Движок перезаряжает, когда магазин ПУСТ — то есть посреди перестрелки и часто на виду. Боец VARKA меняет
+-- неполный магазин в паузе: враг известен, но не виден TOPUP_CALM — между ними что-то есть.
+-- Команды «перезарядить» из Lua нет: object.reload в set_item → switch движка без этой ветки (NODEFAULT,
+-- object_handler_planner.cpp) = краш, как 21.10. Поэтому магазин обнуляется, и движок сам играет перезарядку
+-- (патроны у сталкеров бесконечны, v0.4). Но перезаряжает он, только если боец целится (ствол «в покое» —
+-- нет): не началась за TOPUP_UNDO — патроны возвращаются, хуже ванили не станет.
+local TOPUP_FRAC = 0.5    -- доля магазина: меньше — менять
+local TOPUP_CALM = 2000   -- мс: врага не видно столько
+local TOPUP_GAP  = 8000   -- мс: не чаще раза на бойца
+local TOPUP_UNDO = 5000   -- мс: магазин всё ещё пуст — перезарядка не пошла, вернуть патроны
+
+local function top_up(npc, st, wpn, be, now)
+	local p = st.topup_wait
+	if p then  -- ждём, пошла ли перезарядка
+		local w = level.object_by_id(p.id)
+		if not (w and held(w, npc:id())) then st.topup_wait = nil
+		elseif (w:get_ammo_in_magazine() or 0) > 0 then
+			st.topup_wait = nil
+			if varka_trace then varka_trace.emit(0, npc:id(), "wpn_topup_done", { ms = now - p.t }) end
+		elseif now - p.t > TOPUP_UNDO then
+			st.topup_wait = nil
+			w:set_ammo_elapsed(p.m)
+			if varka_trace then varka_trace.emit(0, npc:id(), "wpn_topup_undo", { mag = p.m }) end
+		end
+		return
+	end
+	if be and npc:see(be) then st.seen_at = now; return end
+	if not (be and wpn) or now - (st.seen_at or 0) < TOPUP_CALM or now < (st.topup or 0) then return end
+	if kind_of(wpn) == "w_shotgun" or is_bolt(wpn) then return end  -- патрон за патроном: обнулить = долгая набивка
+	local size = ini_sys:r_float_ex(wpn:section(), "ammo_mag_size") or 0
+	local m = wpn:get_ammo_in_magazine() or 0
+	if m == 0 or size <= 1 or m >= size * TOPUP_FRAC then return end
+	if npc:wounded() or (xrs_kill_wounded and xrs_kill_wounded.is_under_kill_wounded(npc)) then return end
+	st.topup, st.topup_wait = now + TOPUP_GAP, { id = wpn:id(), m = m, t = now }
+	wpn:set_ammo_elapsed(0)
+	if varka_trace then varka_trace.emit(0, npc:id(), "wpn_topup", { mag = m, size = size, sec = wpn:section() }) end
+end
+
 local function choose(npc, cur_wpn, flags)
 	if varka_vanilla.is(npc) then return end  -- 25.10: отряд «чистая ваниль»
 	if not (npc and npc:alive()) then return end
@@ -150,6 +189,7 @@ local function choose(npc, cur_wpn, flags)
 	local be = npc:best_enemy()
 	local cur = cur_wpn and IsWeapon(cur_wpn) and cur_wpn or nil
 	local d = be and npc:position():distance_to(be:position())
+	top_up(npc, st, cur, be, now)  -- 25.10: неполный магазин — сменить в паузе
 	local force = false  -- сменить без выдержки SWITCH_HOLD
 
 	-- последний довод: держим пистолет, пока угроза не прошла

@@ -37,6 +37,17 @@ end
 
 -- emit(sq, npc_id, ev_name, fields_table)
 -- fields = {key = number|string|bool}  — НЕ векторы, только скаляры
+-- 25.10: строка игры (ник) → в trace. Игра хранит кириллицу в cp1251, вьювер читает UTF-8; кавычки и слэш —
+-- в апостроф (emit пишет строки как есть, без экранирования).
+function text(s)
+    return (tostring(s or ""):gsub('["\\]', "'"):gsub("[\128-\255]", function(c)
+        local b = c:byte()
+        local cp = (b >= 0xC0 and 0x410 + b - 0xC0) or (b == 0xA8 and 0x401) or (b == 0xB8 and 0x451)
+            or ((b == 0xAB or b == 0xBB) and b) or nil   -- А..я, Ё, ё, «»
+        return cp and string.char(0xC0 + math.floor(cp / 64), 0x80 + cp % 64) or "?"
+    end))
+end
+
 function emit(sq, npc_id, ev_name, fields)
     if not _f then return end
     _seq = _seq + 1

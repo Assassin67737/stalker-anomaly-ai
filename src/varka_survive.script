@@ -21,6 +21,18 @@
 --    Места нет (голое поле) — ничего не делаем, пусть ваниль. После — RETRY_MS без нового рывка, чтобы не
 --    прятаться вечно от одной очереди.
 --
+-- 3. ПЕРЕЗАРЯДКА ЗА УКРЫТИЕМ (26.10, юзер: «никто не станет перезаряжаться стоя в поле, когда рядом есть немалый
+--    булыжник»). Магазин пуст или почти, а враг на виду → спринтом (ствол за спиной) к ближайшей ноде, которую с
+--    его глаз не видно (тот же поиск, что у рывка, но дальше — до 14 м), там присесть, достать ствол и перезарядиться.
+--    Неполный магазин меняется целиком (команды «перезарядить» из Lua нет — см. varka_weapons.top_up). Врага не
+--    видно — бежать незачем: меняют на месте (top_up). Места нет — ваниль (перезарядка, где стоит).
+--    v0.3 (25.10, ночь 042936): спринт («ствол за спиной», state_lib sprint = weapon "strapped») ломал ствол —
+--    убран посреди очереди/перезарядки, движок его больше не перезаряжал: 36 из 600 бойцов VARKA ходили с пустым
+--    магазином ≥15 с (ваниль — 1 из 600), 35 из них — после перезарядки за укрытием. Теперь бег «assault» (ствол
+--    в руках, как у рывка — ни одной поломки). Страховка: в укрытии магазин пуст RELOAD_EMPTY_MS, а ствол не
+--    перезаряжается — патроны назад, отдаём ванили (хуже ванили не станет). Дробовики — только с пустым
+--    магазином и без обнуления (набивка по патрону); конец — магазин полон или перестал расти RELOAD_SETTLE.
+--
 -- id: 188211 оценщик, 188212 действие.
 
 local EVA_SURV, ACT_SURV = 188211, 188212
@@ -34,6 +46,16 @@ local DIRS     = 12
 local RINGS    = { 2, 4, 6, 8 }
 local EYE, CHEST_CR = 1.6, 0.9   -- глаза стрелка; голова присевшего
 local RQT_STATIC = 2
+local RELOAD_FRAC   = 0.34                     -- магазин меньше этой доли (или пуст) и враг на виду — за укрытие
+local RELOAD_RINGS  = { 2, 4, 6, 8, 11, 14 }   -- дальше, чем от пули: 14 м спринтом ≈ 2.5 с
+local RELOAD_RUN_MS = 6000
+local RELOAD_MAX    = 8000                     -- пересидеть не дольше (пулемёт перезаряжается ~5 с)
+local RELOAD_TICK   = 300
+local RELOAD_EMPTY_MS = 2500   -- в укрытии магазин пуст столько и ствол не в перезарядке — сдаёмся
+local RELOAD_SETTLE   = 1000   -- магазин вырос и не меняется столько — перезарядка кончилась (дробовик, неполный)
+local RELOAD_RETRY_EMPTY = 10000  -- после сдачи столько без новой пробежки: пусть ваниль перезарядит
+local SHELL_MS      = 700      -- дробовик: на патрон
+local WST_RELOAD    = 7        -- CWeapon::eReload (HudItem.h / Weapon.h: idle 0 … fire 5, fire2 6, reload 7)
 
 local function emit(npc, ev, f)
 	if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), ev, f) end
@@ -79,7 +101,7 @@ local function clear(a, b)
 end
 
 -- ближайшая нода, где присевшего не видно с глаз стрелка
-local function hide_spot(npc, shooter)
+local function hide_spot(npc, shooter, rings)
 	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
 	local eye = vector():set(shooter:position()); eye.y = eye.y + EYE
 	local base = npc:level_vertex_id()
@@ -87,7 +109,7 @@ local function hide_spot(npc, shooter)
 	if away:magnitude() < 0.1 then away = vector():set(1, 0, 0) end
 	away:normalize()
 	local best, best_s
-	for _, r in ipairs(RINGS) do
+	for _, r in ipairs(rings or RINGS) do
 		for i = 0, DIRS - 1 do
 			local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
 			local v = level.vertex_in_direction(base, dir, r)
@@ -158,11 +180,46 @@ local function on_hit(npc, amount, dir, who, bone)
 	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp })
 end
 
-local function finish(npc, why)
+-- магазин в руках: патронов, ёмкость, ствол (нет огнестрела — nil)
+local function mag_of(npc)
+	local w = npc:active_item()
+	if not (w and IsWeapon(w) and not IsMelee(w)) then return end
+	local size = ini_sys:r_float_ex(w:section(), "ammo_mag_size") or 0
+	if size < 1 then return end
+	return (w:get_ammo_in_magazine() or 0), size, w
+end
+
+local next_check = {}  -- id бойца → когда снова смотреть магазин
+local function reload_check(npc)
+	local id, now = npc:id(), time_global()
+	if now < (next_check[id] or 0) then return end
+	next_check[id] = now + RELOAD_TICK
+	local s = surv[id]
+	if s and (s.phase or now < (s.retry or 0)) then return end
+	local be = npc:best_enemy()
+	if not (be and npc:see(be)) or IsWounded(npc) then return end
+	local m, size, w = mag_of(npc)
+	if not m or m >= size * RELOAD_FRAC then return end
+	local shells = ini_sys:r_string_ex(w:section(), "kind") == "w_shotgun"
+	if shells and m > 0 then return end   -- набивку по патрону движок начинает только с пустого
+	local bd = npc:best_danger()
+	if bd and bd:type() == danger_object.grenade then return end
+	local v = hide_spot(npc, be, RELOAD_RINGS)
+	if not v then emit(npc, "reload_none", { mag = m }); next_check[id] = now + 2000; return end
+	surv[id] = { shooter = be:id(), vid = v, phase = "run", t0 = now, reload = true, shells = shells,
+		hold = shells and math.max(RELOAD_MAX, 1500 + size * SHELL_MS) or RELOAD_MAX }
+	emit(npc, "reload_run", { who = be:id(), vid = v, mag = m, size = size, wst = w:get_state(),
+		d = npc:position():distance_to(level.vertex_position(v)) })
+end
+
+local function finish(npc, why, f)
 	local s = surv[npc:id()]
 	if not s or not s.phase then return end
 	s.phase, s.retry = nil, time_global() + RETRY_MS
-	emit(npc, "survive_end", { why = why })
+	f = f or {}
+	f.why = why
+	if s.reload and npc:alive() then f.mag = (mag_of(npc)) end
+	emit(npc, "survive_end", f)
 end
 
 class "eva_varka_survive" (property_evaluator)
@@ -175,7 +232,21 @@ function eva_varka_survive:evaluate()
 	local bd = npc:best_danger()
 	if bd and bd:type() == danger_object.grenade then finish(npc, "grenade"); return false end
 	local now = time_global()
-	if s.phase == "run" and now - s.t0 > RUN_MS then finish(npc, "stuck"); return false end
+	if s.phase == "run" and now - s.t0 > (s.reload and RELOAD_RUN_MS or RUN_MS) then finish(npc, "stuck"); return false end
+	if s.reload and s.phase == "hold" and now - s.hold_t0 > 600 then
+		local m, size, w = mag_of(npc)
+		if m then
+			if m ~= s.last_m then s.last_m, s.last_mt = m, now end
+			if m >= size or (m > (s.m0 or 0) and now - s.last_mt > RELOAD_SETTLE) then finish(npc, "reloaded"); return false end
+			local wst = w:get_state()
+			if m == 0 and wst ~= WST_RELOAD and now - s.last_mt > RELOAD_EMPTY_MS then
+				if (s.saved or 0) > 0 then w:set_ammo_elapsed(s.saved) end  -- обнуляли мы — патроны назад
+				finish(npc, "empty", { wst = wst, back = s.saved or 0 })
+				s.retry = now + RELOAD_RETRY_EMPTY
+				return false
+			end
+		end
+	end
 	if s.phase == "hold" and now > s.hold_until then finish(npc, "rested"); return false end
 	return true
 end
@@ -197,12 +268,19 @@ function act_varka_survive:execute()
 	if s.phase == "run" then
 		if npc:position():distance_to_sqr(spot) > 1.0 then
 			-- бегом, ствол наготове, взгляд — по ходу (смотреть на стрелка на бегу = подставляться дольше)
+			-- v0.3: и на перезарядку — «assault», не «sprint»: спринт убирает ствол за спину и ломал перезарядку
 			state_mgr.set_state(npc, "assault", nil, nil, nil)
 			utils_obj.send_to_nearest_accessible_vertex(npc, s.vid, "varka_survive")
 			return
 		end
-		s.phase, s.hold_until = "hold", time_global() + s.hold
-		emit(npc, "survive_hold", { ms = math.floor(s.hold) })
+		s.phase, s.hold_until, s.hold_t0 = "hold", time_global() + s.hold, time_global()
+		local wst
+		if s.reload then  -- неполный магазин — сменить целиком: обнулить, движок перезарядит, как только ствол поднят
+			local m, size, w = mag_of(npc)
+			if m and m > 0 and m < size and not s.shells then w:set_ammo_elapsed(0); s.saved, m = m, 0 end
+			s.m0, wst = m, w and w:get_state()
+		end
+		emit(npc, "survive_hold", { ms = math.floor(s.hold), reload = s.reload and 1 or 0, wst = wst, saved = s.saved })
 	end
 	-- пересидеть: сидя; виден враг — бить через ворота огня (довернулся, ствол свободен сидя/стоя — varka_aim),
 	-- нет — ствол туда, где был стрелок
@@ -256,7 +334,8 @@ local function npc_update(npc)
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	if character_community(npc) == "zombied" then return end
 	local st = db.storage[npc:id()]
-	if not st or st.varka_survive_hooked then return end
+	if not st then return end
+	if st.varka_survive_hooked then reload_check(npc); return end
 	if varka_clear and not st.varka_clear_hooked then return end
 	if varka_cmd and not st.varka_cmd_hooked then return end
 	st.varka_survive_hooked = true
@@ -264,7 +343,7 @@ local function npc_update(npc)
 end
 
 local function on_death(npc)
-	if npc then surv[npc:id()] = nil; focus[npc:id()] = nil end
+	if npc then surv[npc:id()] = nil; focus[npc:id()] = nil; next_check[npc:id()] = nil end
 end
 
 function on_game_start()

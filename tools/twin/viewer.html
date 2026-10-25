@@ -230,7 +230,7 @@ function fnt(px, bold){ return (bold ? 'bold ' : '') + px + 'px ' + FL; }
 // при движении вперёд докатываем, при перемотке назад — заново с нуля.
 function freshState(){
   return { upto:0, npcs:{}, trails:{}, beliefs:{}, bel:{}, echos:{}, nodes:{}, lots:{}, holds:{},
-           shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{}, posts:{}, rspots:{}, probe:null, probeN:0, holdouts:{}, match:null, plays:{}, intel:{} };
+           shots:[], barks:{}, evLog:[], plans:{}, roles:{}, moral:{}, flanks:{}, scouts:{}, posts:{}, rspots:{}, probe:null, probeN:0, holdouts:{}, match:null, plays:{}, intel:{}, names:{}, vanilla:{}, wnames:{} };
 }
 let S = freshState();
 
@@ -243,6 +243,11 @@ function applyEvent(s, ev){
                       be:ev.be, bsee:ev.bsee, wnd:ev.wnd, dng:ev.dng, dtype:ev.dtype, kw:ev.kw,
                       aid:ev.aid, aid2:ev.aid2, hp:ev.hp, wpn:ev.wpn, wk:ev.wk, lead:ev.lead};
     (s.trails[ev.npc] ||= []).push(ev.px, ev.pz);
+    if(ev.name) s.names[ev.npc] = ev.name;   // 25.10: ник приходит в первых npc_pos бойца
+    if(ev.wname) s.wnames[ev.wpn] = ev.wname;  // 26.10: название ствола — по секции
+
+  } else if(t==='spawned'){
+    if(ev.vanilla) s.vanilla[ev.sq] = 1;     // 25.10: отряд «чистая ваниль» (метка при спавне)
 
   } else if(t==='belief_born'||t==='belief_notice'||t==='belief_update'){
     const b = s.beliefs[ev.sq] || {cone:20,reach:3,mass:1};
@@ -1476,7 +1481,7 @@ function renderRoster(force){
     const comm = ms[0][1].comm, isSel = sel && sel.kind==='sq' && sel.id===+sq;
     const mv = m==null ? null : (typeof m==='object' ? m : {v:+m});
     let h = `<div class="sq${isSel?' sel':''}" data-sq="${sq}"><div class="hd">${patchHTML(comm)}`+
-      `<span class="who"><b style="color:${fcolor(comm)}">${FACTION_RU[comm] || comm}</b><small>отряд ${sqShort(sq)}</small></span>`+
+      `<span class="who"><b style="color:${fcolor(comm)}">${FACTION_RU[comm] || comm}</b><small>отряд ${sqShort(sq)}${s.vanilla[sq] ? ' · <span class="vanilla" title="чистая ваниль: без VARKA, оригинальный ИИ Anomaly">ванильное мороженое</span>' : ''}</small></span>`+
       (pl ? `<span class="mode" title="${MODE_NAMES[pl.mode]||pl.mode}">${MODE_GLYPH[pl.mode]||''} ${MODE_NAMES[pl.mode]||pl.mode}</span>` : '')+
       `<span class="count" title="живых / всего">${live}/${ms.length}</span></div>`;
     if(mv){
@@ -1513,10 +1518,10 @@ function renderRoster(force){
       if(n.be!=null && n.be>=0) fl.push((n.bsee?'◎':'○') + n.be);
       const hp = n.hp==null ? null : Math.max(0, Math.min(1, n.hp));
       h += `<div class="m${dead?' dead':''}${isSelN?' sel':''}" data-npc="${id}" title="${rankName(n.rank||0)}${n.lead?', командир отряда':''}">`+
-           strapSVG(rankIdx(n.rank||0), 16) + `<span class="id">${id}</span>` +
+           strapSVG(rankIdx(n.rank||0), 16) + nickHTML(id, s.names[id]) +
            (n.lead && !dead ? `<span class="star">★</span>` : '') +
            (hp==null || dead ? '' : hpBarHTML(hp))+
-           (n.wk && !dead ? `<span class="wpn" title="${n.wpn||''}">${WEAPON_KIND[n.wk]||n.wk}</span>` : '')+
+           (n.wk && !dead ? wpnHTML(n.wpn, n.wk, s.wnames[n.wpn]) : '')+
            (role && role!=='hold' ? `<span class="role">${ROLE_NAMES[role]||role}</span>` : '')+
            `<span class="fl">${fl.join(' ')}</span>`+
            (dead ? '' : `<span class="act">${actName(n)}</span>`) + `</div>`;

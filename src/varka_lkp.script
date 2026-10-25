@@ -54,6 +54,8 @@ local dead_raw  = {} -- [squad_key] = mem_raw умершего belief («над�
                      -- истёкший belief воскресал из протухшей памяти свежим конусом (полигон 04.07)
 local last_tick = {} -- [npc_id] = время последнего среза
 local last_seen = {} -- [npc_id] = видел ли врага на прошлом срезе
+local named     = {} -- [npc_id] = когда ник последний раз ушёл в trace (25.10: вьювер показывает ники)
+local named_wpn = {} -- [npc_id] = секция ствола, чьё название уже ушло в trace
 local marks     = {} -- [squad_key] = { particles_object, ... }
 local last_mark = 0
 
@@ -477,6 +479,15 @@ local function npc_update(npc)
 		local hd = be and npc:head_orientation()
 		local cke, ckm = -1, -1
 		local squad = get_object_squad(npc)
+		-- ник — раз в 30 с (вьюверу хватит первого; повтор — если trace открыли заново)
+		local nick = not (named[id] and now - named[id] < 30000) and varka_trace.text(npc:character_name()) or nil
+		if nick then named[id] = now end
+		-- название ствола (26.10: вьювер вместо «автомат/ПП») — при смене ствола и вместе с ником
+		local wname
+		if wsec ~= "" and (nick or named_wpn[id] ~= wsec) then
+			named_wpn[id] = wsec
+			wname = varka_trace.text(game.translate_string(ini_sys:r_string_ex(wsec, "inv_name_short") or wsec))
+		end
 		varka_trace.emit(squad_key(npc), id, "npc_pos", {
 			px=pos.x, py=pos.y, pz=pos.z,
 			dx=dir.x, dz=dir.z,
@@ -497,7 +508,9 @@ local function npc_update(npc)
 			wear=varka_stress and varka_stress.get(id) or -1,               -- износ от угрозы (varka_stress)
 			hx=hd and hd.x or 0, hz=hd and hd.z or 0,                       -- куда смотрит голова
 			cke=cke, ckm=ckm,                                               -- луч ствола: враг / свой (-1 — не меряли)
-			lead=squad and squad:commander_id() == id and 1 or 0            -- командир отряда (вьювер: звезда)
+			lead=squad and squad:commander_id() == id and 1 or 0,           -- командир отряда (вьювер: звезда)
+			name=nick,                                                      -- ник (25.10), не каждый срез
+			wname=wname                                                     -- название ствола (26.10), при смене
 		})
 	end
 

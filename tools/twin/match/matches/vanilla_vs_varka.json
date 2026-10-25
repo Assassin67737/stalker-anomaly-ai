@@ -8,6 +8,7 @@
   "clear_r": 150,
   "ghost": true,
   "speed": 1,
+  "approach": "sprint",
   "hour": 11,
   "grenades": 1,
   "even": true,

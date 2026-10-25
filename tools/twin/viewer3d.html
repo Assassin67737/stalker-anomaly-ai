@@ -225,7 +225,7 @@ function groundAt(clientX, clientY){
 }
 
 // ─── запись ──────────────────────────────────────────────────────────────────────────────────
-let events = [], tracks = {}, deaths = {}, hits = [], matches = [], keyEv = [], slotsEv = [], belEv = [], qEv = {};
+let events = [], tracks = {}, names = {}, wnames = {}, vanillaSq = {}, deaths = {}, hits = [], matches = [], keyEv = [], slotsEv = [], belEv = [], qEv = {};
 let gThrows = [], gBooms = [];
 // двойник (живой пульт): отряды, их приказы, пауза/скорость
 let twin = false, squads = {}, orders = {}, simState = { paused: true, speed: 1, over: '' };
@@ -237,7 +237,7 @@ function ingest(text){
     if(!line.trim()) continue;
     try{ const e = JSON.parse(line); if(e.t != null) events.push(e); }catch(_){}
   }
-  tracks = {}; deaths = {}; hits = []; matches = []; keyEv = []; slotsEv = []; belEv = []; qEv = {};
+  tracks = {}; names = {}; wnames = {}; vanillaSq = {}; deaths = {}; hits = []; matches = []; keyEv = []; slotsEv = []; belEv = []; qEv = {};
   gThrows = []; gBooms = [];
   squads = {}; orders = {};
   for(const e of events){
@@ -250,7 +250,8 @@ function ingest(text){
       keyEv.push(e); continue;
     }
     if(ev === 'cmd_fail'){ keyEv.push(e); continue; }
-    if(ev === 'npc_pos') (tracks[e.npc] ||= []).push(e);
+    if(ev === 'npc_pos'){ (tracks[e.npc] ||= []).push(e); if(e.name) names[e.npc] = e.name; if(e.wname) wnames[e.wpn] = e.wname; }  // 25.10: ник — в первых npc_pos
+    else if(ev === 'spawned'){ if(e.vanilla) vanillaSq[e.sq] = 1; }  // 25.10: отряд «чистая ваниль»
     else if(ev === 'hit') hits.push(e);
     else if(ev === 'death'){ deaths[e.npc] = e; keyEv.push(e); }
     else if(ev === 'match_start'){
@@ -262,7 +263,7 @@ function ingest(text){
     else if(ev === 'grenade_throw') gThrows.push(e);
     else if(ev === 'grenade_boom') gBooms.push(e);
     if(['wpn_switch','wpn_sidearm','wpn_sidearm_end','play_start','play_end','regroup_start','holdout_start',
-        'kw_fire','bark','intel','freeze_enter','search_start','bel_seed','bel_end','clear_post','clear_step','clear_fire','order_post','focus','survive','survive_hold','survive_end','grenade_throw','grenade_boom','grenade_dodge','grenade_shout','grenade_est',
+        'kw_fire','wpn_topup','wpn_topup_undo','reload_run','reload_none','bark','intel','freeze_enter','search_start','bel_seed','bel_end','clear_post','clear_step','clear_fire','order_post','focus','survive','survive_hold','survive_end','grenade_throw','grenade_boom','grenade_dodge','grenade_shout','grenade_est',
         'grenade_safe','grenade_prone','grenade_up','grenade_land'].includes(ev)) keyEv.push(e);
   }
   t0 = events.length ? events[0].t : 0;
@@ -778,11 +779,11 @@ function rosterHTML(st, side, m){
   return `<div class="legend">${strapLegendHTML(16)}<span class="star">★</span> командир · ⟳ пустой магазин · ▾ сидит</div>` + sqs.map(sq => {
     const ms = bySq[sq], comm = ms[0][1].comm, live = ms.filter(([, s]) => !s.dead).length, sd = side[sq];
     let h = `<div class="sq"><div class="hd">${patchHTML(comm)}<span class="who"><b style="color:${fcolor(comm)}">${FACTION_RU[comm] || comm}</b>` +
-      `<small>отряд ${sqShort(sq)}</small></span>${sd ? `<span class="tag side-${sd}">${sd}</span>` : ''}<span class="count">${live}/${ms.length}</span></div><div class="members">`;
+      `<small>отряд ${sqShort(sq)}${vanillaSq[sq] ? ' · <span class="vanilla" title="чистая ваниль: без VARKA, оригинальный ИИ Anomaly">ванильное мороженое</span>' : ''}</small></span>${sd ? `<span class="tag side-${sd}">${sd}</span>` : ''}<span class="count">${live}/${ms.length}</span></div><div class="members">`;
     for(const [id, s] of ms.sort((a, b) => (b[1].lead || 0) - (a[1].lead || 0) || (b[1].rank || 0) - (a[1].rank || 0))){
       h += `<div class="m${s.dead ? ' dead' : ''}${+id === selId ? ' sel' : ''}" data-id="${id}" title="${rankName(s.rank)}${s.lead ? ', командир отряда' : ''}">` +
-        strapSVG(rankIdx(s.rank), 16) + `<span class="id">${id}</span>` + (s.lead && !s.dead ? '<span class="star">★</span>' : '') +
-        (s.dead ? '' : hpBarHTML(s.hp)) + (s.wk && !s.dead ? `<span class="wpn" title="${s.wpn || ''}">${WEAPON_KIND[s.wk] || s.wk}</span>` : '') +
+        strapSVG(rankIdx(s.rank), 16) + nickHTML(id, names[id]) + (s.lead && !s.dead ? '<span class="star">★</span>' : '') +
+        (s.dead ? '' : hpBarHTML(s.hp)) + (s.wk && !s.dead ? wpnHTML(s.wpn, s.wk, wnames[s.wpn]) : '') +
         (s.dead ? '' : `<span class="act">${actName(s)}</span>`) + `</div>`;
     }
     return h + '</div></div>';

@@ -19,6 +19,19 @@ const levelName = n => LEVEL_RU[n] || n;
 const END_RU = { eliminated:'сторона выбита', timeout:'вышло время', abort:'прерван', aborted:'прерван' };
 const BEL_END = { clear:'чисто', away:'ушёл из района', seen:'увидели', dead:'убит', old:'вера устарела' };
 function sqShort(sq){ return '#' + String(sq).slice(-3); }
+// 26.10: ствол бойца — название из игры (АК-74М), класс — в подсказке. Названия нет (старый trace) — класс
+function wpnHTML(sec, kind, name){
+  const k = WEAPON_KIND[kind] || kind;
+  if(!name) return `<span class="wpn" title="${sec || ''}">${k}</span>`;
+  const safe = String(name).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+  return `<span class="wpn" title="${k} · ${sec || ''}">${safe}</span>`;
+}
+// 25.10: боец в списке — ник и хвост id (как у отрядов); полный id — в подсказке. Ника нет (старый trace) — id целиком
+function nickHTML(id, name){
+  if(!name) return `<span class="id">${id}</span>`;
+  const safe = String(name).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+  return `<span class="nick" title="${safe} · npc ${id}">${safe}</span><span class="id short">${String(id).slice(-3)}</span>`;
+}
 
 // Нашивки группировок — из атласа игры (bake_ui.py → assets/factions/). Нет файла — цветной квадрат.
 // Вьювер подписывается onPatchLoad(fn), чтобы перерисоваться, когда картинка догрузится.

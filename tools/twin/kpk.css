@@ -77,11 +77,15 @@ label{cursor:pointer;user-select:none}
 .roster .members{margin-top:5px}
 .roster .m{display:flex;gap:6px;align-items:center;padding:2px 12px 2px 14px;margin:0 -12px;cursor:pointer;white-space:nowrap;color:var(--ink-2)}
 .roster .m .id{font:11.5px var(--f-mono);color:var(--ink)}
+.roster .m .nick{color:var(--ink);max-width:96px;overflow:hidden;text-overflow:ellipsis;flex:none}  /* 25.10: ник бойца */
+.roster .m .id.short{color:var(--ink-3);font-size:10px;margin-left:-3px}
+.roster .m.dead .nick{color:#4a4638;text-decoration:line-through}
+.roster .vanilla{color:#f3e5ab;font-family:var(--f-label)}  /* 25.10: отряд без VARKA */
 .roster .m.dead{color:#4a4638}
 .roster .m.dead .id{color:#4a4638;text-decoration:line-through}
 .roster .m.dead .strap{opacity:.35}
 .roster .m .star{margin-left:-3px}
-.roster .wpn{color:#a89f7c}
+.roster .wpn{color:#a89f7c;max-width:84px;overflow:hidden;text-overflow:ellipsis;flex:none}  /* 26.10: название ствола */
 .roster .role{color:#00e5ff}
 .roster .fl{color:#e8d55a}
 .roster .act{color:#6d7a72;margin-left:auto;overflow:hidden;text-overflow:ellipsis}

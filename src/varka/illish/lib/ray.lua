@@ -1,3 +1,7 @@
+-- Author: bellyillish — Useful Idiots, https://github.com/bellyillish/useful-idiots
+-- The Unlicense (public domain). Copied verbatim from v1.4.10 (7bc0636).
+-- VARKA changed only: require paths illish.lib.* -> varka.illish.lib.* (to not clash with Useful Idiots itself).
+
 local RAY = {}
 
 

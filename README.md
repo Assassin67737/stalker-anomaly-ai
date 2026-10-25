@@ -154,9 +154,10 @@ of the curve.
    files (`xr_danger`, `visual_memory_manager`, `rx_ff`, `axr_fight_from_cover`, `xrs_kill_wounded`) —
    other mods that replace the same files will conflict (GAMMA does, for `xr_danger` and
    `visual_memory_manager`).
-3. Copy `src/configs/` into `<Anomaly root>/gamedata/configs/` (merge, do not replace).
-4. Launch the game. No save required — works on any new game or existing save.
-5. Optional, for watching and measuring: `tools/twin/server.py` (viewer and creative mode) and
+3. Copy the `src/varka/` folder into `<Anomaly root>/gamedata/scripts/` (Lua modules loaded with `require`).
+4. Copy `src/configs/` into `<Anomaly root>/gamedata/configs/` (merge, do not replace).
+5. Launch the game. No save required — works on any new game or existing save.
+6. Optional, for watching and measuring: `tools/twin/server.py` (viewer and creative mode) and
    `tools/twin/match/run.py` (matches) — see the docstrings at the top of each.
 
 Test cycle: edit script → Alt+Tab → `F9` (quick load, for `.ltx` changes) or full restart
@@ -181,6 +182,18 @@ This is active development, not a finished mod.
 
 ---
 
+## Code by other authors
+
+VARKA carries other people's work under their own names. It is copied as is, not "inspired by".
+
+| Author | Work | What VARKA carries | License |
+|--------|------|--------------------|---------|
+| **bellyillish** | [Useful Idiots](https://github.com/bellyillish/useful-idiots) — companion overhaul for Anomaly and GAMMA | `src/varka/illish/lib/` — `pos` (cover height by six rays, open/enclosed/cramped space by sixteen rays, node claiming), `ray`, `vector`, `util`, `table`; verbatim from v1.4.10, only `require` paths changed | The Unlicense |
+
+`git log --author=bellyillish` shows their commit; `git blame` on these files shows their lines.
+
+---
+
 ## License
 
 VARKA is a community mod: take it, change it, share it — and keep what you build from it just as open.
@@ -188,5 +201,6 @@ VARKA is a community mod: take it, change it, share it — and keep what you bui
 - The VARKA scripts (`varka_*.script`) are original work under **GPL-3.0-or-later** (`LICENSE`; summary of all terms — `LICENSING.md`).
 - The design documents are **CC BY-SA 4.0** (`LICENSE-DOCS`): take the ideas, credit the source, share alike.
 - Modified vanilla scripts retain the licensing of the Anomaly project.
+- Code by other authors keeps its own license and its author's name (see above).
 
 Releases up to v0.25 were MIT / CC BY 4.0 and remain so; later versions use the terms above.

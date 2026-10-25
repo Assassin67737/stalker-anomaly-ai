@@ -37,3 +37,13 @@ Full text: LICENSE-DOCS. https://creativecommons.org/licenses/by-sa/4.0/
 These files are derived from S.T.A.L.K.E.R. Anomaly source code and retain the
 licensing terms of the Anomaly project. VARKA's own modifications in them are
 offered under GPL-3.0-or-later as far as those terms allow.
+
+---
+
+## Code by other authors (src/varka/illish/)
+
+Author: bellyillish — Useful Idiots, https://github.com/bellyillish/useful-idiots
+Copied verbatim from v1.4.10 (7bc063668fc004b4b2e6987ea89e15bb76dc6c3b); VARKA
+changed only the `require` paths. Released by its author into the public domain
+under The Unlicense (src/varka/illish/LICENSE). VARKA does not relicense it: these
+files stay public domain, with their author's name kept on them.

@@ -8,7 +8,7 @@ no part of it may be taken into a closed or proprietary product.
 
 ---
 
-## Source code (src/varka_*.script and other original scripts)
+## Game scripts (src/varka_*.script and other original scripts in src/)
 
 Copyright (C) 2026 Ibra
 
@@ -21,6 +21,23 @@ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 Full text: LICENSE (GPL-3.0-or-later).
+
+---
+
+## Tools (tools/: twin, constructor, match runner, viewers, varka_report.py)
+
+Copyright (C) 2026 Ibra
+
+GNU Affero General Public License, version 3 or (at your option) any later
+version (AGPL-3.0-or-later). The same as the GPL, plus section 13: whoever runs a
+modified version so that people use it over a network (a server, a web service,
+an API) must offer those people its complete source under the same license.
+Hosting the tools as a closed service is therefore not allowed.
+
+Full text: tools/LICENSE (AGPL-3.0-or-later).
+
+Since 26.10.2026. Copies of tools/ published between 25.10.2026 and that date stay
+available under GPL-3.0-or-later; copies from v0.25 and earlier under MIT.
 
 ---
 

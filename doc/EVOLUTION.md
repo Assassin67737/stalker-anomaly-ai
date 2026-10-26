@@ -17,7 +17,7 @@
 | **How we know it works** | Watching a test fight by eye ("polygon") | By eye *and* by numbers: a match runner, telemetry of every shot/hit/death, night series of 100+ fights |
 | **Where the code runs** | Stock Anomaly 1.5.3 exe | Modded Exes (community engine build) — needed for grenade and aim hooks |
 | **The repository** | "Primarily a design document repository" | The mod, its tools (twin, match runner, viewers) and the design trail |
-| **License** | MIT + CC BY 4.0 | GPL-3.0-or-later + CC BY-SA 4.0 — a community mod that stays open |
+| **License** | MIT + CC BY 4.0 | GPL-3.0-or-later + CC BY-SA 4.0, tools AGPL-3.0-or-later — a community mod that stays open |
 
 ---
 

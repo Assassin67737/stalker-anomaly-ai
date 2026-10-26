@@ -196,25 +196,7 @@ VARKA carries other people's work under their own names. It is copied as is, not
 
 ## License
 
-VARKA is a community mod: take it, change it, share it — and keep what you build from it just as open.
-
-- The VARKA scripts (`varka_*.script`) are original work under **GPL-3.0-or-later** (`LICENSE`; summary of all terms — `LICENSING.md`).
-- The tools (`tools/`: twin, constructor, match runner, viewers; not the baked level data) are **AGPL-3.0-or-later**
-  (`tools/LICENSE`): running a modified copy as a server or web service means giving its users the source too.
-- The design documents are **CC BY-SA 4.0** (`LICENSE-DOCS`): copy, translate and rework them, credit the source,
-  and release what you make from them under CC BY-SA 4.0 too.
-- Modified vanilla files and the level data baked from the game (`tools/twin/levels/`) retain the licensing of the
-  Anomaly project.
-- Code by other authors keeps its own license and its author's name (see above).
-- Contributions keep their author's copyright and come in under the same terms, signed off with the DCO, with no CLA
-  (`CONTRIBUTING.md`).
-
-**Nothing released under these terms can be closed.** Not the code, not the design documents. Anyone may use
-VARKA, commercial projects included, but whatever is built from it — a fork, a port to another engine, a
-reworked design document — must be published under the same license, with its source, and with no extra
-restrictions: no proprietary license, no NDA, no DRM (GPL-3.0 §5, §10; CC BY-SA 4.0 §3(b)). Running the tools
-behind a server does not get around this (AGPL-3.0 §13).
-
-Releases up to and including v0.25 were MIT / CC BY 4.0, and those copies stay under those terms. Everything
-published from v0.26 (25.10.2026) on is GPL-3.0-or-later / CC BY-SA 4.0 only; `tools/` is AGPL-3.0-or-later
-from 26.10.2026.
+VARKA is a community mod: take it, change it, share it, and keep what you build from it just as open.
+Game scripts are GPL-3.0, tools are AGPL-3.0, design documents are CC BY-SA 4.0; files taken from Anomaly keep the
+game's terms. Details, including the older MIT releases: [LICENSING.md](LICENSING.md). Want to help:
+[CONTRIBUTING.md](CONTRIBUTING.md).

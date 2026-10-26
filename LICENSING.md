@@ -88,6 +88,6 @@ files stay public domain, with their author's name kept on them.
 ## Contributions
 
 Contributors keep their copyright and license their work under the terms of the
-part of the project it goes into. Every commit is signed off under the Developer
-Certificate of Origin 1.1. There is no CLA: nobody can relicense contributed work
-without its author's consent. Details: CONTRIBUTING.md.
+part of the project it goes into (as GitHub's Terms of Service, section D.6, also
+provide). There is no CLA: nobody can relicense contributed work without its
+author's consent.

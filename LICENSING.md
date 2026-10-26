@@ -34,7 +34,8 @@ modified version so that people use it over a network (a server, a web service,
 an API) must offer those people its complete source under the same license.
 Hosting the tools as a closed service is therefore not allowed.
 
-Full text: tools/LICENSE (AGPL-3.0-or-later).
+Full text: tools/LICENSE (AGPL-3.0-or-later). Exception: tools/twin/levels/
+(data baked from the game, see below).
 
 Since 26.10.2026. Copies of tools/ published between 25.10.2026 and that date stay
 available under GPL-3.0-or-later; copies from v0.25 and earlier under MIT.
@@ -53,11 +54,24 @@ Full text: LICENSE-DOCS. https://creativecommons.org/licenses/by-sa/4.0/
 
 ---
 
-## Modified vanilla scripts (src/visual_memory_manager.script, src/xr_danger.script, ...)
+## Modified vanilla files (src/visual_memory_manager.script, src/xr_danger.script, ...)
 
-These files are derived from S.T.A.L.K.E.R. Anomaly source code and retain the
-licensing terms of the Anomaly project. VARKA's own modifications in them are
-offered under GPL-3.0-or-later as far as those terms allow.
+src/visual_memory_manager.script, src/xr_danger.script, src/rx_ff.script,
+src/axr_fight_from_cover.script, src/xrs_kill_wounded.script and
+src/configs/creatures/m_stalker.ltx are derived from S.T.A.L.K.E.R. Anomaly files
+and retain the licensing terms of the Anomaly project. VARKA's own modifications
+in them are offered under GPL-3.0-or-later as far as those terms allow.
+
+---
+
+## Data baked from the game (tools/twin/levels/)
+
+The level maps, navmesh images, smart-terrain lists and material tables in
+tools/twin/levels/ are extracted from the game's level files (level.ai, spawn,
+materials). They are data of S.T.A.L.K.E.R. Anomaly and its original authors, not
+VARKA's own work, and are not covered by the AGPL or GPL above. They are included
+only so the tools work with Anomaly. The scripts that bake them are VARKA's own
+(AGPL-3.0-or-later, see Tools).
 
 ---
 

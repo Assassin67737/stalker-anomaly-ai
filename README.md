@@ -199,11 +199,12 @@ VARKA carries other people's work under their own names. It is copied as is, not
 VARKA is a community mod: take it, change it, share it — and keep what you build from it just as open.
 
 - The VARKA scripts (`varka_*.script`) are original work under **GPL-3.0-or-later** (`LICENSE`; summary of all terms — `LICENSING.md`).
-- The tools (`tools/`: twin, constructor, match runner, viewers) are **AGPL-3.0-or-later** (`tools/LICENSE`): running a
-  modified copy as a server or web service means giving its users the source too.
+- The tools (`tools/`: twin, constructor, match runner, viewers; not the baked level data) are **AGPL-3.0-or-later**
+  (`tools/LICENSE`): running a modified copy as a server or web service means giving its users the source too.
 - The design documents are **CC BY-SA 4.0** (`LICENSE-DOCS`): copy, translate and rework them, credit the source,
   and release what you make from them under CC BY-SA 4.0 too.
-- Modified vanilla scripts retain the licensing of the Anomaly project.
+- Modified vanilla files and the level data baked from the game (`tools/twin/levels/`) retain the licensing of the
+  Anomaly project.
 - Code by other authors keeps its own license and its author's name (see above).
 
 **Nothing released under these terms can be closed.** Not the code, not the design documents. Anyone may use

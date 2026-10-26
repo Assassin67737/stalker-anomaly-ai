@@ -1,0 +1,49 @@
+VARKA — честный боевой ИИ для S.T.A.L.K.E.R. Anomaly
+https://github.com/assassin67737/stalker-anomaly-ai
+
+ЧТО НУЖНО
+  1. Anomaly 1.5.3.
+  2. Modded Exes (https://github.com/themrdemonized/xray-monolith) — без них
+     гранаты и прицел VARKA не работают.
+
+УСТАНОВКА ЧЕРЕЗ MOD ORGANIZER 2 (рекомендуется)
+  Install a new mod from an archive → выбрать этот zip → включить мод галочкой.
+  Поставить VARKA НИЖЕ (позже) модов, которые меняют те же файлы (см. «Конфликты»).
+  Удаление: снять галочку.
+
+УСТАНОВКА ВРУЧНУЮ
+  Распаковать архив в корень игры — в папку, где лежат bin\ и gamedata\.
+  На вопрос о слиянии папок / замене файлов — «Да».
+  В итоге должно получиться:
+    <Anomaly>\gamedata\scripts\varka_*.script
+    <Anomaly>\gamedata\scripts\varka\illish\lib\*.lua
+    <Anomaly>\gamedata\configs\creatures\m_stalker.ltx
+    <Anomaly>\gamedata\configs\mod_system_varka_grenades.ltx
+  Если gamedata\ уже есть — не удаляйте её, а сливайте.
+  Перед установкой сохраните копию gamedata\, чтобы откатиться.
+
+  Новая игра не нужна — работает и на старом сохранении.
+
+КОНФЛИКТЫ
+  VARKA заменяет файлы игры:
+    xr_danger.script, visual_memory_manager.script, rx_ff.script,
+    axr_fight_from_cover.script, xrs_kill_wounded.script,
+    configs\creatures\m_stalker.ltx
+  Другие моды, меняющие эти же файлы, конфликтуют (GAMMA — по xr_danger
+  и visual_memory_manager). Кто ниже в MO2 / распакован позже — тот и победил.
+
+ЕСЛИ ВЫЛЕТАЕТ
+  Смотрите appdata\logs\xray_<имя>.log — первая ошибка Lua сверху.
+  Присылайте лог в Issues на GitHub.
+
+Статус: альфа. Лицензия: GPL-3.0 (подробно — LICENSING.md).
+
+------------------------------------------------------------------------------
+ENGLISH
+  Needs Anomaly 1.5.3 + Modded Exes.
+  MO2: Install a new mod from an archive → pick this zip → enable it.
+  Manual: extract into the game root (the folder with bin\ and gamedata\),
+  merge folders, overwrite files. Works on existing saves.
+  Replaces xr_danger, visual_memory_manager, rx_ff, axr_fight_from_cover,
+  xrs_kill_wounded and creatures\m_stalker.ltx — conflicts with mods that
+  change the same files.

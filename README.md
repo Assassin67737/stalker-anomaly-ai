@@ -148,6 +148,11 @@ of the curve.
 
 ## Installation
 
+**Ready archive:** `python3 tools/package/build.py` builds `dist/VARKA-v0.26.zip` with `gamedata/` at its root.
+Mod Organizer 2: *Install a new mod from an archive* → pick the zip. By hand: extract it into the game root
+(the folder with `bin/` and `gamedata/`) and merge folders. `УСТАНОВКА.txt` inside the archive says the same,
+plus the conflicts. The manual steps below give the same result from the repository.
+
 1. Install a clean copy of [S.T.A.L.K.E.R. Anomaly 1.5.3](https://www.moddb.com/mods/stalker-anomaly)
    and [Modded Exes](https://github.com/themrdemonized/xray-monolith).
 2. Copy all `src/*.script` files into `<Anomaly root>/gamedata/scripts/`. Some of them replace vanilla

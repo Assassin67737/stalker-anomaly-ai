@@ -13,3 +13,6 @@ Thumbs.db
 
 # арт игры (нашивки) — каждый запекает из своей установки: tools/twin/bake_ui.py
 tools/twin/assets/
+
+# собранный установочный архив: tools/package/build.py
+dist/

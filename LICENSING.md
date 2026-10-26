@@ -1,8 +1,10 @@
 VARKA — community mod. Everything here is free to take, change and share,
 and everything built from it stays free the same way (copyleft).
 
-Since 25.10.2026. Releases up to and including v0.25 were published under MIT /
-CC BY 4.0 and stay available under those terms; later versions use the terms below.
+Since 25.10.2026 (v0.26). Releases up to and including v0.25 were published under
+MIT / CC BY 4.0 and stay available under those terms. Everything published from
+v0.26 on — code and design documents — is under the copyleft terms below only:
+no part of it may be taken into a closed or proprietary product.
 
 ---
 
@@ -25,8 +27,10 @@ Full text: LICENSE (GPL-3.0-or-later).
 ## Design documents (doc/)
 
 Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0).
-Share and adapt for any purpose, credit the source, and release your adaptations
-under the same license.
+You may copy, translate and adapt the documents, credit the source, and you must
+release your adaptations under CC BY-SA 4.0 as well. You may not offer them under
+any other or additional terms, and may not lock them with DRM (CC BY-SA 4.0 §3(b)).
+Commercial use is allowed; closing is not.
 
 Full text: LICENSE-DOCS. https://creativecommons.org/licenses/by-sa/4.0/
 

@@ -82,3 +82,12 @@ Copied verbatim from v1.4.10 (7bc063668fc004b4b2e6987ea89e15bb76dc6c3b); VARKA
 changed only the `require` paths. Released by its author into the public domain
 under The Unlicense (src/varka/illish/LICENSE). VARKA does not relicense it: these
 files stay public domain, with their author's name kept on them.
+
+---
+
+## Contributions
+
+Contributors keep their copyright and license their work under the terms of the
+part of the project it goes into. Every commit is signed off under the Developer
+Certificate of Origin 1.1. There is no CLA: nobody can relicense contributed work
+without its author's consent. Details: CONTRIBUTING.md.

@@ -206,6 +206,8 @@ VARKA is a community mod: take it, change it, share it — and keep what you bui
 - Modified vanilla files and the level data baked from the game (`tools/twin/levels/`) retain the licensing of the
   Anomaly project.
 - Code by other authors keeps its own license and its author's name (see above).
+- Contributions keep their author's copyright and come in under the same terms, signed off with the DCO, with no CLA
+  (`CONTRIBUTING.md`).
 
 **Nothing released under these terms can be closed.** Not the code, not the design documents. Anyone may use
 VARKA, commercial projects included, but whatever is built from it — a fork, a port to another engine, a

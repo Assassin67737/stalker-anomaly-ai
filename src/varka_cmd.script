@@ -269,6 +269,14 @@ function act_varka_order:execute()
 		if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), "order_arrive", { vid = vid }) end
 	end
 
+	-- 28.10: «немой» приказ (стенд): стоит с убранным оружием и не стреляет — замороженный участник эксперимента.
+	-- state wait_na = weapon strapped, mental free (state_lib.script:223). Жёсткий hold так не умеет: он стреляет по видимому врагу.
+	if o.mute then
+		state_mgr.set_state(npc, "wait_na", nil, nil, nil)
+		utils_obj.send_to_nearest_accessible_vertex(npc, vid, "varka_order")
+		return
+	end
+
 	-- дошёл до точки по приказу «идти» (не стоянка у спавна, не точка дирижёра) — один раз ищем пост
 	-- ваниль (varka_vanilla) поста не ищет: дошла — стоит наготове
 	if st and o.went and not o.exact and st.varka_post_tried ~= o.stamp and not varka_vanilla.is(npc) then
@@ -447,7 +455,7 @@ CMD.order = function(a)
 	-- 24.10: 5-й аргумент — темп подхода мягкого приказа: walk (raid, 2.5 м/с, как было) | run (assault, 4.5) |
 	-- sprint (6.0, ствол за спиной; ближе SPRINT_NEAR к точке — уже assault, чтобы встреча не застала со стволом за спиной)
 	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global(),
-		approach = a[5] }
+		approach = a[5], mute = a[6] == "mute" }   -- 6-й аргумент mute: не стрелять (см. act_varka_order)
 	if kind == "sq" then squad_order[id] = o else npc_order[id] = o end
 	return true, kind .. ":" .. id
 end

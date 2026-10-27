@@ -378,6 +378,13 @@ function register(name, fn)
 	CMD[name] = fn
 end
 
+-- Выполнить команду из другого модуля (сценарии): те же (ok, info), что у самой команды
+function run_cmd(name, args)
+	local fn = CMD[name]
+	if not fn then return false, "нет такой команды" end
+	return fn(args)
+end
+
 -- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг|-] [гранат на бойца] [vanilla 1/0]
 -- 25.10: vanilla = 1 — отряд «чистая ваниль» (varka_vanilla): VARKA его бойцов не трогает.
 -- Бои «по рангам» (21.10): профиль = секция бойца sim_default_<группировка>_<0..4> (костюм),

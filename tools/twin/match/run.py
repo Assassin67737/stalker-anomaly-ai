@@ -413,6 +413,7 @@ def setup_of(spec, rng, idx=1):
                 'tier': pick(q.get('tier', 'advanced'), rng, TIERS),
                 'n': rng.randint(*q['n']) if isinstance(q.get('n'), list) else q.get('n', 4),
                 'at': pick(q['at'], rng),
+                'kit': q.get('kit'),
             } for q in side['squads']],
         }
     if spec.get('matchup') == 'random':  # фракции и ранги — по правилам пар, поверх того, что в спеке
@@ -643,6 +644,13 @@ def run_one(spec, lvl, game, rng, tag):
             continue  # дирижёра у ванили нет
         for sq in sides[s]:
             game.call('preset', f'sq:{sq}', directors[s])
+    # 29.10: стенд этюда — ровная экипировка: "kit": {"community": "dolg", "weapon": "wpn_ak74", "pistol": "wpn_pm"}
+    for s in ('A', 'B'):
+        for q, sq in zip(setup[s]['squads'], sides[s]):
+            kit = q.get('kit')
+            if kit:
+                print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit.get('community', '-'),
+                                               kit.get('weapon', '-'), kit.get('pistol', '-'), kit.get('boxes', 4))))
     for a in sides['A']:
         for b in sides['B']:
             game.call('hostile', f'sq:{a}', f'sq:{b}')

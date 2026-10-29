@@ -2,9 +2,16 @@
   "id": "etude_vanilla_1v1",
   "level": "l07_military",
   "limit_s": 240,
-  "zone": {"smart": "mil_smart_terrain_7_7", "r": 15},
-  "spectator": {"aside": 30},
-  "camera": {"up": 8},
+  "zone": {
+    "smart": "mil_smart_terrain_7_7",
+    "r": 15
+  },
+  "spectator": {
+    "aside": 30
+  },
+  "camera": {
+    "up": 8
+  },
   "clear_r": 150,
   "ghost": true,
   "speed": 1,
@@ -12,9 +19,45 @@
   "hour": 11,
   "grenades": 1,
   "sides": {
-    "A": {"stack": "vanilla", "start": "advance",
-          "squads": [{"faction": "stalker", "tier": "advanced", "n": 1, "at": {"x": 17.5, "z": 0.3}}]},
-    "B": {"stack": "vanilla", "start": "advance",
-          "squads": [{"faction": "stalker", "tier": "advanced", "n": 1, "at": {"x": -78.4, "z": -13.0}}]}
+    "A": {
+      "stack": "vanilla",
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "stalker",
+          "tier": "advanced",
+          "n": 1,
+          "at": {
+            "x": 17.5,
+            "z": 0.3
+          },
+          "kit": {
+            "community": "dolg",
+            "weapon": "wpn_ak74",
+            "pistol": "wpn_pm"
+          }
+        }
+      ]
+    },
+    "B": {
+      "stack": "vanilla",
+      "start": "advance",
+      "squads": [
+        {
+          "faction": "stalker",
+          "tier": "advanced",
+          "n": 1,
+          "at": {
+            "x": -78.4,
+            "z": -13.0
+          },
+          "kit": {
+            "community": "freedom",
+            "weapon": "wpn_ak74",
+            "pistol": "wpn_pm"
+          }
+        }
+      ]
+    }
   }
 }

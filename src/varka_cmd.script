@@ -527,6 +527,44 @@ CMD.hostile = function(a)
 	return true, #la .. "×" .. #lb
 end
 
+-- kit <цель> <группировка|-> [основной|-] [пистолет|-] [коробок патронов] — стенд этюда (29.10): ровная экипировка.
+-- Группировка: зеркало (одиночки × одиночки + hostile) не дерётся — перекидываем в dolg / freedom и т.п.
+-- Ствол: все огнестрелы бойца забираем, выдаём один и тот же (нож, гранаты, патроны остаются).
+local KIT_COND = 0.9   -- состояние выданных стволов: одинаковое у всех
+CMD.kit = function(a)
+	local kind, _, list = resolve(a[1])
+	if not kind then return false, "плохая цель" end
+	if #list == 0 then return false, "кто-то не в онлайне" end
+	local comm = a[2] ~= "-" and a[2] or nil
+	local guns = {}
+	for i = 3, 4 do
+		if a[i] and a[i] ~= "-" then
+			if not ini_sys:section_exist(a[i]) then return false, "нет секции " .. a[i] end
+			guns[#guns + 1] = a[i]
+		end
+	end
+	local boxes = tonumber(a[5]) or 4
+	for _, npc in ipairs(list) do
+		if comm then npc:set_character_community(comm, 0, 0) end
+		if #guns > 0 then
+			local old = {}
+			npc:iterate_inventory(function(_, o)
+				if IsWeapon(o) and not (IsMelee(o) or IsGrenade(o) or IsAmmo(o)) then
+					old[#old + 1] = o:id()
+				end
+			end, npc)
+			for _, id in ipairs(old) do alife_release_id(id) end
+			for _, sec in ipairs(guns) do
+				alife_create_item(sec, npc, { cond = KIT_COND })
+				local ammo = parse_names(ini_sys:r_string_ex(sec, "ammo_class") or "")[1]
+				for _ = 1, ammo and boxes or 0 do alife_create_item(ammo, npc) end
+			end
+		end
+	end
+	emit("kit", { target = a[1], comm = comm, guns = table.concat(guns, ","), n = #list })
+	return true, #list .. " бойц."
+end
+
 -- attack <цель> <npc_id> — назначить врага (жёсткий приказ, если был, снимается)
 CMD.attack = function(a)
 	local kind, id, list = resolve(a[1])

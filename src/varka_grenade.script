@@ -58,6 +58,7 @@ local SEE_R     = 30              -- дальше гранату не ищем �
 local DANGER_PAD = 2              -- опасно ближе r + это — меняй позицию (рефлекс, без лучей)
 local RUN_MS    = 3500            -- не добежал — ложится там, где стоит
 local EVA_GRN, ACT_GRN = 188213, 188214
+local OP_THROW = 39   -- eWorldOperatorThrowGrenade (stalker_decision_space.h)
 local CAP = { me = false, fuse = false, vel = true }
 local LTX_FUSE = 2500             -- запал движка из ltx (читается при старте)
 local RQT_STATIC = 2
@@ -642,6 +643,21 @@ function on_game_start()
 	-- state_lib.prone (24.10: со «стоя» на стенде бойцы застывали в нырке).
 	state_lib.states.varka_prone = { weapon = "unstrapped", movement = move.stand, mental = anim.danger,
 		bodystate = move.crouch, animstate = nil, animation = "prone" }
+	-- бросок сидя (25.10, юзер: «не видел, чтобы НПС кидал гранату не стоя»). Движок в «кинуть гранату» ставит
+	-- тело стоя, но сначала спрашивает крючок Modded Exes _G.CAI_Stalker__CombatSetBodyState(npc, оператор, поза)
+	-- (stalker_combat_actions.cpp; тот же крючок у всех боевых операторов). Анимации броска сидя в модели есть
+	-- (cr_torso_7_attack_*, слот 7 = граната). Сидел за укрытием — кидает сидя. Ваниль не трогаем.
+	local prev_bs = _G.CAI_Stalker__CombatSetBodyState
+	_G.CAI_Stalker__CombatSetBodyState = function(npc, wo, bs)
+		if prev_bs then bs = prev_bs(npc, wo, bs) end
+		if wo ~= OP_THROW or bs == move.crouch then return bs end
+		local ok, sit = pcall(function()
+			return not varka_vanilla.is(npc) and npc:body_state() == move.crouch
+		end)
+		if not (ok and sit) then return bs end
+		emit(npc:id(), "grenade_crouch", {}, squad_key(npc))
+		return move.crouch
+	end
 	RegisterScriptCallback("actor_on_update", actor_update)
 	RegisterScriptCallback("npc_on_update", npc_update)
 	RegisterScriptCallback("npc_on_eval_danger", on_eval_danger)

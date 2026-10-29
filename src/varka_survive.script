@@ -14,8 +14,8 @@
 --    ближе CQB_M, стрелок дальше) не дёргаемся. npc:set_enemy для сталкера не работает (в движке только
 --    кровосос) — поэтому колбэк.
 --
--- 2. РЫВОК ИЗ-ПОД ВЗГЛЯДА. Попали, и стрелок меня видит → ближайшая нода в 2–8 м, которую с его глаз не видно
---    (лучи по статике в обе стороны, как движок), — бегом туда, присесть и пересидеть HOLD_MS (дольше, если
+-- 2. РЫВОК ИЗ-ПОД ВЗГЛЯДА. Попали, и стрелок меня видит → ближайшая нода в 2–8 м, где присевшего не видно ни
+--    стрелку, ни другим врагам в памяти (v0.4, «укрытие глазами движка» ниже), — бегом туда, присесть и пересидеть HOLD_MS (дольше, если
 --    мало здоровья). Видно врага с места — бить сидя. Действие — в ГЛАВНОМ планировщике (своё только туда,
 --    см. PLANNER_MAP), главнее боя, веры, приказов и добивания. Граната рядом / ранен лежит — уступаем.
 --    Места нет (голое поле) — ничего не делаем, пусть ваниль. После — RETRY_MS без нового рывка, чтобы не
@@ -33,6 +33,17 @@
 --    перезаряжается — патроны назад, отдаём ванили (хуже ванили не станет). Дробовики — только с пустым
 --    магазином и без обнуления (набивка по патрону); конец — магазин полон или перестал расти RELOAD_SETTLE.
 --
+-- 4. ЛЕСЕНКА И «ЛЁЖА» (v0.5, 25.10). Лесенка — bellyillish, Useful Idiots (varka/illish/lib/pos.lua, POS.COVER):
+--    шесть ступеней 0.3 / 0.7 / 0.9 / 1.3 / 1.5 / 1.8 м над точкой; балл = сколько ступеней снизу подряд закрыто
+--    от глаз врага (0 — голое место, 6 — закрыт и стоя). Его же правило «низкое укрытие → лечь» (COVER_STANCES:
+--    балл 1 — лёжа). Ступень проверяем НАШИМ лучом (seen: материалы, без допуска) — его assessCover считает точку
+--    видимой, если луч не долетел меньше метра (floor(dist − cast) ≤ 0), а лежащему камень как раз в полуметре.
+--    Где применяем: присевшему спрятаться негде (было survive_none — 6 из 26 на Армейках) → нода, где закрыто лёжа
+--    от стрелка (балл ≥ 1 и бока на 0.3 м), включая ту, где стоит, — «залечь». Балл места пишем в trace (lad) —
+--    и для присевших, чтобы потом сверить балл с тем, кого убили. Как держать позу лёжа — тоже его (illish/patches/
+--    state_mgr.lua): через 1 с prone → prone_idle, иначе нырок повторяется. Его же prop.moving = nil не берём:
+--    в 1.5.3 это поле никто не читает (grep по state_mgr*.script).
+--
 -- id: 188211 оценщик, 188212 действие.
 
 local EVA_SURV, ACT_SURV = 188211, 188212
@@ -44,8 +55,15 @@ local RUN_MS   = 4000       -- не добежал за это время — б
 local RETRY_MS = 3000
 local DIRS     = 12
 local RINGS    = { 2, 4, 6, 8 }
-local EYE, CHEST_CR = 1.6, 0.9   -- глаза стрелка; голова присевшего
+local EYE = 1.6              -- глаза врага над ногами
 local RQT_STATIC = 2
+local VIS_THR = 0.6          -- [stalker_vision_danger] transparency_threshold, перечитывается из ltx в on_game_start
+-- присевший: голова, грудь по ширине плеч; ±0.55 — запас: боец встаёт не точно в центр ноды (клетка 0.7 м)
+local BODY = { { 1.1, 0 }, { 0.75, 0 }, { 0.75, 0.25 }, { 0.75, -0.25 }, { 0.75, 0.55 }, { 0.75, -0.55 } }
+local THREAT_MEM = 10000     -- враг в памяти глазами не старше этого — тоже угроза
+local THREAT_R   = 100
+local THREAT_MAX = 4         -- стрелок + до трёх ближайших
+local RAY_CAP    = 1500      -- предохранитель на один поиск: больше лучей — берём, что нашли
 local RELOAD_FRAC   = 0.34                     -- магазин меньше этой доли (или пуст) и враг на виду — за укрытие
 local RELOAD_RINGS  = { 2, 4, 6, 8, 11, 14 }   -- дальше, чем от пули: 14 м спринтом ≈ 2.5 с
 local RELOAD_RUN_MS = 6000
@@ -56,6 +74,12 @@ local RELOAD_SETTLE   = 1000   -- магазин вырос и не меняет
 local RELOAD_RETRY_EMPTY = 10000  -- после сдачи столько без новой пробежки: пусть ваниль перезарядит
 local SHELL_MS      = 700      -- дробовик: на патрон
 local WST_RELOAD    = 7        -- CWeapon::eReload (HudItem.h / Weapon.h: idle 0 … fire 5, fire2 6, reload 7)
+-- лесенка bellyillish; нет модуля (не скопировали varka/) — лесенки нет, всё как в v0.4
+local LADDER_OK, POS = pcall(require, "varka.illish.lib.pos")
+local LADDER = LADDER_OK and POS and POS.COVER
+local LIE_MIN  = 1             -- балл, с которого закрыт лёжа (его COVER_STANCES.peek[1] = "prone")
+local LIE_SIDE = { 0.55, -0.55 } -- бока лежащего на нижней ступени — тот же запас, что у присевшего
+local LIE_IN_MS = 1000         -- нырок «prone», потом «prone_idle» (его фикс)
 
 local function emit(npc, ev, f)
 	if varka_trace then varka_trace.emit(varka_lkp and varka_lkp.get_squad_key(npc) or 0, npc:id(), ev, f) end
@@ -86,47 +110,160 @@ local function patch_enemy_callback()
 end
 
 -- ─── 2. рывок ────────────────────────────────────────────────────────────────────────
-local rp
-local function clear(a, b)
-	local dir = vector():set(b):sub(a)
-	local d = dir:magnitude()
-	if d < 0.3 then return true end
+-- Укрытие глазами движка (v0.4, 25.10). Аудит на Армейках (1.17 млн пар «точка — враг»): старый поиск — один луч
+-- в голову, любой треугольник — давал место, где присевшего реально не видно, в 36% случаев, при трёх врагах в 2%.
+-- Чинили по одной причине: тело вместо точки +25 п.п., материалы +12, все угрозы +10 (при трёх), запас +4.
+-- Здесь всё сразу; на стенде 78% / 30%. Как глаза движка (Feel_Vision): луч ОТ врага, ray_pick видит только
+-- лицевые грани (OPT_CULL, xr_area_raypick.cpp) — изнанку стены и не надо ловить; проницаемость материалов
+-- перемножается, пока не упадёт до порога боевого зрения (куст 0.7 взгляд пропускает, два куста — нет).
+-- Только статика уровня: ящики и машины, которые двигает физика, не закрывают.
+local rp, nray
+
+-- видно ли точку p с глаз eye
+local function seen(eye, p)
+	local dir = vector():set(p):sub(eye)
+	local left = dir:magnitude()
+	if left < 0.3 then return true end
 	dir:normalize()
-	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
-	if rp:query() and rp:get_distance() < d - 0.3 then return false end
-	-- задние грани луч не ловит — второй луч навстречу
-	local back = vector():set(dir):invert()
-	rp:set_position(b); rp:set_direction(back); rp:set_range(d)
-	return not (rp:query() and rp:get_distance() < d - 0.3)
+	local from, pass = vector():set(eye), 1
+	for _ = 1, 6 do   -- больше шести слоёв подряд — считаем стеной
+		rp:set_position(from); rp:set_direction(dir); rp:set_range(left)
+		nray = nray + 1
+		if not rp:query() then return true end
+		local hit = rp:get_distance()
+		if hit >= left - 0.05 then return true end
+		pass = pass * rp:get_result().material_vis_transparency_factor
+		if pass <= VIS_THR then return false end
+		from:mad(dir, hit + 0.02); left = left - hit - 0.02   -- сквозь прозрачное — дальше
+	end
+	return false
 end
 
--- ближайшая нода, где присевшего не видно с глаз стрелка
-local function hide_spot(npc, shooter, rings)
+-- присевший на p закрыт от глаз eye целиком: ни голова, ни грудь, ни плечи с запасом
+local function body_hidden(p, eye)
+	local side = vector():set(p):sub(eye)
+	side = vector():set(-side.z, 0, side.x)   -- поперёк линии взгляда, по земле
+	if side:magnitude() < 0.01 then return false end
+	side:normalize()
+	for _, b in ipairs(BODY) do
+		local q = vector():set(p):mad(side, b[2]); q.y = q.y + b[1]
+		if seen(eye, q) then return false end
+	end
+	return true
+end
+
+-- балл лесенки точки p от глаз eye: сколько ступеней снизу подряд закрыто
+local function ladder(eye, p)
+	if not LADDER then return end
+	local score = 0
+	for i, h in ipairs(LADDER) do
+		if seen(eye, vector():set(p.x, p.y + h, p.z)) then break end
+		score = i
+	end
+	return score
+end
+
+-- лежащий на p закрыт: балл ≥ LIE_MIN и нижняя ступень закрыта по бокам
+local function lie_hidden(p, eye)
+	local lad = ladder(eye, p)
+	if not lad or lad < LIE_MIN then return false, lad end
+	local side = vector():set(p):sub(eye)
+	side = vector():set(-side.z, 0, side.x)
+	if side:magnitude() < 0.01 then return false, lad end
+	side:normalize()
+	for _, w in ipairs(LIE_SIDE) do
+		local q = vector():set(p):mad(side, w); q.y = q.y + LADDER[1]
+		if seen(eye, q) then return false, lad end
+	end
+	return true, lad
+end
+
+-- глаза угроз: стрелок (он только что стрелял — где он, известно) + враги, которых боец недавно видел,
+-- там, где он их помнит (memory_position — его вера, не правда)
+local function threat_eyes(npc, shooter)
+	local now, pos, more = time_global(), npc:position(), {}
+	for o in npc:memory_visible_objects() do
+		local e = o and o:object()
+		if e and e:id() ~= shooter:id() and IsStalker(e) and e:alive() and npc:relation(e) == game_object.enemy then
+			local mt = npc:memory_time(e)
+			if mt and mt > 0 and now - mt < THREAT_MEM then
+				local mp = npc:memory_position(e)
+				local d = mp:distance_to(pos)
+				if d < THREAT_R then more[#more + 1] = { p = vector():set(mp), d = d } end
+			end
+		end
+	end
+	table.sort(more, function(a, b) return a.d < b.d end)
+	local eyes = { vector():set(shooter:position()) }
+	for i = 1, math.min(#more, THREAT_MAX - 1) do eyes[#eyes + 1] = more[i].p end
+	for _, e in ipairs(eyes) do e.y = e.y + EYE end
+	return eyes
+end
+
+-- ближайшая нода, где присевшего не видно ни одной угрозе. Такой нет — где не видно хотя бы стрелку и меньше
+-- всего остальным (part = 1 в trace): спрятаться от всех часто негде, а от того, кто попал, — лучше, чем стоять.
+local function hide_spot(npc, shooter, rings, lie)
 	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
-	local eye = vector():set(shooter:position()); eye.y = eye.y + EYE
+	nray = 0
+	local pt = profile_timer(); pt:start()
+	local eyes = threat_eyes(npc, shooter)
 	local base = npc:level_vertex_id()
 	local away = vector():set(npc:position()):sub(shooter:position()); away.y = 0
 	if away:magnitude() < 0.1 then away = vector():set(1, 0, 0) end
 	away:normalize()
-	local best, best_s
+	local best, best_s, part, part_s
 	for _, r in ipairs(rings or RINGS) do
 		for i = 0, DIRS - 1 do
+			if nray > RAY_CAP then break end
 			local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
 			local v = level.vertex_in_direction(base, dir, r)
 			if v and v < 4294967295 and v ~= base and npc:accessible(v)
 				and (not db.used_level_vertex_ids or not db.used_level_vertex_ids[v]) then
 				local p = level.vertex_position(v)
-				local head = vector():set(p); head.y = head.y + CHEST_CR
-				if not clear(eye, head) then
+				if body_hidden(p, eyes[1]) then
 					-- короче лучше; к стрелку — хуже (выбегать на него не надо)
 					local s = r + 2 * math.max(0, dir:dotproduct(vector():set(0, 0, 0):sub(away)))
-					if not best_s or s < best_s then best, best_s = v, s end
+					local open = 0   -- скольким остальным виден
+					for k = 2, #eyes do
+						if not body_hidden(p, eyes[k]) then open = open + 1 end
+					end
+					if open == 0 then
+						if not best_s or s < best_s then best, best_s = v, s end
+					elseif not best then
+						s = s + 100 * open
+						if not part_s or s < part_s then part, part_s = v, s end
+					end
 				end
 			end
 		end
 		if best then break end   -- нашлось на этом кольце — дальше не бежим
 	end
-	return best
+	-- присевшему негде — залечь (v0.5): ближайшая нода, где закрыт лёжа от стрелка, начиная с той, где стоит
+	local lie_v, lad
+	if lie and LADDER and not best and not part then
+		local cand = { base }
+		for _, r in ipairs(rings or RINGS) do
+			for i = 0, DIRS - 1 do
+				local dir = vector_rotate_y(vector():set(away), i * 360 / DIRS)
+				local v = level.vertex_in_direction(base, dir, r)
+				if v and v < 4294967295 and v ~= base and npc:accessible(v)
+					and (not db.used_level_vertex_ids or not db.used_level_vertex_ids[v]) then
+					cand[#cand + 1] = v
+				end
+			end
+		end
+		for _, v in ipairs(cand) do
+			if nray > RAY_CAP then break end
+			local ok, l = lie_hidden(level.vertex_position(v), eyes[1])
+			if ok then lie_v, lad = v, l; break end
+		end
+	end
+	local v = best or part or lie_v
+	if v and not lie_v then lad = ladder(eyes[1], level.vertex_position(v)) end
+	pt:stop()
+	local info = { rays = nray, us = math.floor(pt:time()), n = #eyes, lad = lad, lie = lie_v and 1 or nil,
+		part = (not best and part) and 1 or nil, cap = nray > RAY_CAP and 1 or nil }
+	return v, info
 end
 
 local surv = {}  -- id бойца → { shooter, vid, phase = "run"|"hold", t0, until }
@@ -172,12 +309,13 @@ local function on_hit(npc, amount, dir, who, bone)
 	local s = surv[id]
 	if s and (s.phase or now < (s.retry or 0)) then return end
 	if not who:see(npc) or IsWounded(npc) then return end
-	local v = hide_spot(npc, who)
-	if not v then emit(npc, "survive_none", { who = who:id() }); return end
+	local v, info = hide_spot(npc, who, nil, true)
+	if not v then emit(npc, "survive_none", { who = who:id(), n = info.n, rays = info.rays, us = info.us, cap = info.cap }); return end
 	local hp = npc.health or 1
-	surv[id] = { shooter = who:id(), vid = v, phase = "run", t0 = now,
+	surv[id] = { shooter = who:id(), vid = v, phase = "run", t0 = now, lie = info.lie,
 		hold = HOLD_MS + HOLD_HURT * (1 - math.max(0, math.min(1, hp))) }
-	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp })
+	emit(npc, "survive", { who = who:id(), vid = v, d = npc:position():distance_to(level.vertex_position(v)), hp = hp,
+		n = info.n, part = info.part, lad = info.lad, lie = info.lie, rays = info.rays, us = info.us, cap = info.cap })
 end
 
 -- магазин в руках: патронов, ёмкость, ствол (нет огнестрела — nil)
@@ -204,12 +342,17 @@ local function reload_check(npc)
 	if shells and m > 0 then return end   -- набивку по патрону движок начинает только с пустого
 	local bd = npc:best_danger()
 	if bd and bd:type() == danger_object.grenade then return end
-	local v = hide_spot(npc, be, RELOAD_RINGS)
-	if not v then emit(npc, "reload_none", { mag = m }); next_check[id] = now + 2000; return end
+	local v, info = hide_spot(npc, be, RELOAD_RINGS)
+	if not v then
+		emit(npc, "reload_none", { mag = m, n = info.n, rays = info.rays, us = info.us, cap = info.cap })
+		next_check[id] = now + 2000
+		return
+	end
 	surv[id] = { shooter = be:id(), vid = v, phase = "run", t0 = now, reload = true, shells = shells,
 		hold = shells and math.max(RELOAD_MAX, 1500 + size * SHELL_MS) or RELOAD_MAX }
 	emit(npc, "reload_run", { who = be:id(), vid = v, mag = m, size = size, wst = w:get_state(),
-		d = npc:position():distance_to(level.vertex_position(v)) })
+		d = npc:position():distance_to(level.vertex_position(v)),
+		n = info.n, part = info.part, lad = info.lad, rays = info.rays, us = info.us, cap = info.cap })
 end
 
 local function finish(npc, why, f)
@@ -280,11 +423,23 @@ function act_varka_survive:execute()
 			if m and m > 0 and m < size and not s.shells then w:set_ammo_elapsed(0); s.saved, m = m, 0 end
 			s.m0, wst = m, w and w:get_state()
 		end
-		emit(npc, "survive_hold", { ms = math.floor(s.hold), reload = s.reload and 1 or 0, wst = wst, saved = s.saved })
+		emit(npc, "survive_hold", { ms = math.floor(s.hold), reload = s.reload and 1 or 0, wst = wst, saved = s.saved, lie = s.lie })
+	end
+	-- залёг (v0.5): лежать и смотреть на стрелка; встать — значит показаться (сидя тут видно — потому и лёг).
+	-- Нырок «prone» первую секунду, потом «prone_idle» (фикс bellyillish). Видит врага лёжа — в trace раз на эпизод.
+	local be = npc:best_enemy()
+	if s.lie then
+		local lie = time_global() - s.hold_t0 < LIE_IN_MS and "varka_lie" or "varka_lie_idle"
+		state_mgr.set_state(npc, lie, nil, nil, shooter and { look_position = shooter:position() } or nil)
+		if be and npc:see(be) and not s.lie_told then
+			s.lie_told = true
+			emit(npc, "lie_sees", { enemy = be:id(), shooter = be:id() == s.shooter and 1 or 0 })
+		end
+		utils_obj.send_to_nearest_accessible_vertex(npc, s.vid, "varka_survive")
+		return
 	end
 	-- пересидеть: сидя; виден враг — бить через ворота огня (довернулся, ствол свободен сидя/стоя — varka_aim),
 	-- нет — ствол туда, где был стрелок
-	local be = npc:best_enemy()
 	if be and npc:see(be) then
 		local wpn = npc:active_item()
 		local sniper = wpn and IsWeapon(wpn) and ini_sys:r_string_ex(wpn:section(), "kind") == "w_sniper"
@@ -347,6 +502,12 @@ local function on_death(npc)
 end
 
 function on_game_start()
+	VIS_THR = ini_sys:r_float_ex("stalker_vision_danger", "transparency_threshold") or VIS_THR
+	if not LADDER then printf("[VARKA] varka_survive: нет varka/illish/lib/pos.lua — без лесенки и «залечь» (%s)", tostring(POS)) end
+	-- лёжа: ванильные анимации "prone" (нырок loophole_9_in_front_0 → лежать) и "prone_idle" (лежать без нырка)
+	local S = state_lib.states
+	S.varka_lie      = { weapon = "unstrapped", movement = move.stand, mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = "prone" }
+	S.varka_lie_idle = { weapon = "unstrapped", movement = move.stand, mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = "prone_idle" }
 	patch_enemy_callback()
 	RegisterScriptCallback("npc_on_update", npc_update)
 	RegisterScriptCallback("npc_on_hit_callback", on_hit)

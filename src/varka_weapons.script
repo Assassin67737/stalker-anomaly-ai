@@ -153,6 +153,7 @@ local function top_up(npc, st, wpn, be, now)
 	end
 	if be and npc:see(be) then st.seen_at = now; return end
 	if not (be and wpn) or now - (st.seen_at or 0) < TOPUP_CALM or now < (st.topup or 0) then return end
+	if varka_suppress and varka_suppress.in_contact(npc) then return end   -- 29.10: в контакте меняет сам, в укрытии
 	if kind_of(wpn) == "w_shotgun" or is_bolt(wpn) then return end  -- патрон за патроном: обнулить = долгая набивка
 	local size = ini_sys:r_float_ex(wpn:section(), "ammo_mag_size") or 0
 	local m = wpn:get_ammo_in_magazine() or 0

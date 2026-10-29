@@ -291,9 +291,16 @@ local function sense(S, key, npc, now)
 	local mt = npc:memory_time(e)
 	local fresh_mem = mt and mt > (S.known[eid] or 0) + 1000 and now - mt < SEED_WINDOW
 	if fresh_mem then
-		-- новая весть от движка (услышал, получил пулю) — облако заново из неё
+		-- новая весть от движка (услышал, получил пулю) — облако заново из неё.
+		-- 29.10: ТОЧКА — из своей вести (varka_suppress), не memory_position: услышанный выстрел движок кладёт как
+		-- «попадание» с точной позицией стрелка, а удар пули рядом — позицией удара (sound_memory_manager.cpp).
 		S.known[eid] = mt
-		seed(S, key, eid, cell_near(npc, npc:memory_position(e)), now - mt, nil, nil, "mem")
+		local n = varka_suppress and varka_suppress.news_of(npc)
+		if n and n.who == eid and now - n.t < SEED_WINDOW then
+			seed(S, key, eid, cell_near(npc, vector():set(n.x, n.y, n.z)), now - n.t, nil, nil, "news_" .. n.how)
+		else
+			seed(S, key, eid, cell_near(npc, npc:memory_position(e)), now - mt, nil, nil, "mem")
+		end
 	elseif s and not S.clouds[eid] and now - s.t >= LOST_MS then
 		if now - s.t < SEED_WINDOW then
 			seed(S, key, eid, cell_by_vid(s.vid), now - s.t, s.vx, s.vz, "lost")

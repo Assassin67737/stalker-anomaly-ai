@@ -31,7 +31,7 @@
 -- Пуля летит из глаз по взгляду (g_fireParams, ai_stalker_fire.cpp: P = eye_matrix.c, D = eye_matrix.k) — данность
 -- движка; взгляд — look_position state_mgr (позы varka_aim без анимации — высота точки сохраняется).
 -- Своего на линии движок прострелить не даст (object_actions.cpp: can_kill_member).
--- Порядок: граната и «жить хочу» главнее, приказы varka_cmd — тоже; контакт главнее веры (varka_clear), боя,
+-- Порядок: граната, «жить хочу» и жёсткий приказ главнее; контакт главнее мягкого приказа, веры (varka_clear), боя,
 -- опасности и A-Life.
 --
 -- Trace: ctc_start, ctc_end {ms}, ctc_cover {d, n} / ctc_cover_none, ctc_reload {mag} / ctc_reload_done {ms} /
@@ -42,7 +42,7 @@
 
 local EVA_SUPP, ACT_SUPP = 188215, 188216
 local EVA_SURV, EVA_GRN  = 188211, 188213   -- «жить хочу», граната
-local EVA_SOFT, EVA_HARD = 188201, 188203   -- приказы varka_cmd
+local EVA_HARD = 188203                     -- жёсткий приказ varka_cmd
 
 local CONTACT_MS = 8000   -- мс: весть свежая — контакт (после GRACE_MS — если у бойца нет роли веры)
 local GRACE_MS   = 6000   -- = GRACE_MS varka_belief: с этого момента роли веры
@@ -188,7 +188,8 @@ local function on_hear(npc, who_id, s_type, dist, power, pos)
 	if s_type == "WPN_hit" or not (pos and who_id) then return end   -- удар пули — место удара, не стрелок
 	if not (npc and npc:alive() and IsStalker(npc)) or varka_vanilla.is(npc) then return end
 	local who = (db.storage[who_id] and db.storage[who_id].object) or level.object_by_id(who_id)
-	if not (who and who:alive() and (IsStalker(who) or who:id() == AC_ID)) or npc:relation(who) < game_object.enemy then return end
+	-- сначала «кто»: звук бывает и от предмета — alive() на нём = ошибка Lua (CSciptEntity: cannot access Alive)
+	if not (who and (IsStalker(who) or who:id() == AC_ID) and who:alive()) or npc:relation(who) < game_object.enemy then return end
 	local p = npc:position()
 	local dx, dz = pos.x - p.x, pos.z - p.z
 	local d = math.sqrt(dx * dx + dz * dz)
@@ -448,6 +449,7 @@ end
 local function yield_ids(npc)
 	local st = db.storage[npc:id()]
 	local ids = { xr_actions_id.alife, xr_actions_id.state_mgr + 2, stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	if st.varka_cmd_hooked then ids[#ids + 1] = 188202 end                              -- мягкий приказ
 	if st.varka_clear_hooked then ids[#ids + 1] = 188210 end                            -- вера: заглянуть / держать край
 	if st.rx_ff then ids[#ids + 1] = 18803 end                                           -- свой на линии
 	if st.kill_wounded and xrs_kill_wounded and xrs_kill_wounded.is_enabled() then ids[#ids + 1] = 188112 end
@@ -466,10 +468,9 @@ local function hook_npc(npc)
 	act:add_precondition(wp(EVA_SUPP, true))
 	if st.varka_survive_hooked then act:add_precondition(wp(EVA_SURV, false)) end
 	if st.varka_grenade_hooked then act:add_precondition(wp(EVA_GRN, false)) end
-	if st.varka_cmd_hooked then
-		act:add_precondition(wp(EVA_SOFT, false))
-		act:add_precondition(wp(EVA_HARD, false))
-	end
+	-- жёсткий приказ главнее; мягкий («идти к точке, бой важнее» — в матчах висит у всех) уступает, как вере.
+	-- v0.2 требовал «мягкого нет» — в матчах действие было недостижимо: 36 окон открыто, ни одного выстрела.
+	if st.varka_cmd_hooked then act:add_precondition(wp(EVA_HARD, false)) end
 	act:add_effect(wp(EVA_SUPP, false))
 	manager:add_action(ACT_SUPP, act)
 	for _, id in ipairs(yield_ids(npc)) do

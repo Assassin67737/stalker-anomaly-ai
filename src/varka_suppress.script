@@ -1,4 +1,16 @@
--- varka_suppress.script — КОНТАКТ v0.3 (29.10.2026): «не вижу, но весть свежая» — целиком нашими руками
+-- varka_suppress.script — КОНТАКТ v0.4 (29.10.2026): «не вижу, но весть свежая» — целиком нашими руками
+--
+-- v0.4 (серия natural, 10 матчей v0.3, вердикт «дебилы»):
+--   · смотрели вверх: +EYE_UP к ногам шло ВСЕМ звукам, кроме выстрела, а голос, боль, перезарядка, достать ствол
+--     (xr_hear get_sound_type) звучат уже у головы/рук → точка ~3 м над землёй. Теперь высота вести = земля под
+--     точкой (нода навмеша) + высота источника над своей землёй (0.4–1.6), шаги — EYE_UP.
+--   · «колбасит»: 38% контактов короче 1 с, 40% снова через < 1 с, и на каждом входе — новое укрытие и новый взгляд.
+--     Теперь: вернулся быстрее REENTER_MS — то же состояние; весть сдвинулась меньше NEWS_MOVE — укрытие и взгляд те же;
+--     увидел врага — конец, только если видит SEE_STABLE подряд.
+--   · сидел, пока весть свежая, а все окна «land» (бугор между ним и вестью; 536 отказов из 870) — теперь ВЫХОД НА
+--     ОГНЕВУЮ: ближняя нода, откуда весть достать, — туда, окно PEEK_WIN_MS, назад в укрытие («в, в, н»).
+--     Укрытие «его» для вести на слух — с запасом на ошибку уха по дальности (LAND_EAR × σ).
+--   · ctc_end пишет why.
 --
 -- v0.1–0.2 — огонь по вере («куда-то туда», в точку пика). v0.3 — всё состояние между «видел» и «ищу»:
 -- взгляд, укрытие, огонь, перезарядка. До него эти секунды (до GRACE_MS веры) отдавались ванильному бою 89 —
@@ -34,7 +46,7 @@
 -- Порядок: граната, «жить хочу» и жёсткий приказ главнее; контакт главнее мягкого приказа, веры (varka_clear), боя,
 -- опасности и A-Life.
 --
--- Trace: ctc_start, ctc_end {ms}, ctc_cover {d, n} / ctc_cover_none, ctc_reload {mag} / ctc_reload_done {ms} /
+-- Trace: ctc_start {back — вернулся через, мс}, ctc_end {ms, why}, ctc_peek {d, why} / ctc_peek_fail {why}, ctc_cover {d, n} / ctc_cover_none, ctc_reload {mag} / ctc_reload_done {ms} /
 -- ctc_reload_undo; supp_start {how, d, age, kind, peeks, st, err} (err — точка от настоящего врага, только для
 -- разбора), supp_fire {ms}, supp_end {shots, why}, supp_skip {why}.
 --
@@ -46,6 +58,9 @@ local EVA_HARD = 188203                     -- жёсткий приказ varka
 
 local CONTACT_MS = 8000   -- мс: весть свежая — контакт (после GRACE_MS — если у бойца нет роли веры)
 local GRACE_MS   = 6000   -- = GRACE_MS varka_belief: с этого момента роли веры
+local REENTER_MS = 2000   -- мс: вернулся в контакт быстрее — состояние то же (укрытие, взгляд)
+local NEWS_MOVE  = 2.5    -- м: весть сдвинулась меньше — укрытие и взгляд не пересчитывать
+local SEE_STABLE = 300    -- мс: увидел врага — конец контакта, только если видит столько подряд (мигание зрения)
 local REACT_MS   = 400    -- мс: реакция — услышал не значит ответил в тот же кадр
 local WINDOW_MS  = 2500   -- мс: одно окно огня на весть
 local RECHECK_MS = 300    -- мс: отказ по воротам огня — пересмотр не чаще
@@ -56,6 +71,13 @@ local EYE_UP     = 1.4    -- м: глаза над ногами (весть гл
 local AIM_DOWN   = 0.2    -- м: цель чуть ниже глаз вести — голова у края
 local EAR_RANGE, EAR_LAT = 0.15, 0.03   -- σ ошибки уха: доля дистанции по дальности / вбок
 local LAND_R     = 4      -- м: упёрлись не дальше этого от вести — её укрытие; дальше — не достать
+local LAND_EAR   = 1.5    -- весть на слух: «не дальше» = max(LAND_R, LAND_EAR · σ дальности уха)
+local SRC_H_MIN, SRC_H_MAX = 0.4, 1.6   -- м: высота источника звука над его землёй (лёжа … голова)
+local PEEK_RINGS = { 1.5, 3, 5 }        -- м: где искать огневую, если отсюда не достать
+local PEEK_MS    = 3000   -- мс: не дошёл до огневой — открыть окно там, где стоит
+local PEEK_WIN_MS = 1500  -- мс: окно огня с огневой — «высунулся, выстрелил, нырнул»
+local PEEK_CD    = 4000   -- мс между выходами одного бойца
+local PEEK_AGE   = 3000   -- мс: весть старше — на огневую не выходить
 local EDGE_STEP, EDGE_STEPS = 0.4, 12   -- скан края вбок: шаг на глубине укрытия, м; шагов (до 4.8 м)
 local TOP_STEP, TOP_STEPS   = 0.2, 4    -- скан верха: шаг вверх, м; шагов (до 0.8 м)
 local EDGE_PAST  = 1.0    -- м: луч прошёл глубину укрытия на столько — край
@@ -77,6 +99,9 @@ local sup     = {}   -- id → окно огня { who, kind, key, until_t } (д
 local done    = {}   -- id → t вести, на которую уже ответили огнём
 local recheck = {}   -- id → не раньше
 local skipped = {}   -- id → t вести, про которую уже написали supp_skip
+local prev    = {}   -- id → { s, t } — состояние ушедшего контакта (вернётся быстрее REENTER_MS — продолжить)
+local seen_t  = {}   -- id → с какого момента видит врага подряд
+local why_end = {}   -- id → почему оценщик сказал «контакта нет» (для ctc_end)
 
 local function emit(npc, ev, f)
 	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), ev, f) end
@@ -127,13 +152,13 @@ local function dir_of(yaw, pitch)
 end
 
 -- Пик-точки вести P с глаз E: { {pos, kind, lat}, ... } | nil, почему
-local function peek_points(eye, P)
+local function peek_points(eye, P, land_r)
 	local dir = vector():set(P):sub(eye)
 	local D = dir:magnitude()
 	dir:normalize()
 	local h = ray_dist(eye, dir, D)
 	if not h or D - h < 0.5 then return { { pos = P, kind = "open", lat = 0 } } end
-	if D - h > LAND_R then return nil, "land" end
+	if D - h > (land_r or LAND_R) then return nil, "land" end
 	local out = {}
 	local yaw = math.atan2(dir.x, dir.z)
 	local pitch = math.atan2(dir.y, math.sqrt(dir.x * dir.x + dir.z * dir.z))
@@ -182,7 +207,60 @@ local function find_cover(npc, E)
 	return nil, nil, n
 end
 
+-- «не дальше от вести» для этой вести: на слух дальность врёт сильнее — его укрытие может быть ближе точки
+local function land_r(n, d)
+	if n.how == "eye" then return LAND_R end
+	return math.max(LAND_R, LAND_EAR * EAR_RANGE * d)
+end
+
+-- одна проба: достать ли весть P с глаз eye (открыто или упёрлись в её укрытие)
+local function reach(eye, P, lr)
+	local dir = vector():set(P):sub(eye)
+	local D = dir:magnitude()
+	dir:normalize()
+	local h = ray_dist(eye, dir, D)
+	return not h or D - h <= lr
+end
+
+-- ближняя огневая: нода, откуда весть достать (сидя или стоя); вбок от линии на весть — раньше, чем вперёд/назад
+local function find_fire_spot(npc, P, lr)
+	local p, vid0 = npc:position(), npc:level_vertex_id()
+	local dP = p:distance_to(P)
+	local tx, tz = P.x - p.x, P.z - p.z
+	local tl = math.sqrt(tx * tx + tz * tz)
+	if tl < 0.1 then return nil end
+	tx, tz = tx / tl, tz / tl
+	local dirs = {}
+	for k = 0, 7 do
+		local a = k * math.pi / 4
+		local dx, dz = math.sin(a), math.cos(a)
+		dirs[#dirs + 1] = { x = dx, z = dz, w = math.abs(dx * tx + dz * tz) }
+	end
+	table.sort(dirs, function(a, b) return a.w < b.w end)
+	for _, r in ipairs(PEEK_RINGS) do
+		for _, dd in ipairs(dirs) do
+			local v = level.vertex_in_direction(vid0, vector():set(dd.x, 0, dd.z), r)
+			if v and v < INVALID_VID and v ~= vid0 and npc:accessible(v) then
+				local q = level.vertex_position(v)
+				if q:distance_to(P) >= dP - 2 then
+					for _, hh in ipairs({ 1.0, 1.5 }) do
+						if reach(vector():set(q.x, q.y + hh, q.z), P, lr) then return v, q end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
 -- ===== ВЕСТЬ =====
+
+-- земля под точкой: нода навмеша (нет ноды — nil)
+local function ground_y(x, y, z)
+	local v = level.vertex_id(vector():set(x, y, z))
+	if v and v < INVALID_VID then return level.vertex_position(v).y end
+	return nil
+end
 
 local function on_hear(npc, who_id, s_type, dist, power, pos)
 	if s_type == "WPN_hit" or not (pos and who_id) then return end   -- удар пули — место удара, не стрелок
@@ -196,10 +274,14 @@ local function on_hear(npc, who_id, s_type, dist, power, pos)
 	if d < 0.5 then return end
 	local ux, uz = dx / d, dz / d
 	local er, el = d * EAR_RANGE * gauss(), d * EAR_LAT * gauss()
-	local y = pos.y
-	if s_type ~= "WPN_shoot" then y = y + EYE_UP end   -- шаги и прочее — от ног
-	news[npc:id()] = { x = pos.x + ux * er - uz * el, y = y, z = pos.z + uz * er + ux * el,
-	                   t = time_global(), who = who_id, how = s_type == "WPN_shoot" and "ear" or "ear_step" }
+	-- высота: земля под точкой вести + высота источника над своей землёй. Ухо высоту не делит — но выстрел у ствола,
+	-- голос у головы, шаги у ног; v0.3 добавлял EYE_UP всему, кроме выстрела, — голос уходил на 3 м (смотрели вверх)
+	local x, z = pos.x + ux * er - uz * el, pos.z + uz * er + ux * el
+	local g0 = ground_y(pos.x, pos.y, pos.z) or (pos.y - EYE_UP)
+	local h = s_type == "MST_step" and EYE_UP or math.min(SRC_H_MAX, math.max(SRC_H_MIN, pos.y - g0))
+	local g = ground_y(x, pos.y, z) or g0
+	local how = (s_type == "WPN_shoot" and "ear") or (s_type == "MST_step" and "ear_step") or "ear_snd"
+	news[npc:id()] = { x = x, y = g + h, z = z, t = time_global(), who = who_id, how = how }
 end
 
 -- для varka_belief: посев облака из честной вести
@@ -255,7 +337,7 @@ local function open_window(npc, n, now)
 	if kind == "w_shotgun" and d > 25 then return nil, "shotgun" end
 	local crouch = npc:body_state() == move.crouch
 	local eye = vector():set(p.x, p.y + (crouch and 1.0 or 1.5), p.z)
-	local peeks, why = peek_points(eye, P)
+	local peeks, why = peek_points(eye, P, land_r(n, d))
 	if not peeks then return nil, why end
 	for _, pk in ipairs(peeks) do
 		if not taken[pk.kind] then
@@ -280,31 +362,48 @@ end
 
 -- ===== ОЦЕНЩИК: контакт есть? =====
 
+-- глаза увиденного: сидит — ниже (поза видна глазами)
+local function eye_h(o)
+	if o:id() == AC_ID then return IsMoveState("mcCrouch") and 1.0 or 1.5 end
+	return o:body_state() == move.crouch and 1.0 or EYE_UP
+end
+
+-- видит подряд дольше SEE_STABLE (в контакте) — мигание зрения не рвёт действие
+local function sees_stable(npc, o, now)
+	local id = npc:id()
+	if not npc:see(o) then seen_t[id] = nil; return false end
+	seen_t[id] = seen_t[id] or now
+	return not ctc[id] or now - seen_t[id] >= SEE_STABLE
+end
+
 local function want(npc)
 	local id, now = npc:id(), time_global()
-	if not npc:alive() or IsWounded(npc) then return false end
+	if not npc:alive() or IsWounded(npc) then return false, "wounded" end
 	-- видит врага — весть глазами (точка, где потерял); прицельный огонь — не наше дело
 	local be = npc:best_enemy()
 	if be and be:alive() and npc:see(be) then
 		local bp = be:position()
-		news[id] = { x = bp.x, y = bp.y + EYE_UP, z = bp.z, t = now, who = be:id(), how = "eye" }
-		return false
+		news[id] = { x = bp.x, y = bp.y + eye_h(be), z = bp.z, t = now, who = be:id(), how = "eye" }
+		if sees_stable(npc, be, now) then return false, "see" end
+		return true
 	end
 	local n = news[id]
-	if not n then return false end
+	if not n then return false, "no_news" end
 	local age = now - n.t
-	if age > CONTACT_MS then return false end
-	if age > GRACE_MS and varka_belief and varka_belief.role(npc) then return false end   -- дальше — руки веры
+	if age > CONTACT_MS then return false, "old" end
+	if age > GRACE_MS and varka_belief and varka_belief.role(npc) then return false, "belief" end   -- дальше — руки веры
 	local who = level.object_by_id(n.who)
-	if not (who and who:alive()) or IsWounded(who) then return false end   -- раненого — добивание
-	if npc:see(who) then return false end
+	if not (who and who:alive()) or IsWounded(who) then return false, "who" end   -- раненого — добивание
+	if sees_stable(npc, who, now) then return false, "see" end
 	return true
 end
 
 class "eva_varka_suppress" (property_evaluator)
 function eva_varka_suppress:__init(name) super(nil, name) end
 function eva_varka_suppress:evaluate()
-	return want(self.object)
+	local ok, why = want(self.object)
+	why_end[self.object:id()] = not ok and why or nil
+	return ok
 end
 
 -- ===== ДЕЙСТВИЕ =====
@@ -317,19 +416,33 @@ function act_varka_suppress:initialize()
 	local npc = self.object
 	if not npc:alive() then return end
 	npc:set_path_type(game_object.level_path)
-	ctc[npc:id()] = { t0 = time_global() }
+	local id, now = npc:id(), time_global()
+	local pv = prev[id]
+	prev[id] = nil
+	if pv and now - pv.t < REENTER_MS then   -- мигнул и вернулся — продолжить, не выбирать укрытие и взгляд заново
+		pv.s.win = nil
+		ctc[id] = pv.s
+		emit(npc, "ctc_start", { back = now - pv.t })
+		return
+	end
+	ctc[id] = { t0 = now }
 	emit(npc, "ctc_start", {})
 end
 
 -- новая весть: видно ли меня с неё, куда смотреть
 local function on_news(npc, s, n)
 	s.nt = n.t
-	local p = npc:position()
+	if s.out or (s.win and s.win.back) then return end   -- вышел на огневую сам — не дёргать назад на полпути
 	local E = vector():set(n.x, n.y, n.z)
+	-- та же весть, чуть сдвинутая (новый выстрел из того же места) — укрытие и взгляд прежние (v0.3 пересчитывал на
+	-- каждый звук: укрытие то слева, то справа — «колбасит»)
+	if s.E and s.who == n.who and s.E:distance_to(E) < NEWS_MOVE then return end
+	s.E, s.who = E, n.who
+	local p = npc:position()
 	local crouch = npc:body_state() == move.crouch
 	local eye = vector():set(p.x, p.y + (crouch and 1.0 or 1.5), p.z)
 	local aim = vector():set(n.x, n.y - AIM_DOWN, n.z)
-	local peeks = peek_points(eye, aim)
+	local peeks = peek_points(eye, aim, land_r(n, p:distance_to(aim)))
 	s.look = peeks and peeks[1].pos or aim
 	s.exposed = exposed_from(E, p)
 	s.cover = nil
@@ -368,6 +481,21 @@ local function hold(npc, s, now)
 	utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_suppress")
 end
 
+local function emit_start(npc, n, w)
+	local who = level.object_by_id(n.who)
+	local wp = who and who:position() or w.pos
+	emit(npc, "supp_start", { enemy = n.who, how = w.how, d = w.d, age = w.age, kind = w.kind, peeks = w.peeks,
+	                          st = w.stance, err = math.sqrt((w.pos.x - wp.x) ^ 2 + (w.pos.z - wp.z) ^ 2),
+	                          px = w.pos.x, py = w.pos.y, pz = w.pos.z, peek = w.back and 1 or 0 })
+end
+
+-- назад с огневой в укрытие, откуда вышел (тем же бегом, что «в укрытие от вести»)
+local function go_home(s, now)
+	if not s.home then return end
+	s.cover, s.cover_pos, s.cover_t0 = s.home, s.home_pos, now
+	s.home = nil
+end
+
 function act_varka_suppress:execute()
 	action_base.execute(self)
 	local npc = self.object
@@ -389,6 +517,26 @@ function act_varka_suppress:execute()
 		end
 	end
 
+	-- 1б. на огневую: дошёл (или не дошёл за PEEK_MS) — окно оттуда
+	if s.out then
+		if npc:position():distance_to_sqr(s.out.pos) <= ARRIVE_SQR or now - s.out.t0 > PEEK_MS then
+			s.out, sup[id] = nil, nil
+			local w, why = open_window(npc, n, now)
+			if w then
+				w.until_t, w.back = now + PEEK_WIN_MS, true
+				s.win, sup[id] = w, w
+				emit_start(npc, n, w)
+				return
+			end
+			emit(npc, "ctc_peek_fail", { why = why })
+			go_home(s, now)
+		else
+			state_mgr.set_state(npc, "assault", nil, nil, nil, { fast_set = true })
+			utils_obj.send_to_nearest_accessible_vertex(npc, s.out.vid, "varka_suppress")
+			return
+		end
+	end
+
 	-- 2. окно огня: идёт — бить; кончилось — закрыть
 	if s.win then
 		if now < s.win.until_t then
@@ -403,7 +551,9 @@ function act_varka_suppress:execute()
 			utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_suppress")
 			return
 		end
+		local back = s.win.back
 		close_window(npc, s, "done")
+		if back then go_home(s, now); return end   -- «нырнул»: назад в укрытие
 	end
 	-- новая весть — открыть окно (не во время перезарядки)
 	if done[id] ~= n.t and not s.rl and now - n.t >= REACT_MS and now >= (recheck[id] or 0) then
@@ -412,12 +562,23 @@ function act_varka_suppress:execute()
 		if w then
 			done[id] = n.t
 			s.win, sup[id] = w, w
-			local who = level.object_by_id(n.who)
-			local wp = who and who:position() or w.pos
-			emit(npc, "supp_start", { enemy = n.who, how = w.how, d = w.d, age = w.age, kind = w.kind, peeks = w.peeks,
-			                          st = w.stance, err = math.sqrt((w.pos.x - wp.x) ^ 2 + (w.pos.z - wp.z) ^ 2),
-			                          px = w.pos.x, py = w.pos.y, pz = w.pos.z })
+			emit_start(npc, n, w)
 			return
+		end
+		-- отсюда не достать — выйти на огневую («высунулся»), если весть свежая и в отряде есть место
+		if (why == "land" or why == "no_edge") and now - n.t <= PEEK_AGE and now >= (s.peek_cd or 0)
+		   and squad_taken(varka_lkp.get_squad_key(npc), id, n.who, now) < MAX_SQ then
+			local P = vector():set(n.x, n.y - AIM_DOWN, n.z)
+			local v, q = find_fire_spot(npc, P, land_r(n, npc:position():distance_to(P)))
+			if v then
+				done[id], s.peek_cd = n.t, now + PEEK_CD
+				s.home, s.home_pos = npc:level_vertex_id(), npc:position()
+				s.out = { vid = v, pos = q, t0 = now }
+				sup[id] = { who = n.who, kind = "out", key = varka_lkp.get_squad_key(npc), until_t = now + PEEK_MS + PEEK_WIN_MS }
+				emit(npc, "ctc_peek", { d = npc:position():distance_to(q), why = why })
+				return
+			end
+			why = why .. "_nospot"
 		end
 		skip(npc, n.t, why)
 		if why ~= "busy" and why ~= "mag" then done[id] = n.t end   -- ворота не откроются от ожидания
@@ -431,13 +592,19 @@ function act_varka_suppress:finalize()
 	local npc = self.object
 	local s = ctc[npc:id()]
 	if s then
+		local id, now = npc:id(), time_global()
 		close_window(npc, s, "yield")
+		if s.out then s.out, sup[id] = nil, nil end
 		if s.rl and npc:alive() then   -- обнулили, а перезарядка не пошла — патроны назад
 			local _, w = mag_frac(npc)
-			if w and (w:get_ammo_in_magazine() or 0) == 0 and w:get_state() ~= WST_RELOAD then w:set_ammo_elapsed(s.rl.m) end
+			if w and (w:get_ammo_in_magazine() or 0) == 0 and w:get_state() ~= WST_RELOAD then
+				w:set_ammo_elapsed(s.rl.m); s.rl = nil
+			end
 		end
-		emit(npc, "ctc_end", { ms = time_global() - (s.t0 or time_global()) })
-		ctc[npc:id()] = nil
+		emit(npc, "ctc_end", { ms = now - (s.t0 or now), why = why_end[id] or "planner" })
+		why_end[id], seen_t[id] = nil, nil
+		prev[id] = { s = s, t = now }
+		ctc[id] = nil
 	end
 	varka_aim.release(npc)
 	action_base.finalize(self)
@@ -497,6 +664,7 @@ end
 local function npc_death(npc)
 	local id = npc:id()
 	news[id], ctc[id], sup[id], done[id], recheck[id], skipped[id] = nil, nil, nil, nil, nil, nil
+	prev[id], seen_t[id], why_end[id] = nil, nil, nil
 end
 
 function on_game_start()

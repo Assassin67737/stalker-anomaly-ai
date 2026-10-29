@@ -565,17 +565,25 @@ CMD.remove = function(a)
 end
 
 -- time <множитель> — 1 норма, 0.2 слоу-мо, 3 ускорение
+local tf_now = 1   -- множитель времени, который ставили последним (пауза возвращает его)
 CMD.time = function(a)
 	local f = tonumber(a[1])
 	if not (f and f > 0) then return false, "нужно число > 0" end
+	tf_now = f
 	exec_console_cmd("time_factor " .. f)
 	return true, tostring(f)
 end
 
--- freeze <1|0> — заморозить мир (движковая freeze_time). Кадры идут, команды читаются.
+-- freeze <1|0> — заморозить мир. Кадры идут, команды читаются.
+-- 29.10: НЕ движковая freeze_time — она ставит Device.time_factor ровно 0 (мимо зажима EPS у time_factor,
+-- console_commands.cpp), шаг кадра 0 → NaN в матрице эффектов камеры → R_ASSERT _valid(vecX) в
+-- CLensFlare::OnFrame (xr_efflensflare.cpp:374), краш на паузе из вьювера, когда в кадре солнце.
+-- Почти ноль: 1 секунда игры за ~17 минут.
+local FREEZE_TF = 0.001
 CMD.freeze = function(a)
-	exec_console_cmd("freeze_time " .. (a[1] == "1" and "on" or "off"))
-	return true, a[1] == "1" and "on" or "off"
+	local on = a[1] == "1"
+	exec_console_cmd("time_factor " .. (on and FREEZE_TF or tf_now))
+	return true, on and "on" or "off"
 end
 
 -- tp <vid> — перенести актёра (камеру-зрителя) к точке

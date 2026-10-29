@@ -75,6 +75,7 @@ design trail.)*
 
 | Path | Contents |
 |------|----------|
+| [doc/MANIFEST_ETUDES.md](doc/MANIFEST_ETUDES.md) | **Paradigm shift (29.10):** combat behaviour is staged as études (scene + reference), not described *(Russian)* |
 | [doc/EVOLUTION.md](doc/EVOLUTION.md) | How VARKA changed from v0.11 to now — **start here** |
 | [doc/GLOSSARY.md](doc/GLOSSARY.md) | Terms |
 | [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) | How it is built (current map on top, v0.11 design below) |

@@ -21,9 +21,16 @@ local NAVMESH_RADIUS = 250   -- радиус сбора нод вокруг ак
 local NAVMESH_STEP   = 2     -- берём каждую 2-ю ноду (прореживание для размера файла)
 
 local _f   = nil
+local PLAY = nil   -- varka_play: режим игрока (файл есть только в сборке для игры)
 local _seq = 0
 
 local function open_file()
+    PLAY = varka_play
+    if PLAY then
+        _f = PLAY.open()
+        _seq = 0
+        return
+    end
     _f = io.open(TRACE_PATH, "w")
     if _f then
         _seq = 0
@@ -86,7 +93,9 @@ function emit(sq, npc_id, ev_name, fields)
     end
 
     buf[#buf+1] = '}\n'
-    _f:write(table.concat(buf))
+    local line = table.concat(buf)
+    if PLAY then return PLAY.take(line) end
+    _f:write(line)
     _f:flush()
 end
 

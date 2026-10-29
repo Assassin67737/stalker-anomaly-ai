@@ -1,0 +1,23 @@
+{
+  "id": "etude_vanilla_1v1",
+  "level": "here",
+  "limit_s": 240,
+  "zone": {"smart": "cycle", "r": 15},
+  "spectator": {"aside": 30},
+  "camera": {"up": 8},
+  "clear_r": 150,
+  "ghost": true,
+  "speed": 1,
+  "approach": "walk",
+  "hour": 11,
+  "grenades": 1,
+  "matchup": "random",
+  "even": true,
+  "swap": true,
+  "sides": {
+    "A": {"stack": "vanilla", "start": "advance",
+          "squads": [{"faction": "random", "tier": "random", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]},
+    "B": {"stack": "vanilla", "start": "advance",
+          "squads": [{"faction": "random", "tier": "random", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]}
+  }
+}

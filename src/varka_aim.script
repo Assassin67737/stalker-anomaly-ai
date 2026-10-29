@@ -50,13 +50,27 @@ local function chest(enemy)
 	return utils_obj.safe_bone_pos(enemy, "bip01_spine1")
 end
 
--- довернулся ли: голова (по ней движок решает огонь) к груди врага
-function facing(npc, enemy)
-	local p, c = npc:position(), chest(enemy)
+-- довернулся ли голова (по ней движок решает огонь) к точке
+function facing_point(npc, c)
+	local p = npc:position()
 	local h = npc:head_orientation()
 	local a = math.atan2(h.x, h.z) - math.atan2(c.x - p.x, c.z - p.z)
 	a = (a + math.pi) % (2 * math.pi) - math.pi
 	return math.abs(math.deg(a)) <= AIM_DEG
+end
+
+-- довернулся ли к груди врага
+function facing(npc, enemy)
+	return facing_point(npc, chest(enemy))
+end
+
+-- огонь в ТОЧКУ (varka_suppress, 29.10): откуда ствол достаёт точку — "crouch" | "stand" | nil (без памяти решения:
+-- огонь по точке решается раз на окно)
+function point_stance(npc, pos)
+	local p = npc:position()
+	if clear(vector():set(p.x, p.y + CROUCH_H, p.z), pos) then return "crouch" end
+	if clear(vector():set(p.x, p.y + STAND_H, p.z), pos) then return "stand" end
+	return nil
 end
 
 local memo = {}  -- id → { t, enemy, stance }
@@ -138,6 +152,18 @@ local function trigger(npc, enemy, fire)
 	if not (npc:alive() and enemy:alive() and wpn and IsWeapon(wpn)) then return end
 	if fire then
 		local size, interval = queue(npc, wpn, npc:position():distance_to(enemy:position()))
+		npc:set_item(object.fire1, wpn, size, interval)
+	else
+		npc:set_item(object.aim1, wpn)
+	end
+end
+
+-- то же для точки: цель — место, а не объект (врага не видно — потому и точка)
+function trigger_point(npc, pos, fire)
+	local wpn = npc:best_weapon()
+	if not (npc:alive() and wpn and IsWeapon(wpn)) then return end
+	if fire then
+		local size, interval = queue(npc, wpn, npc:position():distance_to(pos))
 		npc:set_item(object.fire1, wpn, size, interval)
 	else
 		npc:set_item(object.aim1, wpn)

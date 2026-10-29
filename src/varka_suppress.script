@@ -1,0 +1,260 @@
+-- varka_suppress.script — ОГОНЬ ПО ВЕРЕ v0.1 (29.10.2026): «куда-то туда»
+--
+-- Бой на вершине (29.10, игра юзера, l07, отряд 21224): 3.6 минуты, 9 попаданий игрока — все в тех, кто его
+-- в тот миг не видел; отряд — 38 выстрелов, и ни одного по месту, где игрок мог быть. Роль varka_clear бьёт
+-- только по видимой цели (23.10 сами убрали стрельбу по памяти: state_mgr наводил ствол на НАСТОЯЩУЮ кость
+-- сквозь стену). Пресет «штурм» дирижёра так и задуман — «масса прижимает в лоб, один с фланга», — но у
+-- «прижать» не было рук: весь бой mode = hold и молчание.
+--
+-- Что делает: свежая весть о враге (услышал выстрел, получил пулю, мелькнул и пропал — memory_time движка) →
+-- боец, который врага сейчас НЕ видит, одно окно WINDOW_MS бьёт очередями в ТОЧКУ ВЕСТИ (memory_position +
+-- разброс по дальности). Не в кость: ошибся — пули мимо. Это честно.
+-- Зачем: прижать (пик врага дорожает), вскрыть (ответит — весть свежая, вера уточнится), прикрыть (раненый
+-- уходит в укрытие, другой перебегает).
+-- Цена: патроны и своя позиция. Поэтому: окно одно на весть (новая весть — новое окно: он выстрелил — ответили),
+-- на отряд не больше MAX_SQ стреляющих, флангер и разведчик дирижёра молчат (их дело — двигаться), почти пустой
+-- магазин и снайперка — нет.
+-- Ворота как у varka_aim: довернулся к точке; ствол у себя свободен (сидя, иначе встать над укрытием); пуля ляжет
+-- рядом с точкой (первое препятствие не ближе LAND_R к ней — иначе бьём в бугор на полпути).
+-- Пуля летит из глаз по взгляду (g_fireParams, ai_stalker_fire.cpp: P = eye_matrix.c, D = eye_matrix.k); взгляд —
+-- look_position state_mgr (позы varka_aim без анимации — высота точки сохраняется, state_mgr_direction turn()).
+-- Своего на линии движок прострелить не даст (object_actions.cpp: can_kill_member).
+-- Порядок: граната и «жить хочу» главнее (сначала укрытие, потом огонь), приказы varka_cmd — тоже; огонь главнее
+-- веры (varka_clear), боя, опасности и A-Life. Окно FRESH_MS = GRACE_MS веры: позже весть — дело рук веры.
+--
+-- Trace: supp_start {d, age, st, err} (err — где точка от настоящего врага, только для разбора, решения не трогает),
+-- supp_fire {ms} (первый спуск), supp_end {shots, why}, supp_skip {why} (раз на весть).
+--
+-- id: 188215 оценщик, 188216 действие.
+
+local EVA_SUPP, ACT_SUPP = 188215, 188216
+local EVA_SURV, EVA_GRN  = 188211, 188213   -- «жить хочу», граната
+local EVA_SOFT, EVA_HARD = 188201, 188203   -- приказы varka_cmd
+
+local FRESH_MS   = 6000   -- мс: весть свежая (дальше — роли веры, varka_belief GRACE_MS)
+local REACT_MS   = 400    -- мс: реакция — услышал не значит ответил в тот же кадр
+local WINDOW_MS  = 2500   -- мс: одно окно огня на весть
+local RECHECK_MS = 300    -- мс: отказ по воротам — пересмотр не чаще
+local MAX_SQ     = 2      -- стреляющих «туда» на отряд разом
+local MIN_D, MAX_D = 8, 120
+local LAND_R     = 4      -- м: пуля должна лечь не дальше этого от точки
+local MAG_MIN    = 0.25   -- доля магазина: меньше — не тратить
+local TARGET_H   = 1.0    -- м: грудь сидящего (как TARGET_H веры)
+local SPREAD, SPREAD_MIN, SPREAD_MAX = 0.05, 0.5, 3   -- разброс точки: доля дальности, в метрах
+local RQT_STATIC = 2
+
+local sup     = {}   -- id → окно { mt, key, until_t, pos, stance, t0, mag, fired }
+local done    = {}   -- id → memory_time вести, на которую уже ответили (или отказали насовсем)
+local recheck = {}   -- id → не раньше
+local skipped = {}   -- id → memory_time, про которую уже написали supp_skip
+
+local function emit(npc, ev, f)
+	if varka_trace then varka_trace.emit(varka_lkp.get_squad_key(npc), npc:id(), ev, f) end
+end
+
+local function skip(npc, mt, why)
+	if skipped[npc:id()] == mt then return end
+	skipped[npc:id()] = mt
+	emit(npc, "supp_skip", { why = why })
+end
+
+local rp
+-- первое препятствие на линии от a к b: расстояние или nil
+local function first_hit(a, b)
+	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.5 then return nil end
+	dir:normalize()
+	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
+	if rp:query() and rp:get_distance() < d then return rp:get_distance() end
+	return nil
+end
+
+local function mag_frac(npc)
+	local w = npc:active_item()
+	if not (w and IsWeapon(w) and not IsMelee(w)) then return nil end
+	local size = ini_sys:r_float_ex(w:section(), "ammo_mag_size") or 0
+	if size < 1 then return nil end
+	return (w:get_ammo_in_magazine() or 0) / size, w
+end
+
+local function squad_busy(key, id, now)
+	local n = 0
+	for oid, s in pairs(sup) do
+		if oid ~= id and s.key == key and now < s.until_t then n = n + 1 end
+	end
+	return n >= MAX_SQ
+end
+
+-- можно ли открыть окно: вернуть окно или nil (+ почему)
+local function open_window(npc, be, mt, now)
+	if varka_director then
+		local role = varka_director.get_role(npc)
+		if role == "flank" or role == "scout" then return nil, "role" end
+	end
+	local frac, w = mag_frac(npc)
+	if not frac then return nil, "weapon" end
+	local kind = ini_sys:r_string_ex(w:section(), "kind")
+	if kind == "w_sniper" then return nil, "sniper" end
+	if frac < MAG_MIN then return nil, "mag" end
+	local key = varka_lkp.get_squad_key(npc)
+	if squad_busy(key, npc:id(), now) then return nil, "busy" end
+
+	local p = npc:position()
+	local m = npc:memory_position(be)
+	local d = p:distance_to(m)
+	if d < MIN_D or d > MAX_D then return nil, "dist" end
+	if kind == "w_shotgun" and d > 25 then return nil, "shotgun" end
+	local r = math.max(SPREAD_MIN, math.min(SPREAD_MAX, d * SPREAD))
+	local a = math.random() * 2 * math.pi
+	local q = math.sqrt(math.random()) * r
+	local pos = vector():set(m.x + math.cos(a) * q, m.y + TARGET_H, m.z + math.sin(a) * q)
+
+	local stance = varka_aim.point_stance(npc, pos)
+	if not stance then return nil, "barrel" end
+	local eye = vector():set(p.x, p.y + (stance == "stand" and 1.5 or 1.0), p.z)
+	local h = first_hit(eye, pos)
+	if h and eye:distance_to(pos) - h > LAND_R then return nil, "land" end
+
+	return { mt = mt, key = key, until_t = now + WINDOW_MS, pos = pos, stance = stance, t0 = now,
+	         mag = w:get_ammo_in_magazine() or 0, d = d, age = now - mt }
+end
+
+local function want(npc)
+	local id, now = npc:id(), time_global()
+	local s = sup[id]
+	if s then
+		if now < s.until_t then return true end
+		if s.running then return false end   -- окно кончилось: убирает finalize (там supp_end)
+		sup[id] = nil                        -- окно открыли, а действие так и не взяли
+	end
+	if not npc:alive() or IsWounded(npc) then return false end
+	local be = npc:best_enemy()
+	if not (be and be:alive()) or IsWounded(be) then return false end
+	if npc:see(be) then return false end
+	local mt = npc:memory_time(be)
+	if not (mt and mt > 0) or done[id] == mt then return false end
+	local age = now - mt
+	if age < REACT_MS or age > FRESH_MS then return false end
+	if now < (recheck[id] or 0) then return false end
+	recheck[id] = now + RECHECK_MS
+	local w, why = open_window(npc, be, mt, now)
+	if not w then skip(npc, mt, why); return false end
+	done[id] = mt
+	sup[id] = w
+	local bp = be:position()
+	local err = math.sqrt((w.pos.x - bp.x) ^ 2 + (w.pos.z - bp.z) ^ 2)
+	emit(npc, "supp_start", { enemy = be:id(), d = w.d, age = w.age, st = w.stance, err = err,
+	                          px = w.pos.x, py = w.pos.y, pz = w.pos.z })
+	return true
+end
+
+class "eva_varka_suppress" (property_evaluator)
+function eva_varka_suppress:__init(name) super(nil, name) end
+function eva_varka_suppress:evaluate()
+	return want(self.object)
+end
+
+class "act_varka_suppress" (action_base)
+function act_varka_suppress:__init(name) super(nil, name) end
+
+function act_varka_suppress:initialize()
+	action_base.initialize(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	npc:set_path_type(game_object.level_path)
+	local s = sup[npc:id()]
+	if s then s.running = true end
+end
+
+function act_varka_suppress:execute()
+	action_base.execute(self)
+	local npc = self.object
+	if not npc:alive() then return end
+	local s = sup[npc:id()]
+	if not s then return end
+	local fire = varka_aim.facing_point(npc, s.pos)
+	if fire and not s.fired then
+		s.fired = true
+		emit(npc, "supp_fire", { ms = time_global() - s.t0 })
+	end
+	varka_aim.trigger_point(npc, s.pos, fire)
+	state_mgr.set_state(npc, s.stance == "stand" and "varka_aim_stand" or "varka_aim_crouch", nil, nil,
+	                    { look_position = s.pos }, { fast_set = true })
+	utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id(), "varka_suppress")
+end
+
+function act_varka_suppress:finalize()
+	local npc = self.object
+	varka_aim.release(npc)
+	local s = sup[npc:id()]
+	if s then
+		local _, w = mag_frac(npc)
+		local left = w and w:get_ammo_in_magazine() or s.mag
+		emit(npc, "supp_end", { shots = math.max(0, s.mag - left), why = time_global() < s.until_t and "yield" or "done" })
+		sup[npc:id()] = nil
+	end
+	action_base.finalize(self)
+end
+
+-- Встраивание — после varka_cmd, varka_clear, varka_survive и varka_grenade: условия «граната / жить хочу /
+-- приказ не активны» ссылаются на их оценщики, а условие на несуществующий оценщик — падение движка. Условие
+-- «огня нет» вешаем ТОЛЬКО на действия, которые у бойца точно есть (manager:action — lower_bound, см. varka_survive).
+local function yield_ids(npc)
+	local st = db.storage[npc:id()]
+	local ids = { xr_actions_id.alife, xr_actions_id.state_mgr + 2, stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
+	if st.varka_clear_hooked then ids[#ids + 1] = 188210 end                            -- вера: заглянуть / держать край
+	if st.rx_ff then ids[#ids + 1] = 18803 end                                           -- свой на линии
+	if st.kill_wounded and xrs_kill_wounded and xrs_kill_wounded.is_enabled() then ids[#ids + 1] = 188112 end
+	if st.fight_from_cover or st.axr_fight_from_cover then ids[#ids + 1] = 188118 end   -- бой из укрытия
+	return ids
+end
+
+local function hook_npc(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager then return end
+	local st = db.storage[npc:id()]
+	local wp = world_property
+	manager:add_evaluator(EVA_SUPP, eva_varka_suppress("eva_varka_suppress"))
+	local act = act_varka_suppress("act_varka_suppress")
+	act:add_precondition(wp(stalker_ids.property_alive, true))
+	act:add_precondition(wp(EVA_SUPP, true))
+	if st.varka_survive_hooked then act:add_precondition(wp(EVA_SURV, false)) end
+	if st.varka_grenade_hooked then act:add_precondition(wp(EVA_GRN, false)) end
+	if st.varka_cmd_hooked then
+		act:add_precondition(wp(EVA_SOFT, false))
+		act:add_precondition(wp(EVA_HARD, false))
+	end
+	act:add_effect(wp(EVA_SUPP, false))
+	manager:add_action(ACT_SUPP, act)
+	for _, id in ipairs(yield_ids(npc)) do
+		local a = manager:action(id)
+		if a then a:add_precondition(wp(EVA_SUPP, false)) end
+	end
+end
+
+local function npc_update(npc)
+	if varka_vanilla.is(npc) then return end  -- отряд «чистая ваниль»
+	if not (npc and npc:alive() and IsStalker(npc)) then return end
+	if character_community(npc) == "zombied" then return end
+	local st = db.storage[npc:id()]
+	-- флаг в db.storage: после офлайна боец приходит с новым планировщиком — встраиваемся заново
+	if not st or st.varka_suppress_hooked then return end
+	if varka_cmd and not st.varka_cmd_hooked then return end
+	if varka_clear and not st.varka_clear_hooked then return end
+	if varka_survive and not st.varka_survive_hooked then return end
+	if varka_grenade and not st.varka_grenade_hooked then return end
+	st.varka_suppress_hooked = true
+	hook_npc(npc)
+end
+
+local function npc_death(npc)
+	local id = npc:id()
+	sup[id], done[id], recheck[id], skipped[id] = nil, nil, nil, nil
+end
+
+function on_game_start()
+	RegisterScriptCallback("npc_on_update", npc_update)
+	RegisterScriptCallback("npc_on_death_callback", npc_death)
+end

@@ -203,6 +203,6 @@ hook skips it, and overridden vanilla files route it to an untouched copy of the
 throw power), VARKA replaces it with a skill error that grows with distance and shrinks with rank, and with the
 real-world fuse of the grenade.
 
-**Copyleft.** VARKA is a community mod: GPL-3.0-or-later for code, CC BY-SA 4.0 for documents, so whatever is
+**Copyleft.** VARKA is a community mod: GPL-3.0-or-later for game scripts, AGPL-3.0-or-later for tools, CC BY-SA 4.0 for documents, so whatever is
 built from it stays as open as it is.
 

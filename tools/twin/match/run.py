@@ -620,6 +620,12 @@ def run_one(spec, lvl, game, rng, tag):
                 rank = (rank or ('-', '-')) + (gren,)
             if vanilla:  # 25.10: 8-й аргумент spawn — отряд «чистая ваниль» (метка до выхода в онлайн)
                 rank = rank + (1,)
+            kit = q.get('kit') or {}
+            guns = ','.join(g for g in (kit.get('weapon'), kit.get('pistol')) if g)
+            if guns:  # 29.10: 9-й аргумент — стволы стенда (выдаются на сервере, до онлайна)
+                rank = (rank or ('-', '-')) + (gren,) if len(rank) < 3 else rank
+                rank = rank + (1 if vanilla else 0,) if len(rank) < 4 else rank
+                rank = rank + (guns,)
             info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0, *rank)
             sides[s].append(int(info.split(':')[1]))
     every = sides['A'] + sides['B']
@@ -644,13 +650,12 @@ def run_one(spec, lvl, game, rng, tag):
             continue  # дирижёра у ванили нет
         for sq in sides[s]:
             game.call('preset', f'sq:{sq}', directors[s])
-    # 29.10: стенд этюда — ровная экипировка: "kit": {"community": "dolg", "weapon": "wpn_ak74", "pistol": "wpn_pm"}
+    # 29.10: стенд этюда — "kit": {"community": "dolg", "weapon": "wpn_ak74", "pistol": "wpn_pm"}; группировка — тут, стволы — в spawn
     for s in ('A', 'B'):
         for q, sq in zip(setup[s]['squads'], sides[s]):
             kit = q.get('kit')
-            if kit:
-                print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit.get('community', '-'),
-                                               kit.get('weapon', '-'), kit.get('pistol', '-'), kit.get('boxes', 4))))
+            if kit and kit.get('community'):
+                print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit['community'])))
     for a in sides['A']:
         for b in sides['B']:
             game.call('hostile', f'sq:{a}', f'sq:{b}')

@@ -509,6 +509,28 @@ function on_game_start()
 	S.varka_lie      = { weapon = "unstrapped", movement = move.stand, mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = "prone" }
 	S.varka_lie_idle = { weapon = "unstrapped", movement = move.stand, mental = anim.danger, bodystate = move.crouch, animstate = nil, animation = "prone_idle" }
 	patch_enemy_callback()
+	-- 29.10 перезарядка ваниль — хотя бы сидя. Аудит серии natural (5 матчей): 28 из 59 перезарядок — ванильный
+	-- «изготовиться» (оператор 17, eWorldOperatorGetReadyToKill: магазин опустел посреди очереди, наша пробежка в
+	-- укрытие не успела — её тик ждёт «вижу врага»), стоя 27 из 28, под взглядом врага 20. Поза в бою спрашивает
+	-- крючок Modded Exes (как бросок сидя в varka_grenade): в «изготовиться» с перезарядкой — сидя.
+	local prev_bs = _G.CAI_Stalker__CombatSetBodyState
+	local told = {}
+	_G.CAI_Stalker__CombatSetBodyState = function(npc, wo, bs)
+		if prev_bs then bs = prev_bs(npc, wo, bs) end
+		if wo ~= 17 or bs == move.crouch then return bs end
+		local ok, sit = pcall(function()
+			if varka_vanilla.is(npc) then return false end
+			local w = npc:active_item()
+			return w and IsWeapon(w) and not IsMelee(w) and (w:get_state() == WST_RELOAD or (w:get_ammo_in_magazine() or 0) == 0)
+		end)
+		if not (ok and sit) then return bs end
+		local now = time_global()
+		if now > (told[npc:id()] or 0) then
+			told[npc:id()] = now + 5000
+			emit(npc, "reload_crouch", {})
+		end
+		return move.crouch
+	end
 	RegisterScriptCallback("npc_on_update", npc_update)
 	RegisterScriptCallback("npc_on_hit_callback", on_hit)
 	RegisterScriptCallback("npc_on_death_callback", on_death)

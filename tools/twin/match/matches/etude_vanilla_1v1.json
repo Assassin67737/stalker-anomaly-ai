@@ -16,8 +16,8 @@
   "swap": true,
   "sides": {
     "A": {"stack": "vanilla", "start": "advance",
-          "squads": [{"faction": "random", "tier": "random", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]},
+          "squads": [{"faction": "random", "tier": "advanced", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]},
     "B": {"stack": "vanilla", "start": "advance",
-          "squads": [{"faction": "random", "tier": "random", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]}
+          "squads": [{"faction": "random", "tier": "advanced", "n": [1, 1], "at": {"smart_ring": [40, 80]}}]}
   }
 }

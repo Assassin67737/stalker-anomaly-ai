@@ -389,7 +389,9 @@ def even_combo(spec, rng, idx):
     """Ровная раздача (23.10, юзер): все сочетания ранг × численность по кругу, блок за блоком в случайном порядке —
     за ночь каждого поровну, а не как выпадет. Обе стороны получают одно и то же."""
     lo, hi = spec['sides']['A']['squads'][0].get('n', [3, 5])
-    combos = [(t, n) for t in TIERS for n in range(lo, hi + 1)]
+    t0 = spec['sides']['A']['squads'][0].get('tier', 'random')   # 29.10: ранг задан в спеке — по кругу только численность
+    tiers = [t0] if t0 in TIERS else TIERS
+    combos = [(t, n) for t in tiers for n in range(lo, hi + 1)]
     while len(EVEN_ORDER) < idx:
         block = combos[:]
         rng.shuffle(block)

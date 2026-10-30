@@ -405,9 +405,11 @@ function run_cmd(name, args)
 end
 
 -- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг|-] [гранат на бойца] [vanilla 1/0] [стволы|-] [модель|-]
--- 30.10: модель = одна броня обоим (защита костей берётся из модели). Пишется в серверное состояние бойца —
--- ванильный motivator ставит её сам в net_spawn (xr_motivator: m_data.visual). У живого бойца set_visual_name
--- перецепляет предметы и пересобирает физику — 22-й вызов из kit дал Busy Hands (30.10).
+-- 30.10: модель = одна броня обоим (защита костей берётся из модели). Ставится на первом апдейте в онлайне
+-- (npc_update, want_visual). В Modded Exes set_visual_name(visual, bForce) — ДВА аргумента без умолчания;
+-- с одним luabind не находит перегрузку → Busy Hands → tempsave → net_Export полурождённого → !NET.empty().
+-- Поэтому НЕ через m_data.visual: ванильный xr_motivator зовёт её с одним аргументом прямо в net_spawn.
+-- Движок сам шлёт GE_CHANGE_VISUAL серверу — модель остаётся и после офлайна.
 -- 29.10: стволы = "wpn_ak74,wpn_pm" — ровная экипировка стенда: ванильная выдача пропускает слоты primary/secondary
 -- (остальное — как обычно), вместо них эти стволы + коробка патронов к каждому. Всё на сервере, до онлайна.
 -- 25.10: vanilla = 1 — отряд «чистая ваниль» (varka_vanilla): VARKA его бойцов не трогает.
@@ -415,6 +417,8 @@ end
 -- ранг = число (новичок 1750, … легенда 30000). Снаряжение Anomaly выдаёт по рангу в момент
 -- рождения (xrs_rnd_npc_loadout, колбэк se_stalker_on_spawn) — а ранг там ещё из профиля, случайный.
 -- Поэтому выдачу на время спавна снимаем, ставим свой ранг и зовём её сами.
+local want_visual = {}  -- [npc_id] = модель, ждёт первого апдейта в онлайне
+
 CMD.spawn = function(a)
 	local section, vid, n, ghost = a[1], a[2], tonumber(a[3]) or 3, a[4] ~= "0"
 	local member, rank = a[5] ~= "-" and a[5] or nil, tonumber(a[6])
@@ -461,7 +465,7 @@ CMD.spawn = function(a)
 					local ammo = parse_names(ini_sys:r_string_ex(g, "ammo_class") or "")[1]
 					if ammo then alife_create_item(ammo, se) end
 				end
-				if visual then alife_storage_manager.get_se_obj_state(se, true).visual = visual end
+				if visual then want_visual[id] = visual end
 				ranks[#ranks + 1] = se:rank()
 				SIMBOARD:setup_squad_and_group(se)
 				SendScriptCallback("squad_on_npc_creation", squad, se)
@@ -839,6 +843,10 @@ end
 local function npc_update(npc)
 	if not (npc and npc:alive() and IsStalker(npc)) then return end
 	local id = npc:id()
+	if want_visual[id] then
+		npc:set_visual_name(want_visual[id], true)
+		want_visual[id] = nil
+	end
 	-- флаг в db.storage, а не в своей таблице: после офлайна боец приходит с новым
 	-- планировщиком и новым storage — встраиваемся заново. Дважды в один планировщик нельзя
 	-- (повторный add_evaluator с тем же id — падение движка).

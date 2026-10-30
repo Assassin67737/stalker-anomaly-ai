@@ -1,0 +1,22 @@
+-- varka_nojam.script — осечки бойца по износу ствола, как у игрока (30.10.2026, юзер: «убери уже эту перезарядку
+-- каждые 5 секунд»)
+--
+-- Движок (Modded Exes) на каждом выстреле NPC спрашивает шанс осечки у xr_weapon_jam.GetConditionMisfireProbability.
+-- Ванильный xr_weapon_jam (tdef) добавляет к износу кубик по рангу: experienced — 5 % на патрон, потолок 15 %,
+-- а `math.random(0, 100) <= шанс` даёт ~6 %. Осечка → Ready = false → оператор GetReadyToKill → полная перезарядка
+-- с 23–28 патронами в магазине. Этюд 214138: ствол 0.98–1.0, перезарядка после почти каждой первой очереди.
+--
+-- Как чиним: шанс = то, что посчитал движок по износу (misfire_start_condition и т.д.), — то же правило, что у игрока.
+-- Новый ствол не клинит, убитый клинит. Ранговый кубик выключен. Движок ищет функцию по имени на каждом выстреле —
+-- подмена работает сразу. Действует на всех (ваниль и VARKA): это мир, а не мозг.
+--
+-- Рубильник: ON = true — вернуть ванильный кубик по рангу.
+
+local ON = false
+
+function on_game_start()
+	if ON or not xr_weapon_jam then return end
+	xr_weapon_jam.GetConditionMisfireProbability = function(weapon, npc, base_value)
+		return base_value
+	end
+end

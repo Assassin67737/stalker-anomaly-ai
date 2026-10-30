@@ -1,0 +1,31 @@
+-- varka_lockdoor.script — боец не дёргает запертую дверь (30.10.2026, юзер: «вечно хочется открыть, но она заперта»)
+--
+-- Ванильный xr_motivator раз в 0.5 с зовёт ph_door.try_to_open_door: боец ближе 1.7 м к закрытой двери
+-- жмёт use_callback. Проверки «заперто» там нет — у запертой двери use_callback только играет звук открывания
+-- (ph_door: snd_open_start), и так каждые полсекунды, пока боец рядом (решётка на базе Свободы, Армейки).
+--
+-- Как чиним: та же функция, плюс пропуск st.locked. Отпереть по-прежнему можно ванильно — выстрел в замок
+-- (hit_on_bone) или инфопоршень. Действует на всех: это мир, а не мозг.
+-- Не трогаем: движок сам ставит бойца перед запертой дверью, если путь идёт сквозь неё (doors::actor,
+-- скорость 0) — планировщик путей замка не знает. Это отдельная причина, нужен свой этюд.
+--
+-- Рубильник: ON = true — вернуть ванильное дёрганье.
+
+local ON = false
+
+function on_game_start()
+	if ON or not ph_door then return end
+	ph_door.try_to_open_door = function(npc, opened_doors)
+		local npc_position = npc:position()
+		for id, position in pairs(db.level_doors) do
+			local st = db.storage[id] and db.storage[id].ph_door
+			if st and npc_position:distance_to_sqr(position) <= 3 then
+				local action = st.door_action
+				if action.st.not_for_npc == false and action.st.closed == true and not action.st.locked then
+					action:use_callback()
+					opened_doors[id] = true
+				end
+			end
+		end
+	end
+end

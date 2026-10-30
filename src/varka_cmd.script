@@ -549,12 +549,18 @@ end
 -- kit <цель> <группировка> — стенд этюда (29.10): зеркало (одиночки × одиночки + hostile) не дерётся —
 -- перекидываем в dolg / freedom и т.п. Стволы выдаёт spawn (9-й аргумент): у онлайн-бойца из рук не забирать —
 -- best_weapon() у ванили (axr_trade_manager) ловил удалённый ствол → C++ exception (29.10).
+-- kit <цель> <группировка> [модель] — 30.10: одна модель обоим. Защита костей и иммунитеты у NPC берутся из модели
+-- (ai_stalker.cpp: ChangeVisual → ResetBoneProtections), а у профиля их 76 — «броня иногда разная».
 CMD.kit = function(a)
 	local kind, _, list = resolve(a[1])
 	if not kind then return false, "плохая цель" end
 	if #list == 0 then return false, "кто-то не в онлайне" end
-	for _, npc in ipairs(list) do npc:set_character_community(a[2], 0, 0) end
-	emit("kit", { target = a[1], comm = a[2], n = #list })
+	local visual = a[3] ~= "-" and a[3] or nil
+	for _, npc in ipairs(list) do
+		npc:set_character_community(a[2], 0, 0)
+		if visual then npc:set_visual_name(visual) end
+	end
+	emit("kit", { target = a[1], comm = a[2], n = #list, visual = visual })
 	return true, #list .. " бойц."
 end
 

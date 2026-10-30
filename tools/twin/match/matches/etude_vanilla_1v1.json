@@ -18,6 +18,7 @@
   "approach": "walk",
   "hour": 11,
   "grenades": 1,
+  "mirror": true,
   "sides": {
     "A": {
       "stack": "vanilla",
@@ -34,8 +35,11 @@
           "kit": {
             "community": "dolg",
             "weapon": "wpn_ak74",
-            "pistol": "wpn_pm"
-          }
+            "pistol": "wpn_pm",
+            "visual": "actors\\stalker_neutral\\stalker_neutral_2"
+          },
+          "member": "sim_default_stalker_2",
+          "rank": "experienced"
         }
       ]
     },
@@ -54,8 +58,11 @@
           "kit": {
             "community": "freedom",
             "weapon": "wpn_ak74",
-            "pistol": "wpn_pm"
-          }
+            "pistol": "wpn_pm",
+            "visual": "actors\\stalker_neutral\\stalker_neutral_2"
+          },
+          "member": "sim_default_stalker_2",
+          "rank": "experienced"
         }
       ]
     }

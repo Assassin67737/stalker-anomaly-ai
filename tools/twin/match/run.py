@@ -36,6 +36,9 @@
   Разброс (каждый матч заново, итог пишется в results.jsonl → setup):
     "faction": ["freedom","duty"]  "tier": "random" или список   "n": [3, 6]   "at": [{x,z}, {x,z}, ...]
     "swap": true — с вероятностью ½ стороны меняются местами спавна
+    "mirror": true — 30.10: матчи парами (1–2, 3–4 …), во втором стороны меняются точками; пара = AB/BA
+    в отряде "member": "sim_default_stalker_2", "rank": "experienced" — один профиль и ровный ранг (стенд этюда);
+    "kit": {..., "visual": "actors\\stalker_neutral\\stalker_neutral_2"} — одна модель (= одна броня)
     "alternate": true — 25.10: в чётных матчах стороны меняются группировками (ваниль/VARKA играют обеими)
     "even": true — ранг и численность поровну обеим сторонам, все сочетания по кругу (ровная раздача за серию)
     "matchup": "random" — фракции и ранги сторон выбираются по правилам пар (pick_matchup): только
@@ -414,6 +417,7 @@ def setup_of(spec, rng, idx=1):
                 'n': rng.randint(*q['n']) if isinstance(q.get('n'), list) else q.get('n', 4),
                 'at': pick(q['at'], rng),
                 'kit': q.get('kit'),
+                **{k: q[k] for k in ('member', 'rank') if k in q},  # 30.10: стенд — один профиль и ровный ранг
             } for q in side['squads']],
         }
     if spec.get('matchup') == 'random':  # фракции и ранги — по правилам пар, поверх того, что в спеке
@@ -439,7 +443,9 @@ def setup_of(spec, rng, idx=1):
     if spec.get('alternate') and idx % 2 == 0:  # 25.10: группировки сторон меняются местами каждый второй матч
         for qa, qb in zip(out['A']['squads'], out['B']['squads']):
             qa['faction'], qb['faction'] = qb['faction'], qa['faction']
-    if spec.get('swap') and rng.random() < 0.5:  # стороны меняются местами спавна
+    # 30.10: зеркало во времени — матчи парами, во втором из пары стороны меняются точками спавна (AB/BA)
+    flip = idx % 2 == 0 if spec.get('mirror') else spec.get('swap') and rng.random() < 0.5
+    if flip:  # стороны меняются местами спавна
         a, b = out['A']['squads'], out['B']['squads']
         for qa, qb in zip(a, b):
             qa['at'], qb['at'] = qb['at'], qa['at']
@@ -655,7 +661,8 @@ def run_one(spec, lvl, game, rng, tag):
         for q, sq in zip(setup[s]['squads'], sides[s]):
             kit = q.get('kit')
             if kit and kit.get('community'):
-                print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit['community'])))
+                vis = (kit['visual'],) if kit.get('visual') else ()
+                print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit['community'], *vis)))
     for a in sides['A']:
         for b in sides['B']:
             game.call('hostile', f'sq:{a}', f'sq:{b}')

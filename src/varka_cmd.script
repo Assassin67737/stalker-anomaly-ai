@@ -393,7 +393,10 @@ function run_cmd(name, args)
 	return fn(args)
 end
 
--- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг|-] [гранат на бойца] [vanilla 1/0] [стволы|-]
+-- spawn <секция_отряда> <vid> <сколько> [ghost 1/0] [профиль бойца|-] [ранг|-] [гранат на бойца] [vanilla 1/0] [стволы|-] [модель|-]
+-- 30.10: модель = одна броня обоим (защита костей берётся из модели). Пишется в серверное состояние бойца —
+-- ванильный motivator ставит её сам в net_spawn (xr_motivator: m_data.visual). У живого бойца set_visual_name
+-- перецепляет предметы и пересобирает физику — 22-й вызов из kit дал Busy Hands (30.10).
 -- 29.10: стволы = "wpn_ak74,wpn_pm" — ровная экипировка стенда: ванильная выдача пропускает слоты primary/secondary
 -- (остальное — как обычно), вместо них эти стволы + коробка патронов к каждому. Всё на сервере, до онлайна.
 -- 25.10: vanilla = 1 — отряд «чистая ваниль» (varka_vanilla): VARKA его бойцов не трогает.
@@ -422,6 +425,7 @@ CMD.spawn = function(a)
 	local loadout = rank and xrs_rnd_npc_loadout and xrs_rnd_npc_loadout.on_creation
 	if loadout then UnregisterScriptCallback("se_stalker_on_spawn", loadout) end
 	local guns = a[9] and a[9] ~= "-" and parse_names(a[9]:gsub(",", " ")) or {}
+	local visual = a[10] and a[10] ~= "-" and a[10] or nil
 	for _, g in ipairs(guns) do
 		if not ini_sys:section_exist(g) then return false, "нет секции " .. g end
 	end
@@ -446,6 +450,7 @@ CMD.spawn = function(a)
 					local ammo = parse_names(ini_sys:r_string_ex(g, "ammo_class") or "")[1]
 					if ammo then alife_create_item(ammo, se) end
 				end
+				if visual then alife_storage_manager.get_se_obj_state(se, true).visual = visual end
 				ranks[#ranks + 1] = se:rank()
 				SIMBOARD:setup_squad_and_group(se)
 				SendScriptCallback("squad_on_npc_creation", squad, se)
@@ -461,7 +466,7 @@ CMD.spawn = function(a)
 	-- по умолчанию отряд стоит, где родился (мягко: на бой реагирует)
 	squad_order[squad.id] = { kind = "hold", vid = vid, pos = pos, hard = false, stamp = time_global() }
 	emit("spawned", { sq = squad.id, section = section, n = n, vid = vid, member = member, ranks = table.concat(ranks, ","),
-		vanilla = vanilla and 1 or 0 })
+		vanilla = vanilla and 1 or 0, visual = visual })
 	return true, "sq:" .. squad.id
 end
 
@@ -549,18 +554,12 @@ end
 -- kit <цель> <группировка> — стенд этюда (29.10): зеркало (одиночки × одиночки + hostile) не дерётся —
 -- перекидываем в dolg / freedom и т.п. Стволы выдаёт spawn (9-й аргумент): у онлайн-бойца из рук не забирать —
 -- best_weapon() у ванили (axr_trade_manager) ловил удалённый ствол → C++ exception (29.10).
--- kit <цель> <группировка> [модель] — 30.10: одна модель обоим. Защита костей и иммунитеты у NPC берутся из модели
--- (ai_stalker.cpp: ChangeVisual → ResetBoneProtections), а у профиля их 76 — «броня иногда разная».
 CMD.kit = function(a)
 	local kind, _, list = resolve(a[1])
 	if not kind then return false, "плохая цель" end
 	if #list == 0 then return false, "кто-то не в онлайне" end
-	local visual = a[3] ~= "-" and a[3] or nil
-	for _, npc in ipairs(list) do
-		npc:set_character_community(a[2], 0, 0)
-		if visual then npc:set_visual_name(visual) end
-	end
-	emit("kit", { target = a[1], comm = a[2], n = #list, visual = visual })
+	for _, npc in ipairs(list) do npc:set_character_community(a[2], 0, 0) end
+	emit("kit", { target = a[1], comm = a[2], n = #list })
 	return true, #list .. " бойц."
 end
 

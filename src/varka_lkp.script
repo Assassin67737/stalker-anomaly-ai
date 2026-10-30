@@ -506,6 +506,9 @@ local function npc_update(npc)
 			-- состояние ствола (CWeapon: 0 покой, 1 достаёт, 2 убирает, 3 убран, 5 огонь, 7 перезарядка…) —
 			-- 25.10: рукопашка 224721-2, оба в «убить врага» в 1.7 м, голова довёрнута, 7.5 с без выстрела
 			wst=(wi and IsWeapon(wi) and wi:get_state()) or -1,
+			-- 30.10: состояние ствола 0..1 — ниже misfire_start_condition (0.7 у АК) движок даёт осечки, а осечка =
+			-- перезарядка с неполным магазином (Ready=false → reload1). Проверка: «перезарядка после первой очереди»
+			wc=(wi and IsWeapon(wi) and math.floor(wi:condition() * 100 + 0.5) / 100) or -1,
 			cr=npc:body_state() == move.crouch and 1 or 0,                   -- сидит ли (позиционка)
 			prone=varka_grenade and varka_grenade.is_prone and varka_grenade.is_prone(id) and 1 or 0, -- лёжа от гранаты
 			wear=varka_stress and varka_stress.get(id) or -1,               -- износ от угрозы (varka_stress)

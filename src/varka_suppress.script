@@ -617,7 +617,7 @@ local function yield_ids(npc)
 	local st = db.storage[npc:id()]
 	local ids = { xr_actions_id.alife, xr_actions_id.state_mgr + 2, stalker_ids.action_combat_planner, stalker_ids.action_danger_planner }
 	if st.varka_cmd_hooked then ids[#ids + 1] = 188202 end                              -- мягкий приказ
-	if st.varka_clear_hooked then ids[#ids + 1] = 188210 end                            -- вера: заглянуть / держать край
+	if st.varka_clear_hooked then ids[#ids + 1] = 188217 end                            -- вера: заглянуть / держать край
 	if st.rx_ff then ids[#ids + 1] = 18803 end                                           -- свой на линии
 	if st.kill_wounded and xrs_kill_wounded and xrs_kill_wounded.is_enabled() then ids[#ids + 1] = 188112 end
 	if st.fight_from_cover or st.axr_fight_from_cover then ids[#ids + 1] = 188118 end   -- бой из укрытия

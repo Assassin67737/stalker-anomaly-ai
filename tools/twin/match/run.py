@@ -669,7 +669,9 @@ def run_one(spec, lvl, game, rng, tag):
         if setup[s]['start'] == 'advance':
             for sq in sides[s]:
                 # 24.10: темп подхода — walk (как было) | run | sprint (спринт до 40 м от точки, дальше бег; экономия времени)
-                game.call('order', f'sq:{sq}', 'move', zone_vid, 0, spec.get('approach', 'walk'))
+                # 30.10: "order_once" — приказ «к точке» до первого контакта, после боя не возвращается (стенд этюда)
+                once = ('-', 'once') if spec.get('order_once') else ()
+                game.call('order', f'sq:{sq}', 'move', zone_vid, 0, spec.get('approach', 'walk'), *once)
         else:
             for sq in sides[s]:
                 game.call('free', f'sq:{sq}')

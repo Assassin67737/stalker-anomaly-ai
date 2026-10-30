@@ -1,0 +1,23 @@
+-- varka_nobox.script — ящики выключены (30.10.2026, юзер: «ящики фулл отключаем»)
+--
+-- Ванильный axr_npc_vs_box (Alundaio): боец ближе 1.4 м к деревянному ящику бросает всё, включая бой (его оценщик —
+-- условие боевого планировщика, перебивает только опасность), и стреляет в ящик; через 8 с скрипт сам удаляет ящик —
+-- стрельба чистый театр. Матч etude_vanilla_1v1#180014-8: 28 патронов в ящик при враге в 20 м.
+--
+-- Как выключаем: ванильная ветка для зомби из того же add_to_binder — оценщик-константа false, действия нет.
+-- Чужие схемы (axr_npc_vs_heli, axr_radio_in_heli) ставят evaid условием своим действиям — оценщик остаётся, ссылки целы.
+-- Действует на всех (ваниль и VARKA): это мир, а не мозг. Боец, уже вышедший в онлайн, — после перезагрузки уровня.
+--
+-- Рубильник: ON = true — вернуть ванильные ящики.
+
+local ON = false
+
+function on_game_start()
+	if ON or not axr_npc_vs_box then return end
+	axr_npc_vs_box.add_to_binder = function(npc, ini, scheme, section, storage, temp)
+		local manager = npc and npc:motivation_action_manager()
+		if not manager then return end
+		manager:add_evaluator(axr_npc_vs_box.evaid, property_evaluator_const(false))
+		temp.needs_configured = false
+	end
+end

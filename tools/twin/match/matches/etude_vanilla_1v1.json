@@ -17,8 +17,9 @@
   "speed": 1,
   "approach": "walk",
   "hour": 11,
-  "grenades": 1,
+  "grenades": 0,
   "mirror": true,
+  "order_once": true,
   "sides": {
     "A": {
       "stack": "vanilla",

@@ -92,6 +92,16 @@ local function order_of(npc)
 	return player_order(npc) or dir_order[npc:id()]
 end
 
+-- 30.10: приказ «до первого контакта» (order … once, стенд этюда): враг появился — приказ снят насовсем.
+-- Без этого мягкий приказ возвращался после боя и выводил бойца в центр точки (матч 180014-8: вышел на открытое и убит
+-- из невидимости). Дальше — бой и симуляция, как у ванили.
+local function drop_once(npc, o)
+	local squad = get_object_squad(npc)
+	if npc_order[npc:id()] == o then npc_order[npc:id()] = nil
+	elseif squad and squad_order[squad.id] == o then squad_order[squad.id] = nil end
+	if varka_trace then varka_trace.emit(squad and squad.id or 0, npc:id(), "order_drop", {}) end
+end
+
 -- Есть ли у бойца приказ ИГРОКА. Приказ игрока сильнее пьес дирижёра (перегруппировка уступает).
 function has_order(npc)
 	return player_order(npc) ~= nil
@@ -191,6 +201,7 @@ function eva_varka_order:evaluate()
 	local npc = self.object
 	if not npc:alive() or IsWounded(npc) then return false end
 	local o = order_of(npc)
+	if o and o.once and npc:best_enemy() then drop_once(npc, o); return false end
 	-- приказ дирижёра уступает гранате: пусть ваниль отбежит, потом приказ продолжится
 	if o and o.exact and not player_order(npc) then
 		local bd = npc:best_danger()
@@ -478,8 +489,11 @@ CMD.order = function(a)
 	if not vid then return false, "плохой vid" end
 	-- 24.10: 5-й аргумент — темп подхода мягкого приказа: walk (raid, 2.5 м/с, как было) | run (assault, 4.5) |
 	-- sprint (6.0, ствол за спиной; ближе SPRINT_NEAR к точке — уже assault, чтобы встреча не застала со стволом за спиной)
+	-- с 6-го аргумента — флаги: mute — не стрелять (см. act_varka_order); once — 30.10: до первого контакта (drop_once)
+	local flags = {}
+	for i = 6, #a do flags[a[i]] = true end
 	local o = { kind = (a[2] == "hold") and "hold" or "move", vid = vid, pos = pos, hard = a[4] == "1", stamp = time_global(),
-		approach = a[5], mute = a[6] == "mute" }   -- 6-й аргумент mute: не стрелять (см. act_varka_order)
+		approach = a[5], mute = flags.mute, once = flags.once }
 	if kind == "sq" then squad_order[id] = o else npc_order[id] = o end
 	return true, kind .. ":" .. id
 end

@@ -2,6 +2,7 @@
   "id": "spar_solo",
   "player": {"power": "legend+veteran", "tol": 0.2, "n": [1, 5]},
   "level": ["l01_escape", "l02_garbage", "l03_agroprom", "l07_military"],
+  "level_every": 10,
   "limit_s": 480,
   "zone": {"smart": "random", "r": 15},
   "clear_r": 200,

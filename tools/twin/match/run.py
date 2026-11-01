@@ -64,7 +64,8 @@
         сила игрока — сумма весов рангов (легенда + ветеран ≈ 9.1 по power()); врагов раннер подбирает так,
         чтобы сила отряда B отличалась не больше чем на tol (2 ветерана … 4 новичка), группировка — любая
         (враждебность к тебе ставится лично каждому)
-    "level": ["l01_escape", "l02_garbage", ...] — каждый бой на другой локации (переезд как быстрое перемещение)
+    "level": ["l01_escape", "l02_garbage", ...], "level_every": 10 — локация меняется блоками: 10 боёв на одной,
+        потом переезд на другую (как быстрое перемещение); первый блок — там, где стоит игра, если она в списке
     B "stack": ["vanilla", "varka"] — слепо: кто был против тебя, раннер скажет только ПОСЛЕ твоей строчки-вердикта
     Проигрыш = нокаут (varka_match v0.4: смерть отменяется, лечение) — без загрузки сейва. Итоги — match/spar.jsonl.
     g_god должен быть выключен.
@@ -850,11 +851,16 @@ def series(spec, lvl, game, rng, args):
                     break
             except EOFError:
                 break
-            if levels and not game.dry:   # каждый бой — другая локация
+            # локация — блоками (юзер 01.11): level_every боёв подряд на одной, потом переезд
+            if levels and not game.dry:
                 here = game.call('level')
-                nxt = rng.choice([l for l in levels if l != here] or levels)
-                change_level(game, nxt)
-                lvl = Level(nxt)
+                every = spec.get('level_every', 10)
+                if here not in levels or (i > 0 and i % every == 0):
+                    nxt = rng.choice([l for l in levels if l != here] or levels)
+                    change_level(game, nxt)
+                    here = nxt
+                if lvl.name != here:
+                    lvl = Level(here)
         try:
             for _ in range(10):  # точка у края карты, второй стороне негде встать — другая точка
                 try:

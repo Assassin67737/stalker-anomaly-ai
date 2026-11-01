@@ -476,7 +476,7 @@ local function npc_update(npc)
 		-- на спуск, только если она довёрнута на врага.
 		-- can_kill_enemy / can_kill_member есть в engine_src (Modded Exes), но НЕ в нашем exe 1.5.3 —
 		-- вызов = краш (21.10). Поля cke/ckm оставлены -1, пока не решим с exe.
-		local hd = be and npc:head_orientation()
+		local hd = npc:head_orientation()   -- 01.11: голова — всегда (раньше только при цели: без врага, в поиске, взгляд терялся)
 		local cke, ckm = -1, -1
 		local squad = get_object_squad(npc)
 		-- ник — раз в 30 с (вьюверу хватит первого; повтор — если trace открыли заново)

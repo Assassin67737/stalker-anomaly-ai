@@ -72,6 +72,7 @@ body.twin #gen-box{display:block}
       <span id="tlabel" class="tlabel">0.0 с</span>
       <label title="пути бойцов за 15 с"><input type="checkbox" id="ly-trail" checked> следы</label>
       <label title="линия от глаз к врагу, пока видит"><input type="checkbox" id="ly-sight" checked> взгляд</label>
+      <label title="01.11: куда смотрит голова (не корпус) — луч 8 м и сектор зрения ±80° (eye_fov 160 из m_stalker.ltx); у игрока — камера"><input type="checkbox" id="ly-head" checked> голова</label>
       <label title="от стрелка к цели, 1.5 с"><input type="checkbox" id="ly-hit" checked> попадания</label>
       <label title="дуга полёта (жёлтая — пролетела, тусклая — ещё нет), взрыв — кольцо волны"><input type="checkbox" id="ly-gren" checked> гранаты</label>
       <label title="точки пьес дирижёра"><input type="checkbox" id="ly-slot" checked> дирижёр</label>
@@ -296,7 +297,10 @@ function npcAt(id, t){
   if(b && !dead && b.t - a.t < 2000) k = (t - a.t) / (b.t - a.t);
   const L = (p, q) => p + (q - p) * k;
   return { ...a, x: b ? L(a.px, b.px) : a.px, y: b ? L(a.py, b.py) : a.py, z: b ? L(a.pz, b.pz) : a.pz,
-           fx: b ? L(a.dx, b.dx) : a.dx, fz: b ? L(a.dz, b.dz) : a.dz, dead };
+           fx: b ? L(a.dx, b.dx) : a.dx, fz: b ? L(a.dz, b.dz) : a.dz,
+           // 01.11: голова отдельно от корпуса (hx,hz; в старых trace без цели — нули → берём корпус)
+           gx: (a.hx || a.hz) ? (b && (b.hx || b.hz) ? L(a.hx, b.hx) : a.hx) : null,
+           gz: (a.hx || a.hz) ? (b && (b.hx || b.hz) ? L(a.hz, b.hz) : a.hz) : null, dead };
 }
 
 // ─── бойцы ───────────────────────────────────────────────────────────────────────────────────
@@ -349,7 +353,8 @@ function placeNpc(o, s, side){
     } else { o.body.rotation.set(0, 0, 0); o.body.scale.set(1, h, 1); o.body.position.set(0, 0.86 * h, 0); }
     o.body.material.color.copy(o.col).multiplyScalar(s.hp < 0.3 ? 0.55 : 1);
     o.nose.visible = true; o.nose.position.set(0, eyeH(s), 0);
-    o.nose.rotation.set(0, Math.PI - yaw, 0);
+    const hyaw = s.gx != null ? Math.atan2(s.gx, s.gz) : yaw;   // нос = голова, корпус — капсулой
+    o.nose.rotation.set(0, Math.PI - hyaw, 0);
     o.nose.translateZ(0.3);
   }
   o.ring.material.color.set(side ? SIDE_COL[side] : '#666');
@@ -369,6 +374,7 @@ function dynLines(color, opacity, maxSeg){
     done(){ g.setDrawRange(0, n * 2); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; } };
 }
 const trailL = dynLines(0, 0.55, 20000), sightL = dynLines(0, 0.35, 400), hitL = dynLines(0, 0.95, 400);
+const headL = dynLines(0, 0.5, 1200);   // 01.11: луч головы + края сектора зрения
 // гранаты (23.10, двойник): дуга полёта по grenade_throw (рука → земля за fly с), взрыв — кольцо волны 6 м
 const gArcL = dynLines(0, 1, 3000), gArcRestL = dynLines(0, 0.3, 3000), gBoomL = dynLines(0, 1, 2000);
 const G_ARC = new THREE.Color('#ffd740'), G_BOOM = new THREE.Color('#ff6d00');
@@ -483,6 +489,21 @@ function frame(){
     }
   }
   trailL.done();
+
+  // голова (01.11): луч 8 м по направлению головы и два коротких края сектора ±80° (eye_fov = 160, m_stalker.ltx)
+  headL.reset();
+  if($('ly-head').checked) for(const id in st){
+    const s = st[id];
+    if(s.dead) continue;
+    const gx = s.gx != null ? s.gx : s.fx, gz = s.gx != null ? s.gz : s.fz, n = Math.hypot(gx, gz) || 1;
+    const ux = gx / n, uz = gz / n, y = s.y + eyeH(s), c = new THREE.Color(+id === 0 ? '#ffffff' : (SIDE_COL[side[s.sq]] || '#aaa'));
+    headL.add(W(s.x, y, s.z), W(s.x + ux * 8, y, s.z + uz * 8), c);
+    for(const a of [1.396, -1.396]){                     // ±80°
+      const ca = Math.cos(a), sa = Math.sin(a), rx = ux * ca - uz * sa, rz = ux * sa + uz * ca;
+      headL.add(W(s.x, y, s.z), W(s.x + rx * 3, y, s.z + rz * 3), c);
+    }
+  }
+  headL.done();
 
   // взгляд: от глаз к главному врагу, только если видит (bsee)
   sightL.reset();

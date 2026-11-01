@@ -1,0 +1,16 @@
+{
+  "id": "spar_solo",
+  "player": {"power": "legend+veteran", "tol": 0.2, "n": [1, 5]},
+  "level": ["l01_escape", "l02_garbage", "l03_agroprom", "l07_military"],
+  "limit_s": 480,
+  "zone": {"smart": "random", "r": 15},
+  "clear_r": 200,
+  "grenades": 0,
+  "approach": "walk",
+  "order_once": true,
+  "sides": {
+    "A": {"squads": [{"at": {"smart_ring": [45, 75]}}]},
+    "B": {"stack": ["vanilla", "varka"], "director": "default", "start": "advance",
+          "squads": [{"faction": "random", "at": {"smart_ring": [45, 75]}}]}
+  }
+}

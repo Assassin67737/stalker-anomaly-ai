@@ -59,6 +59,15 @@
                                                 (на точке он «свой на линии» для ванильного rx_ff)
     "camera": {"up": 18, "back": 25}            если ты в деморекорде (demo_record 1): свободная камера
                                                 переезжает к точке — выше на up, отступив на back, смотрит на точку
+  Спарринг (01.11, юзер): "player": {...} — сторона A это ТЫ (один, без отряда), B — боты против тебя.
+    "player": {"power": "legend+veteran", "tol": 0.2, "n": [1, 5]}
+        сила игрока — сумма весов рангов (легенда + ветеран ≈ 9.1 по power()); врагов раннер подбирает так,
+        чтобы сила отряда B отличалась не больше чем на tol (2 ветерана … 4 новичка), группировка — любая
+        (враждебность к тебе ставится лично каждому)
+    "level": ["l01_escape", "l02_garbage", ...] — каждый бой на другой локации (переезд как быстрое перемещение)
+    B "stack": ["vanilla", "varka"] — слепо: кто был против тебя, раннер скажет только ПОСЛЕ твоей строчки-вердикта
+    Проигрыш = нокаут (varka_match v0.4: смерть отменяется, лечение) — без загрузки сейва. Итоги — match/spar.jsonl.
+    g_god должен быть выключен.
   Перед матчем площадка чистится: clear_r м вокруг точки (по умолчанию 150) — чужие отряды без сюжетных
   меток и трупы убираются (сюжетные NPC остаются).
 
@@ -385,6 +394,45 @@ def pick_ranked(spec, out, rng):
         q.update(faction=f, tier='advanced', rank=RANKS[r], n=n, member=profile_for(f, r), power=round(p, 2))
 
 
+SPAR = os.path.join(HERE, 'spar.jsonl')
+
+
+def player_power(p):
+    """Сила игрока: "legend+veteran" → сумма весов рангов (один боец, без √n — он один)."""
+    if isinstance(p, (int, float)):
+        return float(p)
+    return sum(RANK_STEP ** RANKS.index(r.strip()) for r in str(p).split('+'))
+
+
+def pick_vs_player(spec, rng):
+    """Состав врагов под силу игрока: все (ранг, численность), чья сила в пределах tol, — и один из них наугад."""
+    pl = spec['player']
+    target, tol = player_power(pl.get('power', 'legend+veteran')), pl.get('tol', 0.2)
+    lo, hi = pl.get('n', [1, 5])
+    cands = [(r, n) for n in range(lo, hi + 1) for r in range(len(RANKS)) if abs(power(r, n) / target - 1) <= tol]
+    if not cands:
+        raise RuntimeError(f'нет состава с силой {target:.1f} ±{tol:.0%} — расширь n или tol')
+    r, n = rng.choice(cands)
+    return r, n, target
+
+
+def setup_player(spec, rng):
+    """Спарринг: A — игрок (один), B — отряд под его силу, группировка любая."""
+    sa, sb = spec['sides']['A'], spec['sides']['B']
+    r, n, target = pick_vs_player(spec, rng)
+    qb = sb['squads'][0]
+    fb = pick(qb.get('faction', 'random'), rng, FACTIONS)
+    return {
+        'A': {'director': 'player', 'stack': 'player', 'start': 'player',
+              'squads': [{'faction': 'player', 'tier': '-', 'n': 1, 'at': pick(sa['squads'][0]['at'], rng),
+                          'rank': spec['player'].get('power', 'legend+veteran'), 'power': round(target, 2)}]},
+        'B': {'director': pick(sb.get('director', 'default'), rng, RANDOM_DIRECTORS),
+              'stack': pick(sb.get('stack', 'varka'), rng), 'start': sb.get('start', 'advance'),
+              'squads': [{'faction': fb, 'tier': 'advanced', 'n': n, 'at': pick(qb['at'], rng), 'rank': RANKS[r],
+                          'member': profile_for(fb, r), 'power': round(power(r, n), 2)}]},
+    }
+
+
 EVEN_ORDER = []   # «even»: очередь сочетаний (ранг, численность), перемешанная блоками
 
 
@@ -578,7 +626,8 @@ CLEANUP = set()   # что из уборки включено (--cleanup)
 
 
 def run_one(spec, lvl, game, rng, tag):
-    setup = setup_of(spec, rng, tag)
+    P = spec.get('player')   # 01.11: спарринг — сторона A это игрок
+    setup = setup_player(spec, rng) if P else setup_of(spec, rng, tag)
     smarts = load_smarts(game, lvl, lvl.name) if ('smart' in spec['zone'] or any(
         isinstance(q.get('at'), dict) and 'smart_ring' in q['at']
         for s in ('A', 'B') for q in spec['sides'][s]['squads'])) else []
@@ -587,16 +636,19 @@ def run_one(spec, lvl, game, rng, tag):
     sides, directors = {}, {}
 
     print(f"матч {spec['id']} #{tag}  {lvl.name}" + (f"  точка: {zone['name']}" if zone.get('name') else ''))
-    sp = spec.get('spectator')
+    sp = 'player' if P else spec.get('spectator')
     eye = None  # где стоит зритель сбоку — туда же камера
-    if sp == 'zone':
+    if P:   # игрок — на точку спавна стороны A
+        a0 = setup['A']['squads'][0]['at']
+        game.call('tp', lvl.node(a0['x'], a0['z']))
+    elif sp == 'zone':
         game.call('tp', zone_vid)
     elif isinstance(sp, dict) and 'aside' in sp:
         eye = aside_point(zone, setup, sp['aside'], lvl)
         game.call('tp', lvl.node(*eye))
     elif sp:
         game.call('tp', lvl.node(sp['x'], sp['z']))
-    cam = spec.get('camera', {'up': 18, 'back': 25})
+    cam = None if P else spec.get('camera', {'up': 18, 'back': 25})
     if cam:  # деморекорд: камера к точке матча (без деморекорда команда ничего не делает)
         zy = lvl.y(zone['x'], zone['z'])
         if eye:
@@ -617,6 +669,9 @@ def run_one(spec, lvl, game, rng, tag):
         vanilla = setup[s].get('stack') == 'vanilla'
         directors[s] = 'vanilla' if vanilla else setup[s]['director']
         sides[s] = []
+        if P and s == 'A':
+            sides[s] = [0]   # отряд 0 = игрок (varka_match v0.4)
+            continue
         for q in setup[s]['squads']:
             section = f"{SQUAD_PREFIX.get(q['faction'], q['faction'])}_sim_squad_{q.get('tier', 'advanced')}"
             vid = lvl.node(q['at']['x'], q['at']['z'])
@@ -632,13 +687,18 @@ def run_one(spec, lvl, game, rng, tag):
                 rank = (rank or ('-', '-')) + (gren,) if len(rank) < 3 else rank
                 rank = rank + (1 if vanilla else 0,) if len(rank) < 4 else rank
                 rank = rank + (guns or '-', kit.get('visual') or '-')
-            info = game.call('spawn', section, vid, q.get('n', 4), 1 if spec.get('ghost', True) else 0, *rank)
+            ghost = 0 if P else (1 if spec.get('ghost', True) else 0)
+            info = game.call('spawn', section, vid, q.get('n', 4), ghost, *rank)
             sides[s].append(int(info.split(':')[1]))
-    every = sides['A'] + sides['B']
+    every = [sq for sq in sides['A'] + sides['B'] if sq != 0]
     desc = lambda s: ' + '.join(f"{q['faction']} {q.get('rank', q['tier'])} ×{q['n']}" for q in setup[s]['squads'])
-    print(f"  A {directors['A']} [{desc('A')}] {sides['A']}   B {directors['B']} [{desc('B')}] {sides['B']}")
+    if P:   # слепо: стек врагов не печатаем до вердикта
+        qb = setup['B']['squads'][0]
+        print(f"  против тебя: {qb['faction']} {qb['rank']} ×{qb['n']}  (сила {qb['power']} : твоя {setup['A']['squads'][0]['power']})")
+    else:
+        print(f"  A {directors['A']} [{desc('A')}] {sides['A']}   B {directors['B']} [{desc('B')}] {sides['B']}")
     pa, pb = setup['A']['squads'][0].get('power'), setup['B']['squads'][0].get('power')
-    if pa:
+    if pa and not P:
         print(f"  сила A {pa} : B {pb}  (перевес ×{max(pa, pb) / min(pa, pb):.1f})")
 
     # все отряды должны выйти в онлайн, иначе стравить не получится
@@ -652,7 +712,7 @@ def run_one(spec, lvl, game, rng, tag):
         game.wait(online, 20, 'отряды не вышли в онлайн — поставь spectator ближе', born)
 
     for s in ('A', 'B'):
-        if directors[s] == 'vanilla':
+        if directors[s] in ('vanilla', 'player'):
             continue  # дирижёра у ванили нет
         for sq in sides[s]:
             game.call('preset', f'sq:{sq}', directors[s])
@@ -664,8 +724,10 @@ def run_one(spec, lvl, game, rng, tag):
                 print('  kit: ' + str(game.call('kit', f'sq:{sq}', kit['community'])))
     for a in sides['A']:
         for b in sides['B']:
-            game.call('hostile', f'sq:{a}', f'sq:{b}')
+            game.call('hostile', 'npc:0' if a == 0 else f'sq:{a}', f'sq:{b}')
     for s in ('A', 'B'):
+        if setup[s]['start'] == 'player':
+            continue
         if setup[s]['start'] == 'advance':
             for sq in sides[s]:
                 # 24.10: темп подхода — walk (как было) | run | sprint (спринт до 40 м от точки, дальше бег; экономия времени)
@@ -683,7 +745,7 @@ def run_one(spec, lvl, game, rng, tag):
     mid = f"{spec['id']}#{RUN_STAMP}-{tag}"   # уникально между запусками раннера
     begun = None if game.dry else game.mark()
     game.call('match_begin', mid, spec.get('limit_s', 300), zone_vid, zone.get('r', 15),
-              ','.join(map(str, sides['A'])), ','.join(map(str, sides['B'])))
+              ','.join(map(str, sides['A'])), ','.join(map(str, sides['B'])), zone.get('name') or '-')
     if game.dry:
         return None
 
@@ -718,10 +780,51 @@ def run_one(spec, lvl, game, rng, tag):
     r = scoring.score(scoring.load(path))
     r.update(directors=directors, setup=setup, zone=zone, run=os.path.relpath(path, HERE), spec=spec['id'],
              cvars=spec.get('cvars'), level=lvl.name)
+    if P:
+        return spar_verdict(r, setup)
     with open(RESULTS, 'a', encoding='utf-8') as f:
         f.write(json.dumps(r, ensure_ascii=False) + '\n')
     scoring.show(r)
     return r
+
+
+def spar_verdict(r, setup):
+    """Спарринг: итог → твоя строчка «где боты были не как люди» → только потом кто это был (ваниль/VARKA)."""
+    w = r['terms']['win']
+    res = 'ТЫ ПОБЕДИЛ' if w > 0 else 'нокаут' if w < 0 else 'ничья / время'
+    ev = scoring.load(os.path.join(HERE, r['run']))
+    r['hits_on_player'] = sum(1 for e in ev if e.get('ev') == 'hit' and e.get('npc') == 0 and e.get('who') != 0)
+    r['hits_unseen'] = sum(1 for e in ev if e.get('ev') == 'hit' and e.get('npc') == 0 and e.get('who') != 0 and not e.get('saw'))
+    print(f"\n  ── {res}: {r['dur']:.0f} с, врагов убито {r['deaths']['B']} из {r['start_n']['B']}, "
+          f"попаданий по тебе {r['hits_on_player']} (из невидимости {r['hits_unseen']}) ──")
+    try:
+        r['note'] = input('  где боты были НЕ как люди? (одна строка, Enter — пропустить)\n  > ').strip()
+    except EOFError:
+        r['note'] = ''
+    print(f"  это была: {setup['B']['stack'].upper()}" + (f" (дирижёр {setup['B']['director']})" if setup['B']['stack'] != 'vanilla' else ''))
+    with open(SPAR, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(r, ensure_ascii=False) + '\n')
+    return r
+
+
+def change_level(game, name):
+    """Переезд на другую локацию (varka_cmd level = быстрое перемещение) и ожидание, пока уровень загрузится."""
+    cur = game.call('level')
+    if cur == name:
+        return
+    print(f'  переезд: {cur} → {name} (загрузка)…')
+    game.call('level', name)
+    time.sleep(10)
+    t_end = time.time() + 300
+    while time.time() < t_end:
+        try:   # команды, пришедшие во время загрузки, игра пропускает — спрашиваем, пока не ответит
+            if game.call('level', timeout=5) == name:
+                time.sleep(5)   # окрестность выходит в онлайн
+                return
+        except (RuntimeError, TimeoutError):
+            pass
+        time.sleep(3)
+    raise TimeoutError(f'не дождался загрузки {name}')
 
 
 def single_instance():
@@ -738,8 +841,20 @@ def single_instance():
 def series(spec, lvl, game, rng, args):
     """Матчи серии подряд; итоги — списком."""
     results, fails = [], 0
+    levels = spec.get('level') if isinstance(spec.get('level'), list) else None
     for i in range(args.n):
         r = None
+        if spec.get('player'):
+            try:
+                if input(f"\nбой {i + 1}/{args.n}: Enter — в бой, q — хватит > ").strip().lower() == 'q':
+                    break
+            except EOFError:
+                break
+            if levels and not game.dry:   # каждый бой — другая локация
+                here = game.call('level')
+                nxt = rng.choice([l for l in levels if l != here] or levels)
+                change_level(game, nxt)
+                lvl = Level(nxt)
         try:
             for _ in range(10):  # точка у края карты, второй стороне негде встать — другая точка
                 try:
@@ -767,6 +882,9 @@ def series(spec, lvl, game, rng, args):
 def level_of(spec, game):
     """Уровень серии: из спека или "here" — спрашиваем игру, где она сейчас (команда level без имени)."""
     name = spec.get('level', 'here')
+    if isinstance(name, list):   # спарринг по локациям: стартуем там, где игра (если она в списке)
+        here = 'l07_military' if game.dry else game.call('level')
+        return here if here in name else name[0]
     if name != 'here':
         return name
     return 'l07_military' if game.dry else game.call('level')
@@ -795,6 +913,8 @@ def main():
     if spec.get('matchup') in ('random', 'ranks'):
         src = load_relations(game)
         print(f'пары врагов ({src}): ' + ', '.join(f'{a}–{b}' for a, b in enemy_pairs()))
+    if spec.get('player'):
+        load_profiles()
     if spec.get('matchup') == 'ranks':
         load_profiles()
         print(f"бои по рангам: перевес сил не больше ×{spec.get('balance', BALANCE)}; "

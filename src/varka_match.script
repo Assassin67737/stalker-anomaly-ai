@@ -10,6 +10,12 @@
 --
 -- Телеметрия всегда (и вне матча): death (кто кого) и hit (кто, кого, сколько, с какой дистанции,
 -- видел ли раненый стрелка) — это датасет для модели попаданий двойника.
+--
+-- v0.4 (01.11.2026): спарринг «ты против ботов». Отряд "0" в стороне match_begin = игрок.
+-- Смерть игрока в матче = нокаут: смерть отменяем (actor_on_before_death, как режим «Азазель»),
+-- лечим, враги становятся нейтральны → следующий матч без загрузки сейва. Позиция и взгляд игрока
+-- (камера) — в trace как npc_pos бойца 0, попадания по игроку — hit. 7-й арг. match_begin — смарт точки
+-- (метка на карте/миникарте).
 
 local TICK_MS = 1000
 
@@ -17,6 +23,26 @@ local match = nil  -- { id, limit, t0, zone, r, sides = { A = {sq=true}, B = {..
 
 local function emit(sq, npc, ev, f)
 	if varka_trace then varka_trace.emit(sq or 0, npc or 0, ev, f) end
+end
+
+local KO_GUARD_MS  = 20000   -- после нокаута/конца матча ещё столько игрок не может умереть
+local ACTOR_POS_MS = 250     -- срез игрока чаще, чем у NPC (500): камера вертится быстро
+local SPOT = "secondary_task_location"
+local ko_until, actor_next = 0, 0
+
+local function player_side(m)
+	if not m then return nil end
+	if m.sides.A[0] then return "A" end
+	if m.sides.B[0] then return "B" end
+end
+
+local function heal_actor()
+	db.actor:set_health_ex(1)
+	db.actor.power = 1
+	db.actor.radiation = 0
+	db.actor.bleeding = 1           -- как gamemode_azazel.heal_everything: 1 = остановить кровь
+	db.actor.psy_health = 1
+	if arszi_psy and arszi_psy.set_psy_health then arszi_psy.set_psy_health(1.0) end
 end
 
 local function split_ids(s)
@@ -29,8 +55,13 @@ end
 local function side_members(sqs)
 	local alive, online = 0, {}
 	for sq in pairs(sqs) do
-		local squad = alife_object(sq)
-		if squad and squad.squad_members then
+		local squad = sq ~= 0 and alife_object(sq)
+		if sq == 0 then   -- игрок
+			if db.actor:alive() and not (match and match.ko) then
+				alive = alive + 1
+				online[#online+1] = db.actor
+			end
+		elseif squad and squad.squad_members then
 			for k in squad:squad_members() do
 				local se = alife_object(k.id)
 				if se and se:alive() then
@@ -99,13 +130,31 @@ local function finish(reason)
 	emit(0, 0, "match_end", { id = match.id, reason = reason, dur = (now - match.t0) / 1000,
 		alive_a = a, alive_b = b, ctrl_a = match.ctrl.A, ctrl_b = match.ctrl.B })
 	if varka_hud then varka_hud.push(string.format("MATCH %s over: %s (alive %d vs %d)", match.id, reason, a, b)) end
+	if player_side(match) then
+		heal_actor()                                   -- следующий матч — с полным здоровьем
+		ko_until = math.max(ko_until, now + KO_GUARD_MS)
+		if match.spot then level.map_remove_object_spot(match.spot, SPOT) end
+	end
 	match = nil
+end
+
+local function actor_pos(now)
+	if now < actor_next then return end
+	actor_next = now + ACTOR_POS_MS
+	local a = db.actor
+	local p, d = a:position(), device().cam_dir
+	local wi = a:active_item()
+	emit(0, 0, "npc_pos", { px = p.x, py = p.y, pz = p.z, dx = d.x, dz = d.z, hx = d.x, hz = d.z, hy = d.y,
+		comm = "actor", rank = a:character_rank(), hp = a.health, be = -1, bsee = 0,
+		wpn = wi and wi:section() or "", mag = (wi and IsWeapon(wi) and wi:get_ammo_in_magazine()) or -1,
+		cr = IsMoveState("mcCrouch") and 1 or 0, name = "PLAYER" })
 end
 
 local function tick()
 	if next(pending) then release_pending() end
 	if not match then return end
 	local now = time_global()
+	if player_side(match) and not match.ko then actor_pos(now) end
 	if now < match.next then return end
 	local dt = (now - match.next + TICK_MS) / 1000
 	match.next = now + TICK_MS
@@ -128,7 +177,7 @@ end
 local function cmd_begin(a)
 	if match then finish("replaced") end
 	local id, limit, vid, r = a[1], tonumber(a[2]), tonumber(a[3]), tonumber(a[4])
-	if not (id and limit and vid and r) then return false, "match_begin <id> <limit_s> <zone_vid> <r> <A> <B>" end
+	if not (id and limit and vid and r) then return false, "match_begin <id> <limit_s> <zone_vid> <r> <A> <B> [смарт]" end
 	local sa, sb = split_ids(a[5]), split_ids(a[6])
 	if next(sa) == nil or next(sb) == nil then return false, "empty side" end
 	local now = time_global()
@@ -136,6 +185,11 @@ local function cmd_begin(a)
 		zone = level.vertex_position(vid), r = r, sides = { A = sa, B = sb }, ctrl = { A = 0, B = 0 } }
 	emit(0, 0, "match_start", { id = id, limit = limit, zx = match.zone.x, zz = match.zone.z, zr = r,
 		a = a[5], b = a[6], level = level.name() })
+	local smart = a[7] and SIMBOARD.smarts_by_names[a[7]]
+	if player_side(match) and smart then   -- спарринг: точка матча — меткой на карте и миникарте
+		match.spot = smart.id
+		level.map_add_object_spot(smart.id, SPOT, "VARKA: match point")
+	end
 	if varka_hud then varka_hud.push("MATCH " .. id .. " started") end
 	return true, id
 end
@@ -242,6 +296,24 @@ local function on_death(victim, who)
 		rank = victim.character_rank and victim:character_rank() or 0,
 		comm = character_community(victim) or "?",
 	})
+end
+
+-- нокаут вместо смерти (спарринг): движок зовёт перед смертью игрока; ret_value=false — смерти нет
+local function on_before_death(who_id, flags)
+	local now = time_global()
+	local side = player_side(match)
+	if not side and now > ko_until then return end   -- вне спарринга — смерть как обычно
+	flags.ret_value = false
+	heal_actor()
+	if not side or match.ko then return end
+	match.ko = true
+	ko_until = now + KO_GUARD_MS
+	local who = who_id and level.object_by_id(who_id)
+	local ksq = who and get_object_squad(who)
+	emit(0, 0, "death", { killer = who_id or -1, ksq = ksq and ksq.id or -1, ko = 1,
+		rank = db.actor:character_rank(), comm = "actor" })
+	local _, on = side_members(side == "A" and match.sides.B or match.sides.A)
+	for _, o in ipairs(on) do o:set_relation(game_object.neutral, db.actor) end   -- лежачего не добивают
 end
 
 local function on_hit(npc, amount, dir, who, bone)
@@ -357,6 +429,8 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", tick)
 	RegisterScriptCallback("npc_on_death_callback", on_death)
 	RegisterScriptCallback("npc_on_hit_callback", on_hit)
+	RegisterScriptCallback("actor_on_hit_callback", on_hit)          -- v0.4: попадания по игроку
+	RegisterScriptCallback("actor_on_before_death", on_before_death) -- v0.4: нокаут в спарринге
 	RegisterScriptCallback("actor_on_first_update", function()
 		if varka_cmd and varka_cmd.register then
 			varka_cmd.register("match_begin", cmd_begin)

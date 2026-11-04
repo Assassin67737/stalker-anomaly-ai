@@ -17,3 +17,5 @@ match/zone_cycle.json
 levels/*_quads_nodes.bin
 levels/*_quads_vis.bin
 levels/areas_backup/
+# игровой граф A-Life (ванильные данные, собирается вне репо)
+levels/alife_graph.lua

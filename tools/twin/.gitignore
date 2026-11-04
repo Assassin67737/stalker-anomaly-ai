@@ -19,3 +19,4 @@ levels/*_quads_vis.bin
 levels/areas_backup/
 # игровой граф A-Life (ванильные данные, собирается вне репо)
 levels/alife_graph.lua
+levels/alife_view.json

@@ -55,7 +55,9 @@ function M.load(name)
 	end
 
 	-- рабочие массивы поиска пути: метка поколения вместо очистки 387 тысяч ячеек
-	self.g = ffi.new('float[?]', self.n)
+	-- g — double, не float (14.11): float округлял записанное расстояние, свежее (double) сравнение «ng < g[j]» на равных путях
+	-- давало ложное «короче» → клетка раскрывалась снова и снова, лимит сгорал на уровне в 100 тыс. клеток (Бар: 15 путей из 40)
+	self.g = ffi.new('double[?]', self.n)
 	self.came = ffi.new('int32_t[?]', self.n)
 	self.stamp = ffi.new('uint32_t[?]', self.n)
 	self.gen = 0

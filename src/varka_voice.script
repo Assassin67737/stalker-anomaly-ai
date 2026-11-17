@@ -1,4 +1,4 @@
--- varka_voice.script — v0.2: канал голоса (17.11.2026, этюд 002)
+-- varka_voice.script — v0.3: канал голоса (17.11.2026, этюд 002)
 --
 -- Кто что услышал, когда кто-то сказал/крикнул. Только КАНАЛ: когда кричать и что — решают другие модули.
 --
@@ -135,15 +135,19 @@ local function spread(src, qs, limit)
 end
 
 -- «откуда» в обход: идём по пути от слушателя к говорящему, берём самую дальнюю площадку, видимую с уха
+-- v0.3: видимая точка в шаге от уха (боец стоит у самого угла) — направления в ней нет, ошибка уха
+-- уводит её куда попало. Тогда идём по пути дальше, за угол, пока не отойдём на FROM_MIN.
+local FROM_MIN = 8
 local function via_point(ear, qt, prev)
 	local best, q, rays = nil, prev[qt], 0
 	while q and rays < VIA_RAYS do
-		local p = qpos(q)
 		rays = rays + 1
-		if clear(ear, p) then best = p elseif best then break end
+		if clear(ear, qpos(q)) then best = q elseif best then break end
 		q = prev[q]
 	end
-	return best or qpos(prev[qt] or qt)
+	q = best or prev[qt] or qt
+	while prev[q] and ear:distance_to(qpos(q)) < FROM_MIN do q = prev[q] end
+	return qpos(q)
 end
 
 local function jitter(p, err)

@@ -32,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'vision'))
 from bake_mtl import FL_PASSABLE, chunks, find  # noqa: E402
 
-MIN_AREA = 0.05     # м²: меньше — деталь предмета, звук огибает
+MIN_AREA = 0.5      # м²: меньше — деталь предмета, звук огибает; 17.11: 0.05 → 0.5 — втрое меньше треугольников (96 % площади), загрузка сейва
 MIN_OCC = 0.4       # каждая поверхность пропускает не меньше (огибания нет); 17.11: 0.2 → 0.4 — выстрел за зданием в 100 м снова слышен
 SKIP_OCC = 0.95     # материал почти прозрачен для звука — не писать
 SKIP_NAMES = {'materials\\tree_trunk'}

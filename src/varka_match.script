@@ -379,7 +379,9 @@ local function on_before_death(who_id, flags)
 	emit(0, 0, "death", { killer = who_id or -1, ksq = ksq and ksq.id or -1, ko = 1,
 		rank = db.actor:character_rank(), comm = "actor" })
 	local _, on = side_members(side == "A" and match.sides.B or match.sides.A)
-	for _, o in ipairs(on) do o:set_relation(game_object.neutral, db.actor) end   -- лежачего не добивают
+	-- лежачего не добивают. 17.11: не set_relation(neutral) — он ставит личное 0, и вражеская группировка в сумме
+	-- оставалась врагом (relation_registry_inline.h GetAttitude); личное с запасом вверх → точно не враг
+	for _, o in ipairs(on) do o:force_set_goodwill(10000, db.actor) end
 end
 
 local function on_hit(npc, amount, dir, who, bone)

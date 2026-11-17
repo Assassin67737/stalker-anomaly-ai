@@ -564,6 +564,11 @@ CMD.hostile = function(a)
 		for _, y in ipairs(lb) do
 			x:set_relation(game_object.enemy, y)
 			y:set_relation(game_object.enemy, x)
+			-- 17.11: к игроку отношение = личное + репутация + ранг + группировка→игрок + группировка→группировка
+			-- (relation_registry_inline.h GetAttitude); set_relation ставит только личное −1000, и дружная группировка
+			-- (свобода) в сумме оставалась нейтралом — не стреляли. Личное с запасом перекрывает остальное.
+			if y:id() == AC_ID then x:force_set_goodwill(-10000, y) end
+			if x:id() == AC_ID then y:force_set_goodwill(-10000, x) end
 		end
 	end
 	return true, #la .. "×" .. #lb

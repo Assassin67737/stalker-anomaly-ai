@@ -1,4 +1,4 @@
--- varka_voice.script — v0.1.1: канал голоса (17.11.2026, этюд 002)
+-- varka_voice.script — v0.2: канал голоса (17.11.2026, этюд 002)
 --
 -- Кто что услышал, когда кто-то сказал/крикнул. Только КАНАЛ: когда кричать и что — решают другие модули.
 --
@@ -194,6 +194,57 @@ function hearers(who, loud)
 	end
 	table.sort(out, function(a, b) return a.d_eff < b.d_eff end)
 	return out, R
+end
+
+-- ─── v0.2: огибание для ушей ботов — один слушатель, звук из точки ───────────────────────────────
+-- Для выстрелов (varka_alert): движок глушит стенами по level.som, но не огибает углы. Здесь тот же путь,
+-- что у голоса: прямая / сквозь стену / в обход. Дейкстра от площадки источника кэшируется на SPREAD_TTL —
+-- очередь из автомата слышат десяток бойцов, считаем один раз.
+-- R — на какой дистанции звук ещё слышен в чистом поле (выстрел ~150 м по ai-дальности .ogg, с глушителем ~8 м).
+-- p_engine — сила от движка (колбэк npc_on_hear): в ней уже стены по level.som с материалами. Поэтому «сквозь
+-- стену» для звуков движка = его сила ≥ HEAR_THR (стены описаны в одном месте — SOM), а канал добавляет огибание:
+-- сила в обход ≈ 1 − d_eff/R; громче что — оттуда и кажется. Без p_engine (голос) — как у hearers: WALL_K.
+-- Возвращает nil (не услышал) или { d, d_eff, how, from } — from: точка «откуда кажется» с ошибкой уха;
+-- сквозь стену звук глухой — ошибка вдвое больше.
+local SPREAD_TTL = 1000
+local spread_cache = {}   -- [qs .. ":" .. limit] = { t, dist, prev }
+
+local HEAR_THR = 0.05   -- порог слуха NPC (нижний m_min_sound_threshold, sound_memory_manager.cpp)
+
+function hear_point(listener, src_pos, src_vid, R, p_engine)
+	local src = vector():set(src_pos); src.y = src.y + 0.2   -- звук выстрела — у ствола, точка уже на высоте
+	local ear = vector():set(listener:position()); ear.y = ear.y + EYE
+	local d = src:distance_to(ear)
+	if d > R then return nil end
+	local d_eff, how, from = d, "line", src
+	if not clear(src, ear) then
+		if p_engine then
+			-- сила стены → «эквивалентная дистанция» в шкале канала: p = 1 − d_eff/R
+			d_eff, how = p_engine >= HEAR_THR and math.max(d, R * (1 - math.min(p_engine, 1))) or math.huge, "wall"
+		else
+			d_eff, how = d * WALL_K, "wall"
+		end
+		local qs, qt = quad_of(src_vid), quad_of(listener:level_vertex_id())
+		if qs and qt then
+			local limit = R / CORNER_K
+			local key, now = qs .. ":" .. limit, time_global()
+			local c = spread_cache[key]
+			if not (c and now - c.t < SPREAD_TTL) then
+				local dist, prev = spread(src, qs, limit)
+				c = { t = now, dist = dist, prev = prev }
+				spread_cache[key] = c
+			end
+			if c.dist[qt] then
+				local dp = math.max(d, c.dist[qt] + ear:distance_to(qpos(qt))) * CORNER_K
+				if dp < d_eff then
+					d_eff, how = dp, "around"
+					from = qt == qs and src or via_point(ear, qt, c.prev)
+				end
+			end
+		end
+	end
+	if d_eff > R then return nil end
+	return { d = d, d_eff = d_eff, how = how, from = jitter(from, ERR_K * d_eff * (how == "wall" and 2 or 1)) }
 end
 
 -- ─── стенд: игрок говорит с клавиш NumPad 1/2/3 (шёпот/голос/крик) ───────────────────────────────

@@ -1,4 +1,4 @@
--- varka_alert.script — ПОТРЕБИТЕЛЬ №2 ядра LKP (v0.11-Палка1)
+-- varka_alert.script — ПОТРЕБИТЕЛЬ №2 ядра LKP (v0.12: выстрел через канал varka_voice — стены SOM + огибание, 17.11)
 --
 -- Затыкает дыру, из-за которой убивать было информационно БЕСПЛАТНО (фарм игрока
 -- «килл → прятки за соседний дом → ждём минуту → тревога спала → повтор»).
@@ -25,6 +25,8 @@
 local DEBUG        = true
 local TICK_MS      = 500    -- частота опроса трупа-опасности
 local HEAR_DIST_SQR = 3600  -- 60м: выстрел слышно дальше, чем impact (ваниль брала 30м)
+local SHOT_R       = 200    -- м: выстрел слышен в чистом поле (ai .ogg 50–200; движок в trace 17.11 слышал до 215 м)
+local SHOT_R_SIL   = 8      -- м: с глушителем (ai .ogg 7.5 м)
 local CORPSE_ONCE  = {}     -- [npc_id] = { [corpse_id]=true } — на труп реагируем ОДИН раз
                             -- (иначе старый труп вечно пиннит тревогу — облако должно стареть)
 local last_tick    = {}     -- [npc_id] = время последнего среза
@@ -73,10 +75,25 @@ local function on_hear(npc, who_id, s_type, dist, power, pos)
 	if not (who_id == AC_ID or npc:relation(who) >= game_object.enemy) then return end
 	if npc:position():distance_to_sqr(pos) > HEAR_DIST_SQR then return end
 
+	-- 17.11 (этюд 002, varka_voice v0.2): выстрел — через канал. Раньше тревога садилась в точную точку звука
+	-- сквозь любые стены (сила не смотрелась). Теперь: не дошёл ни прямо, ни сквозь стену, ни в обход — тишина;
+	-- дошёл — точка «откуда кажется»: в обход — проём/угол, иначе ствол с ошибкой уха. WPN_hit — как было (этюд 001).
+	local how = "raw"
+	if s_type == "WPN_shoot" and varka_voice and varka_voice.available() then
+		local wpn = who.active_item and who:active_item()
+		local R = (wpn and wpn.weapon_is_silencer and wpn:weapon_is_silencer()) and SHOT_R_SIL or SHOT_R
+		local h = varka_voice.hear_point(npc, pos, who:level_vertex_id(), R, power)
+		if not h then
+			if varka_trace then varka_trace.emit(0, npc:id(), "alert_unheard", { who = who_id or 0, r = R }) end
+			return
+		end
+		pos, how = h.from, h.how
+	end
+
 	if varka_lkp.notice(npc, vector():set(pos.x, pos.y, pos.z)) then
 		if varka_trace then
 			varka_trace.emit(0, npc:id(), "alert_hear", {
-				who=who_id or 0, stype=tostring(s_type), px=pos.x, pz=pos.z
+				who=who_id or 0, stype=tostring(s_type), px=pos.x, pz=pos.z, how=how
 			})
 		end
 		if DEBUG then

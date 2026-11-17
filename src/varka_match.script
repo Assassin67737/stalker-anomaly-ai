@@ -251,6 +251,12 @@ local function cmd_begin(a)
 		level.map_add_object_spot(smart.id, SPOT, "VARKA: match point")
 	end
 	if player_side(match) then
+		-- 17.11: КПК (device_pda_3) рисует отряды, чья группировка тебе не враг (sim_squad_scripted:show) —
+		-- боты матча враги лично, и игрок видел их на карте. Прячем метки отрядов матча.
+		for sq in pairs(player_side(match) == "A" and sb or sa) do
+			local squad = alife_object(sq)
+			if squad and squad.hide then squad.show_disabled = true; squad:hide() end
+		end
 		kit_actor()
 		say("FIGHT! Hold the point (" .. r .. " m): " .. where_is(match.zone) .. ". Gear refilled.", 10)
 	end
@@ -347,6 +353,22 @@ local function cmd_smarts(a)
 		end
 	end
 	return true, n .. " smarts"
+end
+
+-- changers — переходы на другие уровни (level_changer) текущего уровня в trace: раннер не ставит игрока рядом
+-- (17.11: спавн у перехода — игрок уходит с локи, бой срывается). Перебор alife один раз, раннер кэширует.
+local function cmd_changers(a)
+	local sim, gg = alife(), game_graph()
+	local here = gg:vertex(db.actor:game_vertex_id()):level_id()
+	local n = 0
+	for i = 1, 65534 do
+		local se = sim:object(i)
+		if se and se:clsid() == clsid.level_changer_s and gg:vertex(se.m_game_vertex_id):level_id() == here then
+			emit(0, 0, "changer", { x = se.position.x, y = se.position.y, z = se.position.z, level = level.name() })
+			n = n + 1
+		end
+	end
+	return true, n .. " changers"
 end
 
 -- ===== телеметрия =====
@@ -505,6 +527,7 @@ function on_game_start()
 			varka_cmd.register("match_abort", cmd_abort)
 			varka_cmd.register("clear", cmd_clear)
 			varka_cmd.register("smarts", cmd_smarts)
+			varka_cmd.register("changers", cmd_changers)
 			varka_cmd.register("vanish", cmd_vanish)
 		end
 	end)

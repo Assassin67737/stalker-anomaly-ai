@@ -138,6 +138,27 @@ def load_smarts(game, lvl, name):
     return out
 
 
+def load_changers(game, name):
+    """17.11: переходы на другие уровни (кэш levels/<уровень>_changers.json или выгрузка из игры) —
+    игрока в спарринге не ставим ближе CHANGER_R: у перехода он уходил с локи, бой срывался."""
+    path = os.path.join(TWIN, 'levels', name + '_changers.json')
+    if os.path.exists(path):
+        return json.load(open(path, encoding='utf-8'))
+    if game.dry:
+        return []
+    since = game.mark()
+    game.call('changers', timeout=20)
+    time.sleep(1)
+    game.read()
+    out = [{'x': e['x'], 'z': e['z']} for e in game.buf[since:] if e.get('ev') == 'changer' and e.get('level') == name]
+    json.dump(out, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    print(f'  переходов на {name}: {len(out)} → {os.path.relpath(path, TWIN)}')
+    return out
+
+
+CHANGER_R = 60   # м: игрок не рождается ближе к переходу на другой уровень
+
+
 CYCLE_FILE = os.path.join(HERE, 'zone_cycle.json')
 
 
@@ -161,8 +182,11 @@ def cycle_next(level, names, rng, save=True):
     return name
 
 
-def place(spec, setup, smarts, rng, lvl=None, dry=False):
-    """Точка матча и места спавна, если они заданы через смарты. Меняет setup на месте."""
+def place(spec, setup, smarts, rng, lvl=None, dry=False, changers=()):
+    """Точка матча и места спавна, если они заданы через смарты. Меняет setup на месте.
+    changers — переходы уровня: игрок (сторона 'player') не рождается ближе CHANGER_R."""
+    def near_changer(x, z):
+        return any(math.hypot(c['x'] - x, c['z'] - z) < CHANGER_R for c in changers)
     zone = dict(spec['zone'])
     if 'smart' in zone:
         names = [s['name'] for s in smarts]
@@ -191,6 +215,8 @@ def place(spec, setup, smarts, rng, lvl=None, dry=False):
                 dx, dz = sm['x'] - zone['x'], sm['z'] - zone['z']
                 d = math.hypot(dx, dz)
                 if ring[0] <= d <= ring[1]:
+                    if q.get('faction') == 'player' and near_changer(sm['x'], sm['z']):
+                        continue
                     a = math.atan2(dz, dx)
                     # сторона B — с другой стороны от точки (угол от A больше 90°)
                     if side == 'B' and ang_a is not None and abs((a - ang_a + math.pi) % (2 * math.pi) - math.pi) < math.pi / 2:
@@ -209,6 +235,8 @@ def place(spec, setup, smarts, rng, lvl=None, dry=False):
                     x, z = zone['x'] + d * math.cos(a), zone['z'] + d * math.sin(a)
                     # 23.10: не дальше NEAR_SMART от какого-нибудь смарта — иначе спавн за периметром (011929-5)
                     near = not smarts or min(math.hypot(sm['x'] - x, sm['z'] - z) for sm in smarts) <= NEAR_SMART
+                    if q.get('faction') == 'player' and near_changer(x, z):
+                        continue
                     if near and lvl.has_node(x, z):
                         q['at'] = {'x': x, 'z': z, 'smart': None}
                         break
@@ -632,7 +660,8 @@ def run_one(spec, lvl, game, rng, tag):
     smarts = load_smarts(game, lvl, lvl.name) if ('smart' in spec['zone'] or any(
         isinstance(q.get('at'), dict) and 'smart_ring' in q['at']
         for s in ('A', 'B') for q in spec['sides'][s]['squads'])) else []
-    zone = place(spec, setup, smarts, rng, lvl, dry=game.dry)
+    changers = load_changers(game, lvl.name) if P else []
+    zone = place(spec, setup, smarts, rng, lvl, dry=game.dry, changers=changers)
     zone_vid = lvl.node(zone['x'], zone['z'])
     sides, directors = {}, {}
 

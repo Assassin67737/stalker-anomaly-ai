@@ -1,0 +1,233 @@
+-- varka_voice.script — v0.1: канал голоса (17.11.2026, этюд 002)
+--
+-- Кто что услышал, когда кто-то сказал/крикнул. Только КАНАЛ: когда кричать и что — решают другие модули.
+--
+-- Движок слышит так (xrEngine/IGame_Level.cpp:305): сила = (1 − d/радиус) × громкость × заглушение, заглушение —
+-- по level.som, которого в уровнях Anomaly нет → звук = ровный шар сквозь стены. Здесь вместо шара:
+--   1. прямая (луч ray_pick по статике на высоте головы в обе стороны) свободна → d_eff = d;
+--   2. закрыта → лучший из двух путей:
+--      сквозь стену  d × WALL_K (глухо),
+--      в обход       длина пути по площадкам навмеша × CORNER_K (звук огибает углы, течёт по коридорам и улицам).
+-- Площадки и соседства — запечка tools/twin/voice/bake_voice.py → ../appdata/varka_voice/<уровень>.bin.
+-- Нет файла → обход не считается (только прямая и сквозь стену), available() = false.
+--
+-- Уровни: 2 — разобрал слова (d_eff ≤ R), 1 — слышал, что кто-то крикнул, примерно откуда (≤ R × HEARD_K), 0 — нет.
+-- «Откуда» в обход — не говорящий, а последняя видимая с места слушателя точка пути: проём, угол. Как в жизни.
+-- Ошибка уха растёт с дистанцией (решение ГД 24.10): ERR_K × d_eff, случайный сдвиг.
+
+local DIR      = "../appdata/varka_voice/"
+LOUD           = { whisper = 3, voice = 15, shout = 50 }  -- м: в чистом поле разбирают слова (ручки)
+local HEARD_K  = 2.5     -- дальше R, до R × HEARD_K — «кто-то крикнул, оттуда»
+local WALL_K   = 3.0     -- сквозь стену звучит как втрое дальше
+local CORNER_K = 1.25    -- в обход: на четверть «дальше» пути (теряется на углах)
+local ERR_K    = 0.08    -- ошибка точки «откуда»: 8 % от d_eff
+local EYE      = 1.6     -- м: высота рта и уха
+local VIA_RAYS = 24      -- предел лучей при поиске «откуда» в обход
+local INVALID  = 4294967295
+local NOQ      = 65535
+
+local G, for_level = nil, nil   -- запечка текущего уровня
+
+local function u8(s, p)  return string.byte(s, p) end
+local function u16(s, p) local a, b = string.byte(s, p, p + 1); return a + b * 256 end
+local function i16(s, p) local v = u16(s, p); return v >= 32768 and v - 65536 or v end
+local function u32(s, p) local a, b, c, d = string.byte(s, p, p + 3); return a + b * 256 + c * 65536 + d * 16777216 end
+
+local function ensure()
+	local name = level.name()
+	if for_level == name then return G ~= nil end
+	for_level, G = name, nil
+	local f = io.open(DIR .. name .. ".bin", "rb")
+	if not f then printf("VARKA-VOICE: %s -> запечки нет", name); return false end
+	local s = f:read("*a"); f:close()
+	if s:sub(1, 4) ~= "VOX1" then printf("VARKA-VOICE: %s -> не тот формат", name); return false end
+	local nq = u16(s, 5)
+	local p = 7
+	local g = { nq = nq, x = {}, y = {}, z = {}, nb = {} }
+	for q = 0, nq - 1 do
+		g.x[q], g.y[q], g.z[q] = i16(s, p) / 10, i16(s, p + 2) / 10, i16(s, p + 4) / 10
+		local n = u8(s, p + 6)
+		p = p + 7
+		local t = {}
+		for k = 1, n do t[k] = u16(s, p); p = p + 2 end
+		g.nb[q] = t
+	end
+	g.nv = u32(s, p)
+	g.vq_off = p + 4
+	g.s = s
+	G = g
+	printf("VARKA-VOICE: %s -> %d площадок, %d нод", name, nq, g.nv)
+	return true
+end
+
+function available() return ensure() end
+
+local function quad_of(vid)
+	if not (vid and vid < INVALID and ensure() and vid < G.nv) then return nil end
+	local q = u16(G.s, G.vq_off + vid * 2)
+	return q ~= NOQ and q or nil
+end
+
+local function qpos(q) return vector():set(G.x[q], G.y[q] + EYE, G.z[q]) end
+
+-- ─── луч: прямая свободна? (как varka_grenade.clear: в обе стороны, статика) ──────────────────────
+local rp
+local function clear(a, b)
+	if not rp then rp = ray_pick(); rp:set_flags(RQT_STATIC) end
+	local dir = vector():set(b):sub(a)
+	local d = dir:magnitude()
+	if d < 0.3 then return true end
+	dir:normalize()
+	rp:set_position(a); rp:set_direction(dir); rp:set_range(d)
+	if rp:query() and rp:get_distance() < d - 0.3 then return false end
+	local back = vector():set(dir):invert()
+	rp:set_position(b); rp:set_direction(back); rp:set_range(d)
+	return not (rp:query() and rp:get_distance() < d - 0.3)
+end
+
+-- ─── обход: Дейкстра по площадкам от говорящего, не дальше limit м ────────────────────────────────
+local function spread(src, qs, limit)
+	local dist, prev = {}, {}
+	local d0 = src:distance_to(qpos(qs))
+	dist[qs] = d0
+	local heap = { { d0, qs } }   -- двоичная куча по расстоянию
+	local function push(d, q)
+		local h = heap; h[#h + 1] = { d, q }
+		local i = #h
+		while i > 1 do
+			local j = math.floor(i / 2)
+			if h[j][1] <= h[i][1] then break end
+			h[i], h[j] = h[j], h[i]; i = j
+		end
+	end
+	local function pop()
+		local h = heap; local top = h[1]; local last = table.remove(h)
+		if #h > 0 then
+			h[1] = last
+			local i = 1
+			while true do
+				local l, r, m = 2 * i, 2 * i + 1, i
+				if h[l] and h[l][1] < h[m][1] then m = l end
+				if h[r] and h[r][1] < h[m][1] then m = r end
+				if m == i then break end
+				h[i], h[m] = h[m], h[i]; i = m
+			end
+		end
+		return top
+	end
+	while #heap > 0 do
+		local t = pop()
+		local d, q = t[1], t[2]
+		if d <= dist[q] then
+			local x, y, z = G.x[q], G.y[q], G.z[q]
+			for _, n in ipairs(G.nb[q]) do
+				local dx, dy, dz = G.x[n] - x, G.y[n] - y, G.z[n] - z
+				local nd = d + math.sqrt(dx * dx + dy * dy + dz * dz)
+				if nd <= limit and (not dist[n] or nd < dist[n]) then
+					dist[n], prev[n] = nd, q
+					push(nd, n)
+				end
+			end
+		end
+	end
+	return dist, prev
+end
+
+-- «откуда» в обход: идём по пути от слушателя к говорящему, берём самую дальнюю площадку, видимую с уха
+local function via_point(ear, qt, prev)
+	local best, q, rays = nil, prev[qt], 0
+	while q and rays < VIA_RAYS do
+		local p = qpos(q)
+		rays = rays + 1
+		if clear(ear, p) then best = p elseif best then break end
+		q = prev[q]
+	end
+	return best or qpos(prev[qt] or qt)
+end
+
+local function jitter(p, err)
+	if err <= 0 then return p end
+	local a = math.random() * 2 * math.pi
+	local r = math.random() * err
+	return vector():set(p.x + math.cos(a) * r, p.y, p.z + math.sin(a) * r)
+end
+
+-- ─── главное: кто услышал ─────────────────────────────────────────────────────────────────────────
+-- who — говорящий (game_object, актор тоже), loud — "whisper"|"voice"|"shout" или метры.
+-- Возвращает список { obj, id, level, d, d_eff, how = "line"|"wall"|"around", from = vector }.
+function hearers(who, loud)
+	local R = type(loud) == "number" and loud or LOUD[loud] or LOUD.voice
+	local reach = R * HEARD_K
+	local src = vector():set(who:position()); src.y = src.y + EYE
+	local qs = quad_of(who:level_vertex_id())
+	local dist, prev
+	local out = {}
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= who:id() and IsStalker(o) and o:alive() then
+			local ear = vector():set(o:position()); ear.y = ear.y + EYE
+			local d = src:distance_to(ear)
+			if d <= reach then
+				local d_eff, how, from = d, "line", src
+				if not clear(src, ear) then
+					d_eff, how = d * WALL_K, "wall"
+					local qt = qs and quad_of(o:level_vertex_id())
+					if qt then
+						if not dist then dist, prev = spread(src, qs, reach / CORNER_K) end
+						if dist[qt] then
+							local dp = math.max(d, dist[qt] + ear:distance_to(qpos(qt))) * CORNER_K
+							if dp < d_eff then
+								d_eff, how = dp, "around"
+								from = qt == qs and src or via_point(ear, qt, prev)
+							end
+						end
+					end
+				end
+				local lvl = d_eff <= R and 2 or (d_eff <= reach and 1 or 0)
+				if lvl > 0 then
+					out[#out + 1] = { obj = o, id = id, level = lvl, d = d, d_eff = d_eff, how = how,
+						from = jitter(from, ERR_K * d_eff) }
+				end
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.d_eff < b.d_eff end)
+	return out, R
+end
+
+-- ─── стенд: игрок говорит с клавиш NumPad 1/2/3 (шёпот/голос/крик) ───────────────────────────────
+local STAND = true
+local KEYS
+local function trace(ev, f) if varka_trace then varka_trace.emit(0, 0, ev, f) end end
+
+local function stand(loud)
+	local list, R = hearers(db.actor, loud)
+	local p = db.actor:position()
+	trace("voice", { who = 0, loud = loud, r = R, x = p.x, y = p.y, z = p.z, n = #list, baked = G and 1 or 0 })
+	local words, heard = 0, 0
+	for _, h in ipairs(list) do
+		if h.level == 2 then words = words + 1 else heard = heard + 1 end
+		trace("voice_hear", { who = 0, id = h.id, lvl = h.level, d = h.d, de = h.d_eff, how = h.how,
+			fx = h.from.x, fy = h.from.y, fz = h.from.z })
+	end
+	if varka_hud then
+		varka_hud.push(string.format("%s R%dm: words %d, heard %d%s", loud:upper(), R, words, heard,
+			G and "" or " (no bake: walls only)"))
+		for i = 1, math.min(4, #list) do
+			local h = list[i]
+			varka_hud.push(string.format("%s %dm -> %dm %s: %s", h.obj:character_community(), h.d, h.d_eff, h.how,
+				h.level == 2 and "WORDS" or "heard"))
+		end
+	end
+end
+
+local function key_press(dik)
+	if not STAND then return end
+	KEYS = KEYS or { [DIK_keys.DIK_NUMPAD1] = "whisper", [DIK_keys.DIK_NUMPAD2] = "voice", [DIK_keys.DIK_NUMPAD3] = "shout" }
+	local loud = KEYS[dik]
+	if loud and db.actor then stand(loud) end
+end
+
+function on_game_start()
+	RegisterScriptCallback("on_key_press", key_press)
+end

@@ -794,8 +794,22 @@ def spar_verdict(r, setup):
     w = r['terms']['win']
     res = 'ТЫ ПОБЕДИЛ' if w > 0 else 'нокаут' if w < 0 else 'ничья / время'
     ev = scoring.load(os.path.join(HERE, r['run']))
-    r['hits_on_player'] = sum(1 for e in ev if e.get('ev') == 'hit' and e.get('npc') == 0 and e.get('who') != 0)
-    r['hits_unseen'] = sum(1 for e in ev if e.get('ev') == 'hit' and e.get('npc') == 0 and e.get('who') != 0 and not e.get('saw'))
+    # 17.11: только попадания бойцов (wsq ≠ −1) после старта боя, одна пуля = одно (hit-события одного стрелка
+    # ближе 50 мс склеиваем). Раньше в счёт шли тики аномалии у точки телепорта: «99 попаданий» при двух пулях.
+    t0 = next((e['t'] for e in ev if e.get('ev') == 'match_start'), 0)
+    hits, last = [], {}
+    for e in ev:
+        if e.get('ev') != 'hit' or e.get('npc') != 0 or e.get('t', 0) < t0:
+            continue
+        if e.get('wsq', -1) == -1:
+            continue
+        w = e.get('who')
+        if w in last and e['t'] - last[w] < 50:
+            continue
+        last[w] = e['t']
+        hits.append(e)
+    r['hits_on_player'] = len(hits)
+    r['hits_unseen'] = sum(1 for e in hits if not e.get('saw'))
     print(f"\n  ── {res}: {r['dur']:.0f} с, врагов убито {r['deaths']['B']} из {r['start_n']['B']}, "
           f"попаданий по тебе {r['hits_on_player']} (из невидимости {r['hits_unseen']}) ──")
     try:

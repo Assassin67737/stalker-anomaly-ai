@@ -16,6 +16,10 @@
 -- лечим, враги становятся нейтральны → следующий матч без загрузки сейва. Позиция и взгляд игрока
 -- (камера) — в trace как npc_pos бойца 0, попадания по игроку — hit. 7-й арг. match_begin — смарт точки
 -- (метка на карте/миникарте).
+--
+-- v0.5 (17.11.2026, после первых 5 боёв спарринга): перед боем игроку — снаряга (ремонт стволов в слотах,
+-- патроны до KIT_MAGS магазинов текущего типа, аптечки/бинты до нормы), на экране — куда точка и сколько до неё;
+-- нокаут — затемнение + надпись (раньше лечило молча, и было непонятно, что бой проигран), итог боя — надписью.
 
 local TICK_MS = 1000
 
@@ -43,6 +47,58 @@ local function heal_actor()
 	db.actor.bleeding = 1           -- как gamemode_azazel.heal_everything: 1 = остановить кровь
 	db.actor.psy_health = 1
 	if arszi_psy and arszi_psy.set_psy_health then arszi_psy.set_psy_health(1.0) end
+end
+
+-- v0.5: снаряга на каждый бой — свои стволы, но полные: ремонт, патроны текущего типа, аптечки
+local KIT_MAGS = 6
+local KIT_MED  = { medkit = 3, bandage = 3 }
+
+local function count_inv(sec, ammo)
+	local n = 0
+	db.actor:iterate_inventory(function(_, it)
+		if it:section() == sec then n = n + (ammo and it:ammo_get_count() or 1) end
+	end, db.actor)
+	return n
+end
+
+local function give(sec, n)
+	for _ = 1, n do alife_create_item(sec, db.actor) end
+end
+
+local function kit_actor()
+	local a, got = db.actor, {}
+	for _, slot in ipairs({ 2, 3 }) do
+		local w = a:item_in_slot(slot)
+		if w and IsWeapon(w) and not IsItem("fake_ammo_wpn", w:section()) then
+			w:set_condition(1)
+			local list = utils_item.get_ammo(w:section(), w:id())
+			local ammo = list and list[(w:get_ammo_type() or 0) + 1]
+			local mag = ini_sys:r_u32(w:section(), "ammo_mag_size") or 30
+			if ammo and not got[ammo] then
+				got[ammo] = true
+				local need = mag * KIT_MAGS - count_inv(ammo, true)
+				if need > 0 then
+					create_ammo(ammo, a:position(), a:level_vertex_id(), a:game_vertex_id(), a:id(), need)
+				end
+			end
+		end
+	end
+	for sec, n in pairs(KIT_MED) do
+		local need = n - count_inv(sec)
+		if need > 0 then give(sec, need) end
+	end
+end
+
+local COMPASS = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" }
+local function where_is(p)   -- "85 m NE": x — восток, z — север
+	local a = db.actor:position()
+	local dx, dz = p.x - a.x, p.z - a.z
+	local deg = math.deg(math.atan2(dx, dz)) % 360
+	return string.format("%d m %s", math.floor(math.sqrt(dx * dx + dz * dz) + 0.5), COMPASS[math.floor((deg + 22.5) / 45) % 8 + 1])
+end
+
+local function say(text, sec)
+	if actor_menu then actor_menu.set_msg(1, text, sec or 6) end
 end
 
 local function split_ids(s)
@@ -130,7 +186,11 @@ local function finish(reason)
 	emit(0, 0, "match_end", { id = match.id, reason = reason, dur = (now - match.t0) / 1000,
 		alive_a = a, alive_b = b, ctrl_a = match.ctrl.A, ctrl_b = match.ctrl.B })
 	if varka_hud then varka_hud.push(string.format("MATCH %s over: %s (alive %d vs %d)", match.id, reason, a, b)) end
-	if player_side(match) then
+	local ps = player_side(match)
+	if ps then
+		local mine, theirs = (ps == "A") and a or b, (ps == "A") and b or a
+		say(match.ko and "FIGHT LOST (knockout)" or (theirs == 0 and mine > 0) and "FIGHT WON"
+			or reason == "timeout" and "FIGHT: time is up" or ("FIGHT over: " .. reason), 8)
 		heal_actor()                                   -- следующий матч — с полным здоровьем
 		ko_until = math.max(ko_until, now + KO_GUARD_MS)
 		if match.spot then level.map_remove_object_spot(match.spot, SPOT) end
@@ -189,6 +249,10 @@ local function cmd_begin(a)
 	if player_side(match) and smart then   -- спарринг: точка матча — меткой на карте и миникарте
 		match.spot = smart.id
 		level.map_add_object_spot(smart.id, SPOT, "VARKA: match point")
+	end
+	if player_side(match) then
+		kit_actor()
+		say("FIGHT! Hold the point (" .. r .. " m): " .. where_is(match.zone) .. ". Gear refilled.", 10)
 	end
 	if varka_hud then varka_hud.push("MATCH " .. id .. " started") end
 	return true, id
@@ -308,6 +372,8 @@ local function on_before_death(who_id, flags)
 	if not side or match.ko then return end
 	match.ko = true
 	ko_until = now + KO_GUARD_MS
+	level.add_pp_effector("fade_in_out.ppe", 74001, false)   -- v0.5: нокаут видно, а не молча
+	say("KNOCKOUT! You are down — fight lost.", 8)
 	local who = who_id and level.object_by_id(who_id)
 	local ksq = who and get_object_squad(who)
 	emit(0, 0, "death", { killer = who_id or -1, ksq = ksq and ksq.id or -1, ko = 1,

@@ -1,4 +1,4 @@
--- varka_voice.script — v0.1: канал голоса (17.11.2026, этюд 002)
+-- varka_voice.script — v0.1.1: канал голоса (17.11.2026, этюд 002)
 --
 -- Кто что услышал, когда кто-то сказал/крикнул. Только КАНАЛ: когда кричать и что — решают другие модули.
 --
@@ -25,6 +25,7 @@ local EYE      = 1.6     -- м: высота рта и уха
 local VIA_RAYS = 24      -- предел лучей при поиске «откуда» в обход
 local INVALID  = 4294967295
 local NOQ      = 65535
+local RQT_STATIC = 2   -- collide::rqtStatic (глобальной константы нет: 17.11 без неё луч не ловил стены — всё «по прямой»)
 
 local G, for_level = nil, nil   -- запечка текущего уровня
 
@@ -56,7 +57,7 @@ local function ensure()
 	g.vq_off = p + 4
 	g.s = s
 	G = g
-	printf("VARKA-VOICE: %s -> %d площадок, %d нод", name, nq, g.nv)
+	printf("VARKA-VOICE: %s -> %s", name, string.format("%d quads, %d nodes", nq, g.nv))
 	return true
 end
 
@@ -207,8 +208,9 @@ local function stand(loud)
 	local words, heard = 0, 0
 	for _, h in ipairs(list) do
 		if h.level == 2 then words = words + 1 else heard = heard + 1 end
+		local lp = h.obj:position()
 		trace("voice_hear", { who = 0, id = h.id, lvl = h.level, d = h.d, de = h.d_eff, how = h.how,
-			fx = h.from.x, fy = h.from.y, fz = h.from.z })
+			fx = h.from.x, fy = h.from.y, fz = h.from.z, lx = lp.x, ly = lp.y, lz = lp.z })
 	end
 	if varka_hud then
 		varka_hud.push(string.format("%s R%dm: words %d, heard %d%s", loud:upper(), R, words, heard,
@@ -228,6 +230,28 @@ local function key_press(dik)
 	if loud and db.actor then stand(loud) end
 end
 
+-- ─── замер цены SOM: кадры за 5 с в trace (сравнение «с level.som / без» делает Claude по журналу) ──
+local FPS_MS = 5000
+local fr, fr_t0, som_lvl, som_on = 0, nil, nil, 0
+local function actor_update()
+	fr = fr + 1
+	local now = time_global()
+	if not fr_t0 then fr_t0 = now; return end
+	if now - fr_t0 < FPS_MS then return end
+	local name = level.name()
+	if som_lvl ~= name then
+		som_lvl = name
+		local f = io.open("../gamedata/levels/" .. name .. "/level.som", "rb")
+		som_on = f and 1 or 0
+		if f then f:close() end
+	end
+	local p = db.actor:position()
+	trace("fps", { fps = fr * 1000 / (now - fr_t0), som = som_on, lvl = name, x = p.x, y = p.y, z = p.z,
+		n = (function() local k = 0; for _ in pairs(db.storage) do k = k + 1 end; return k end)() })
+	fr, fr_t0 = 0, now
+end
+
 function on_game_start()
 	RegisterScriptCallback("on_key_press", key_press)
+	RegisterScriptCallback("actor_on_update", actor_update)
 end
